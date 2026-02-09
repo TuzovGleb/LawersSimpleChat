@@ -389,6 +389,13 @@ async function generateWithOpenRouter(
     additionalParams.verbosity = config.verbosity;
   }
   
+  // Добавляем web search параметры для OpenRouter
+  if (config.enableWebSearch) {
+    additionalParams.enableWebSearch = true;
+    additionalParams.webSearchMaxResults = config.webSearchMaxResults || 5;
+    console.log(`[AI Service] Web search enabled for OpenRouter: ${additionalParams.webSearchMaxResults} results`);
+  }
+  
   // Генерируем ответ с chunking
   const result = await generateWithChunking(
     openRouterClient,

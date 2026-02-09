@@ -29,6 +29,10 @@ export interface ModelConfig {
   priority: number;
   /** Описание модели */
   description: string;
+  /** Включить web search (только для OpenRouter) */
+  enableWebSearch?: boolean;
+  /** Количество результатов поиска (1-10, только для OpenRouter с enableWebSearch) */
+  webSearchMaxResults?: number;
 }
 
 /**
@@ -122,7 +126,9 @@ export const OPENROUTER_MODEL_CONFIGS: Record<SelectedModel, ModelConfig> = {
     temperature: 0.7,
     supportsSystemMessages: true,
     priority: 1,
-    description: 'Claude Sonnet 4.5 - быстрая и качественная модель',
+    description: 'Claude Sonnet 4.5 - быстрая и качественная модель с поиском в интернете',
+    enableWebSearch: true,
+    webSearchMaxResults: 5,
   },
   'anthropic': {
     name: 'anthropic/claude-opus-4.5',
@@ -131,7 +137,9 @@ export const OPENROUTER_MODEL_CONFIGS: Record<SelectedModel, ModelConfig> = {
     temperature: 0.7,
     supportsSystemMessages: true,
     priority: 1,
-    description: 'Anthropic Claude Opus 4.5 - последняя модель Anthropic',
+    description: 'Anthropic Claude Opus 4.5 - последняя модель Anthropic с поиском в интернете',
+    enableWebSearch: true,
+    webSearchMaxResults: 5,
   },
   'gemini': {
     name: 'google/gemini-2.5-flash',
@@ -140,7 +148,9 @@ export const OPENROUTER_MODEL_CONFIGS: Record<SelectedModel, ModelConfig> = {
     temperature: 0.7,
     supportsSystemMessages: true,
     priority: 1,
-    description: 'Google Gemini 2.5 Flash - последняя модель Google',
+    description: 'Google Gemini 2.5 Flash - последняя модель Google с поиском в интернете',
+    enableWebSearch: true,
+    webSearchMaxResults: 5,
   },
   'thinking': {
     name: 'openai/gpt-5.2',
@@ -152,7 +162,9 @@ export const OPENROUTER_MODEL_CONFIGS: Record<SelectedModel, ModelConfig> = {
     verbosity: 'high',
     supportsSystemMessages: true,
     priority: 0,
-    description: 'GPT-5.2 - думающая модель для глубокого анализа через OpenRouter',
+    description: 'GPT-5.2 - думающая модель для глубокого анализа через OpenRouter с поиском в интернете',
+    enableWebSearch: true,
+    webSearchMaxResults: 5,
   },
 };
 

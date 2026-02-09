@@ -49,6 +49,8 @@ export async function generateWithChunking(
     reasoning_effort?: 'low' | 'medium' | 'high';
     verbosity?: 'low' | 'medium' | 'high';
     useMaxCompletionTokens?: boolean;
+    enableWebSearch?: boolean;
+    webSearchMaxResults?: number;
   }
 ): Promise<ChunkedResponse> {
   const chunks: string[] = [];
@@ -89,6 +91,17 @@ export async function generateWithChunking(
       }
       if (additionalParams?.verbosity) {
         requestParams.verbosity = additionalParams.verbosity;
+      }
+
+      // Добавляем web search для OpenRouter
+      if (additionalParams?.enableWebSearch) {
+        requestParams.plugins = [
+          {
+            id: 'web',
+            max_results: additionalParams.webSearchMaxResults || 5,
+          },
+        ];
+        console.log(`[Chunker] Web search enabled with ${requestParams.plugins[0].max_results} results`);
       }
 
       // Вызов OpenAI API
