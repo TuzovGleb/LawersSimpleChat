@@ -19,7 +19,6 @@ async function getOpenAIModule() {
   return openaiModule;
 }
 
-// Ленивая инициализация клиента - сначала пробуем OpenRouter, затем OpenAI
 async function getAIClient() {
   // Сначала пробуем OpenRouter (если доступен)
   if (isOpenRouterAvailable()) {
