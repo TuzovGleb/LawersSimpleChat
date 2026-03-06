@@ -566,7 +566,7 @@ export function CaseWorkspace({
         <main className="flex flex-1 flex-col">
           <div className="flex-1 overflow-hidden">
             <ScrollArea className="h-full">
-              <div className="mx-auto flex w-full max-w-4xl flex-col gap-4 px-4 py-6">
+              <div className="chat-container mx-auto flex w-full max-w-4xl flex-col gap-4 px-4 py-6">
                 {isLoadingChats && !activeSession ? (
                   <div className="mt-10 text-center text-muted-foreground">
                     <div className="mx-auto mb-4 rounded-full bg-muted p-6 w-fit">
@@ -601,8 +601,8 @@ export function CaseWorkspace({
                   >
                     {message.role === "user" ? (
                       <div className="max-w-full md:max-w-[80%]">
-                        <div className="rounded-2xl bg-muted px-4 py-3" style={{ background: 'transparent' }}>
-                          <p className="whitespace-pre-wrap text-sm font-normal leading-relaxed text-foreground/90" style={{ wordBreak: 'normal', overflowWrap: 'break-word', color: textColor }}>
+                        <div className="message-content rounded-2xl bg-muted px-4 py-3" style={{ background: 'transparent' }}>
+                          <p className="mobile-safe-text whitespace-pre-wrap text-sm font-normal leading-relaxed text-foreground/90" style={{ wordBreak: 'normal', overflowWrap: 'break-word', color: textColor }}>
                             {message.content}
                           </p>
                         </div>
@@ -618,7 +618,7 @@ export function CaseWorkspace({
                             />
                           </div>
                         )}
-                        <div className="prose prose-sm dark:prose-invert max-w-none text-foreground/90" style={{ background: messageAiBg, padding: '1rem', borderRadius: '0.5rem', wordBreak: 'normal', overflowWrap: 'break-word', color: textColor }}>
+                        <div className="message-content prose prose-sm prose-mobile dark:prose-invert max-w-none text-foreground/90" style={{ background: messageAiBg, padding: '1rem', borderRadius: '0.5rem', wordBreak: 'normal', overflowWrap: 'break-word', color: textColor }}>
                             <ReactMarkdown
                             remarkPlugins={[remarkGfm]}
                             components={{

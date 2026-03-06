@@ -58,6 +58,19 @@
   body {
     @apply bg-background text-foreground;
   }
+  
+  /* Mobile-first: предотвращаем горизонтальный скролл и обрезку текста */
+  html {
+    overflow-x: hidden;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+  
+  body {
+    overflow-x: hidden;
+    width: 100%;
+    position: relative;
+  }
 }
 
 @layer components {
@@ -68,5 +81,73 @@
   
   .info-box-muted {
     @apply rounded-lg border border-border/60 bg-muted/30 text-card-foreground shadow-sm transition-all;
+  }
+}
+
+@layer utilities {
+  /* Корректное отображение текста на всех устройствах */
+  .text-wrap-all {
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    word-break: break-word;
+    hyphens: auto;
+  }
+  
+  /* Для контента от AI (markdown) */
+  .prose-mobile {
+    max-width: 100%;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+  }
+  
+  .prose-mobile pre,
+  .prose-mobile code {
+    max-width: 100%;
+    overflow-x: auto;
+    word-wrap: normal;
+    overflow-wrap: normal;
+    white-space: pre-wrap;
+  }
+  
+  .prose-mobile table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  
+  /* Предотвращаем вылезание длинных URL и слов */
+  .prose-mobile a,
+  .prose-mobile p,
+  .prose-mobile li,
+  .prose-mobile td,
+  .prose-mobile th {
+    word-break: break-word;
+    overflow-wrap: break-word;
+    hyphens: auto;
+  }
+  
+  /* Специально для мобильных устройств */
+  @media (max-width: 768px) {
+    .mobile-safe-text {
+      word-break: break-word;
+      overflow-wrap: break-word;
+      max-width: 100vw;
+      box-sizing: border-box;
+    }
+    
+    /* Контейнеры чата */
+    .chat-container {
+      max-width: 100vw;
+      overflow-x: hidden;
+      padding-left: 0.5rem;
+      padding-right: 0.5rem;
+    }
+    
+    /* Сообщения чата */
+    .message-content {
+      max-width: calc(100vw - 2rem);
+      word-break: break-word;
+      overflow-wrap: break-word;
+    }
   }
 }

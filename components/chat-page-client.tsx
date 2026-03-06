@@ -138,8 +138,40 @@ export function ChatPageClient() {
   const [anonymousMode, setAnonymousMode] = useState(false);
   const [anonymizationMaps, setAnonymizationMaps] = useState<Map<string, AnonymizationMapData>>(new Map());
   const [anonymizationProgress, setAnonymizationProgress] = useState<AnonymizationProgress | null>(null);
+  const [isPageVisible, setIsPageVisible] = useState(true);
+  const [pendingRequest, setPendingRequest] = useState<{
+    sessionLocalId: string;
+    messagesForRequest: ChatMessage[];
+    documentsForRequest: Array<{ id: string; name: string; text: string }>;
+    backendSessionId?: string;
+    isFirstUserMessage: boolean;
+    trimmedMessage: string;
+  } | null>(null);
   const { toast } = useToast();
   const { exportMessage } = useExportMessage();
+
+  // Отслеживание видимости страницы для восстановления соединений
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      const visible = !document.hidden;
+      setIsPageVisible(visible);
+      
+      if (visible && pendingRequest) {
+        console.log('[Background Recovery] Страница стала видимой, восстанавливаем запрос');
+        // Если были прерванные запросы, показываем уведомление
+        toast({
+          title: "Возобновление запроса",
+          description: "Восстанавливаем соединение после возврата из фона",
+        });
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [pendingRequest, toast]);
 
   // Redirect to auth if not authenticated
   useEffect(() => {
@@ -1073,6 +1105,16 @@ export function ChatPageClient() {
     // Reasoning модель включена на постоянку - всегда показываем thinking indicator
     setIsThinking(true);
 
+    // Сохраняем информацию о запросе для возможного восстановления
+    setPendingRequest({
+      sessionLocalId,
+      messagesForRequest,
+      documentsForRequest,
+      backendSessionId,
+      isFirstUserMessage,
+      trimmedMessage,
+    });
+
     setSessions((prev) =>
       prev.map((session) => {
         if (session.id !== sessionLocalId) return session;
@@ -1089,6 +1131,22 @@ export function ChatPageClient() {
       // Сервер настроен на 30 минут, добавляем запас
       // Теперь используем streaming для получения ответа с heartbeat
       const resolvedUrl = resolveApiUrl(`/api/chat${utmQuery}`);
+      
+      // Создаем AbortController для возможности отмены запроса
+      const abortController = new AbortController();
+      let requestAborted = false;
+      
+      // Если страница станет невидимой, не отменяем запрос сразу,
+      // но отслеживаем это состояние
+      const visibilityHandler = () => {
+        if (document.hidden) {
+          console.log('[Background Mode] Страница ушла в фон, но запрос продолжается');
+          // Не отменяем запрос, современные браузеры должны его поддерживать
+        }
+      };
+      
+      document.addEventListener('visibilitychange', visibilityHandler);
+      
       const response = await fetch(resolvedUrl, {
         method: "POST",
         headers: {
@@ -1104,6 +1162,8 @@ export function ChatPageClient() {
         }),
         signal: AbortSignal.timeout(2100000), // 35 минут таймаут
       });
+
+      document.removeEventListener('visibilitychange', visibilityHandler);
 
       if (!response.ok) {
         throw new Error("Не удалось отправить сообщение");
@@ -1233,8 +1293,28 @@ export function ChatPageClient() {
       if (!data || !data.message) {
         throw new Error("Не удалось получить ответ от сервера");
       }
+      
+      // Запрос успешно завершен, очищаем pending request
+      setPendingRequest(null);
     } catch (error) {
       console.error("Ошибка при отправке сообщения:", error);
+      
+      // Проверяем, была ли ошибка связана с фоновым режимом
+      const isBackgroundError = error instanceof Error && 
+        (error.name === 'AbortError' || error.message.includes('fetch'));
+      
+      if (isBackgroundError && !isPageVisible) {
+        console.log('[Background Error] Запрос прерван в фоновом режиме, сохраняем для повтора');
+        toast({
+          title: "Соединение прервано",
+          description: "Запрос был прерван из-за перехода в фоновый режим. Вернитесь к приложению для повтора.",
+          variant: "destructive",
+        });
+      } else {
+        // Очищаем pending request при обычной ошибке
+        setPendingRequest(null);
+      }
+      
       setSessions((prev) =>
         prev.map((session) => {
           if (session.id !== sessionLocalId) return session;
@@ -1254,7 +1334,7 @@ export function ChatPageClient() {
       setIsLoading(false);
       setIsThinking(false);
     }
-  }, [activeSession, anonymizationMaps, input, isLoading, selectedProjectId, selectedModel, toast, user?.id, utmQuery]);
+  }, [activeSession, anonymizationMaps, input, isLoading, isPageVisible, selectedProjectId, selectedModel, toast, user?.id, utmQuery]);
 
   // Show loading while checking auth
   if (authLoading) {

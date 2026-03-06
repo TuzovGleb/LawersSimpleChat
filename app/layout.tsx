@@ -33,6 +33,12 @@ export const metadata: Metadata = {
   alternates: {
     canonical: '/',
   },
+  viewport: {
+    width: 'device-width',
+    initialScale: 1,
+    maximumScale: 5,
+    userScalable: true,
+  },
   openGraph: {
     title: metadataStrings.siteTitle,
     description: metadataStrings.siteDescription,
