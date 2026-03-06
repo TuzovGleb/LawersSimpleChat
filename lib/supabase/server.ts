@@ -2,8 +2,8 @@ import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 
 export async function createClient() {
-  // Validate required environment variables
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+  // SUPABASE_URL allows server-side override (e.g. Docker internal network)
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
   if (!supabaseUrl || !supabaseAnonKey) {
@@ -30,6 +30,7 @@ export async function createClient() {
       supabaseUrl,
       supabaseAnonKey,
       {
+        auth: { storageKey: 'sb-local-auth-token' },
         cookies: {
           get(name: string) {
             return cookieStore.get(name)?.value

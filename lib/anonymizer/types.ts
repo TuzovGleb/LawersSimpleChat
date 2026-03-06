@@ -12,12 +12,7 @@ export interface RecognizedWord {
   text: string;
 }
 
-export type PIIType = 'фио' | 'дата' | 'адрес' | 'телефон' | 'email' | 'документ' | 'pii';
-
-export interface ClassifiedWord extends RecognizedWord {
-  classification: 'pii' | 'not_pii';
-  piiType?: PIIType;
-}
+export type PIIType = 'фио' | 'дата' | 'адрес' | 'телефон' | 'email' | 'документ' | 'кадастр' | 'pii';
 
 export interface SpriteGroup {
   /** Base64 data URI of the sprite image */
@@ -49,7 +44,6 @@ export type AnonymizationStage =
   | 'building_sprites'
   | 'ocr'
   | 'classifying'
-  | 'anonymizing'
   | 'done';
 
 export interface AnonymizationProgress {

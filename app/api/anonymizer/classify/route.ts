@@ -16,7 +16,7 @@ async function getAIClient() {
   return null;
 }
 
-const VALID_PII_TYPES = ['фио', 'дата', 'адрес', 'телефон', 'email', 'документ', 'pii'] as const;
+const VALID_PII_TYPES = ['фио', 'дата', 'адрес', 'телефон', 'email', 'документ', 'кадастр', 'pii'] as const;
 
 export async function POST(req: NextRequest) {
   try {
@@ -44,7 +44,25 @@ export async function POST(req: NextRequest) {
       messages: [
         {
           role: 'system',
-          content: `You are a PII (Personally Identifiable Information) classifier for Russian legal documents. For each word, determine if it is PII or not. PII includes: names (фио), dates (дата), addresses (адрес), phone numbers (телефон), emails (email), document numbers like passport/INN/SNILS (документ), and other identifiers (pii). Legal terms, common words, conjunctions, and procedural language are NOT PII. Respond ONLY with valid JSON: {"classifications":[{"word":"original_word","classification":"pii" or "not_pii","piiType":"фио|дата|адрес|телефон|email|документ|pii"}]}. Only include piiType when classification is "pii".`,
+          content: `You are a PII (Personally Identifiable Information) classifier for Russian legal documents. For each word, determine if it is PII or not.
+
+PII types:
+- фио: person's full name, first name, last name, or patronymic
+- дата: date or month name (e.g. "января", "марта")
+- адрес: address component — city name, street name, settlement, district name
+- телефон: phone number
+- email: email address
+- документ: passport series/number, INN, SNILS, ОГРН, КПП
+- кадастр: cadastral number (format XX:XX:XXXXXXX:XXX, e.g. 33:21:020104:584)
+- pii: other personal identifier
+
+Important rules:
+- Russian city and settlement names (e.g. Вязники, Суздаль, Ковров) are адрес, NOT фио, even if they look like surnames.
+- Street names derived from person names (e.g. Ленина, Гагарина) are адрес when used as street names.
+- Cadastral numbers must be classified as кадастр, not телефон or документ.
+- Legal terms, common words, conjunctions, and procedural language are NOT PII.
+
+Respond ONLY with valid JSON: {"classifications":[{"word":"original_word","classification":"pii" or "not_pii","piiType":"фио|дата|адрес|телефон|email|документ|кадастр|pii"}]}. Only include piiType when classification is "pii".`,
         },
         {
           role: 'user',

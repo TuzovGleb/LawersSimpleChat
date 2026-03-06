@@ -7,6 +7,7 @@ const PLACEHOLDER_LABELS: Record<PIIType, string> = {
   'телефон': 'ТЕЛЕФОН',
   'email': 'EMAIL',
   'документ': 'ДОКУМЕНТ',
+  'кадастр': 'КАДАСТР',
   'pii': 'PII',
 };
 
@@ -20,7 +21,7 @@ export class AnonymizationMap {
   private counters: Record<PIIType, number>;
 
   constructor(data?: AnonymizationMapData) {
-    this.counters = { 'фио': 0, 'дата': 0, 'адрес': 0, 'телефон': 0, 'email': 0, 'документ': 0, 'pii': 0 };
+    this.counters = { 'фио': 0, 'дата': 0, 'адрес': 0, 'телефон': 0, 'email': 0, 'документ': 0, 'кадастр': 0, 'pii': 0 };
 
     if (data) {
       this.counters = { ...this.counters, ...data.counters };
