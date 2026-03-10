@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabase } from '@/lib/supabase';
+import { deleteFileFromS3 } from '@/lib/s3-client';
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 
 function getProjectAndDocumentIds(req: NextRequest) {
   const segments = req.nextUrl.pathname.split('/').filter(Boolean);
@@ -41,6 +42,14 @@ export async function DELETE(req: NextRequest) {
       }
     }
 
+    // Fetch object_key before deleting from DB
+    const { data: docData } = await supabase
+      .from('project_documents')
+      .select('object_key')
+      .eq('id', documentId)
+      .eq('project_id', projectId)
+      .maybeSingle();
+
     const { error } = await supabase
       .from('project_documents')
       .delete()
@@ -50,6 +59,17 @@ export async function DELETE(req: NextRequest) {
     if (error) {
       console.error('[project-document][DELETE] Supabase error:', error);
       return NextResponse.json({ error: 'Не удалось удалить документ.' }, { status: 500 });
+    }
+
+    if (docData?.object_key) {
+      try {
+        await deleteFileFromS3(docData.object_key);
+      } catch (s3Error) {
+        console.warn('[project-document][DELETE] Failed to delete file from S3:', {
+          objectKey: docData.object_key,
+          error: s3Error instanceof Error ? s3Error.message : s3Error,
+        });
+      }
     }
 
     const now = new Date().toISOString();
