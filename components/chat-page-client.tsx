@@ -6,7 +6,6 @@ import { v4 as uuidv4 } from "uuid";
 import { CaseSelectionScreen } from "@/components/case-selection-screen";
 import { CaseWorkspace } from "@/components/case-workspace";
 import type { ChatMessage, Project, SessionDocument, SelectedModel } from "@/lib/types";
-import type { AnonymizationProgress, AnonymizationMapData } from "@/lib/anonymizer/types";
 import { useToast } from "@/hooks/use-toast";
 import { useExportMessage } from "@/hooks/use-export-message";
 import { useAuth } from "@/hooks/use-auth";
@@ -135,9 +134,6 @@ export function ChatPageClient() {
   const [isUploadingDocument, setIsUploadingDocument] = useState(false);
   const [isLoadingChatsFromDB, setIsLoadingChatsFromDB] = useState(false);
   const [selectedModel, setSelectedModel] = useState<SelectedModel>('openai'); // Выбранная модель (по умолчанию openai)
-  const [anonymousMode, setAnonymousMode] = useState(false);
-  const [anonymizationMaps, setAnonymizationMaps] = useState<Map<string, AnonymizationMapData>>(new Map());
-  const [anonymizationProgress, setAnonymizationProgress] = useState<AnonymizationProgress | null>(null);
   const [isPageVisible, setIsPageVisible] = useState(true);
   const [pendingRequest, setPendingRequest] = useState<{
     sessionLocalId: string;
@@ -1334,7 +1330,7 @@ export function ChatPageClient() {
       setIsLoading(false);
       setIsThinking(false);
     }
-  }, [activeSession, anonymizationMaps, input, isLoading, isPageVisible, selectedProjectId, selectedModel, toast, user?.id, utmQuery]);
+  }, [activeSession, input, isLoading, isPageVisible, selectedProjectId, selectedModel, toast, user?.id, utmQuery]);
 
   // Show loading while checking auth
   if (authLoading) {

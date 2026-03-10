@@ -1,0 +1,179 @@
+name: Deploy to Yandex Cloud (Staging)
+
+on:
+  push:
+    branches: [ staging ]
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Ветка для деплоя'
+        required: true
+        default: 'staging'
+        type: string
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: Staging ENV
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.inputs.branch || github.ref }}
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Build project
+        run: npm run build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_SITE_URL: ${{ vars.NEXT_PUBLIC_SITE_URL }}
+          OPENROUTER_API_KEY: ${{ vars.OPENROUTER_API_KEY }}
+          OPENAI_API_KEY: ${{ vars.OPENAI_API_KEY }}
+          NEXT_PUBLIC_PROXY_URL: ${{ vars.NEXT_PUBLIC_PROXY_URL }}
+          NEXT_PUBLIC_ENABLE_SIGNUP: ${{ vars.NEXT_PUBLIC_ENABLE_SIGNUP }}
+      
+      - name: Install Yandex Cloud CLI
+        run: |
+          mkdir -p $HOME/.local/bin
+          curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s
+          if [ -f "$HOME/.local/bin/yc" ]; then
+            chmod +x $HOME/.local/bin/yc
+            echo "$HOME/.local/bin" >> $GITHUB_PATH
+          else
+            YC_PATH=$(find $HOME -name yc -type f -executable 2>/dev/null | head -1)
+            if [ -n "$YC_PATH" ]; then
+              echo "$(dirname $YC_PATH)" >> $GITHUB_PATH
+            else
+              echo "Error: yc not found after installation"
+              exit 1
+            fi
+          fi
+      
+      - name: Setup Yandex Cloud CLI with JSON key
+        env:
+          YC_SA_JSON: ${{ secrets.YC_SA_JSON }}
+          YC_CLOUD_ID: ${{ secrets.YC_CLOUD_ID }}
+          YC_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          
+          if [ -z "$YC_SA_JSON" ] || [ "$YC_SA_JSON" = "" ]; then
+            echo "Error: YC_SA_JSON secret is empty or not set"
+            echo "Please verify:"
+            echo "1. Secret YC_SA_JSON exists in Environment 'Staging ENV'"
+            echo "2. Secret contains the full JSON key (starts with { and ends with })"
+            echo "3. Secret was saved correctly (not just whitespace)"
+            exit 1
+          fi
+          
+          YC_SA_JSON_CLEAN=$(printf '%s' "$YC_SA_JSON" | sed 's/[[:space:]]*$//')
+          
+          JSON_LENGTH=${#YC_SA_JSON_CLEAN}
+          echo "JSON key length: $JSON_LENGTH characters"
+          
+          if [ "$JSON_LENGTH" -lt 100 ]; then
+            echo "Warning: JSON key seems too short (expected ~500-1000 chars)"
+          fi
+          
+          FIRST_CHAR="${YC_SA_JSON_CLEAN:0:1}"
+          LAST_CHAR="${YC_SA_JSON_CLEAN: -1}"
+          echo "First char: '$FIRST_CHAR' (should be '{')"
+          echo "Last char: '$LAST_CHAR' (should be '}')"
+          
+          if [ "$FIRST_CHAR" != "{" ] || [ "$LAST_CHAR" != "}" ]; then
+            echo "Error: JSON key format is incorrect"
+            echo "JSON should start with '{' and end with '}'"
+            exit 1
+          fi
+          
+          printf '%s' "$YC_SA_JSON_CLEAN" > /tmp/sa-key.json
+          chmod 600 /tmp/sa-key.json
+          
+          FILE_SIZE=$(wc -c < /tmp/sa-key.json)
+          echo "Saved file size: $FILE_SIZE bytes"
+          
+          if ! python3 -m json.tool /tmp/sa-key.json > /dev/null 2>&1; then
+            echo "Error: Invalid JSON format"
+            echo "File contains:"
+            head -c 200 /tmp/sa-key.json
+            echo "..."
+            exit 1
+          fi
+          
+          echo "JSON key is valid, proceeding with yc CLI setup"
+          
+          yc config profile create deploy-profile || true
+          yc config set service-account-key /tmp/sa-key.json
+          yc config set cloud-id "$YC_CLOUD_ID"
+          yc config set folder-id "$YC_FOLDER_ID"
+      
+      - name: Login to Yandex Container Registry
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          IAM_TOKEN=$(yc iam create-token)
+          echo "$IAM_TOKEN" | docker login --username iam --password-stdin cr.yandex
+      
+      - name: Build Docker image
+        run: |
+          docker build \
+            --build-arg NEXT_PUBLIC_SUPABASE_URL="${{ vars.NEXT_PUBLIC_SUPABASE_URL }}" \
+            --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY="${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}" \
+            --build-arg NEXT_PUBLIC_SITE_URL="${{ vars.NEXT_PUBLIC_SITE_URL }}" \
+            --build-arg NEXT_PUBLIC_PROXY_URL="${{ vars.NEXT_PUBLIC_PROXY_URL }}" \
+            --build-arg NEXT_PUBLIC_ENABLE_SIGNUP="${{ vars.NEXT_PUBLIC_ENABLE_SIGNUP }}" \
+            -t cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-bot:staging-${{ github.sha }} .
+          docker tag cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-bot:staging-${{ github.sha }} \
+                     cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-bot:staging
+      
+      - name: Push Docker image
+        run: |
+          docker push cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-bot:staging-${{ github.sha }}
+          docker push cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-bot:staging
+      
+      - name: Deploy to Serverless Container (Staging)
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_SITE_URL: ${{ vars.NEXT_PUBLIC_SITE_URL }}
+          OPENROUTER_API_KEY: ${{ vars.OPENROUTER_API_KEY }}
+          OPENAI_API_KEY: ${{ vars.OPENAI_API_KEY }}
+          NEXT_PUBLIC_PROXY_URL: ${{ vars.NEXT_PUBLIC_PROXY_URL }}
+          NEXT_PUBLIC_ENABLE_SIGNUP: ${{ vars.NEXT_PUBLIC_ENABLE_SIGNUP }}
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          
+          ENV_VARS="NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL},NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY},OPENROUTER_API_KEY=${OPENROUTER_API_KEY},OPENAI_API_KEY=${OPENAI_API_KEY}"
+          
+          if [ -n "${NEXT_PUBLIC_SITE_URL}" ]; then
+            ENV_VARS="${ENV_VARS},NEXT_PUBLIC_SITE_URL=${NEXT_PUBLIC_SITE_URL}"
+          fi
+          
+          if [ -n "${NEXT_PUBLIC_ENABLE_SIGNUP}" ]; then
+            ENV_VARS="${ENV_VARS},NEXT_PUBLIC_ENABLE_SIGNUP=${NEXT_PUBLIC_ENABLE_SIGNUP}"
+          else
+            ENV_VARS="${ENV_VARS},NEXT_PUBLIC_ENABLE_SIGNUP=false"
+          fi
+          
+          if [ -n "${NEXT_PUBLIC_PROXY_URL}" ]; then
+            ENV_VARS="${ENV_VARS},NEXT_PUBLIC_PROXY_URL=${NEXT_PUBLIC_PROXY_URL}"
+          fi
+          
+          yc serverless container revision deploy \
+            --container-name jhelper-bot-staging \
+            --image cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-bot:staging-${{ github.sha }} \
+            --service-account-id ${{ secrets.YC_SERVICE_ACCOUNT_ID }} \
+            --cores 1 \
+            --memory 2GB \
+            --execution-timeout 1800s \
+            --concurrency 10 \
+            --environment "${ENV_VARS}"
