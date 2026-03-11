@@ -76,15 +76,17 @@ jobs:
             exit 1
           fi
           
-          JSON_LENGTH=${#YC_SA_JSON}
+          YC_SA_JSON_CLEAN=$(printf '%s' "$YC_SA_JSON" | sed 's/[[:space:]]*$//')
+          
+          JSON_LENGTH=${#YC_SA_JSON_CLEAN}
           echo "JSON key length: $JSON_LENGTH characters"
           
           if [ "$JSON_LENGTH" -lt 100 ]; then
             echo "Warning: JSON key seems too short (expected ~500-1000 chars)"
           fi
           
-          FIRST_CHAR="${YC_SA_JSON:0:1}"
-          LAST_CHAR="${YC_SA_JSON: -1}"
+          FIRST_CHAR="${YC_SA_JSON_CLEAN:0:1}"
+          LAST_CHAR="${YC_SA_JSON_CLEAN: -1}"
           echo "First char: '$FIRST_CHAR' (should be '{')"
           echo "Last char: '$LAST_CHAR' (should be '}')"
           
@@ -94,7 +96,7 @@ jobs:
             exit 1
           fi
           
-          echo "$YC_SA_JSON" > /tmp/sa-key.json
+          printf '%s' "$YC_SA_JSON_CLEAN" > /tmp/sa-key.json
           chmod 600 /tmp/sa-key.json
           
           FILE_SIZE=$(wc -c < /tmp/sa-key.json)

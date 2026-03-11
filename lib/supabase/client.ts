@@ -8,6 +8,8 @@ export function createClient() {
   // Если переменные отсутствуют, используем пустые строки
   // createBrowserClient все равно выбросит ошибку, но это произойдет во время выполнения,
   // а не во время сборки, если обернуть это в проверку на клиенте
-  return createBrowserClient(supabaseUrl, supabaseAnonKey);
+  return createBrowserClient(supabaseUrl, supabaseAnonKey, {
+    auth: { storageKey: 'sb-local-auth-token' },
+  });
 }
 
