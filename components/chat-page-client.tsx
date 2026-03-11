@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from "uuid";
 import { CaseSelectionScreen } from "@/components/case-selection-screen";
 import { CaseWorkspace } from "@/components/case-workspace";
 import type { ChatMessage, Project, SessionDocument, SelectedModel } from "@/lib/types";
+import type { AnonymizationProgress, AnonymizationMapData } from "@/lib/anonymizer/types";
 import { useToast } from "@/hooks/use-toast";
 import { useExportMessage } from "@/hooks/use-export-message";
 import { useAuth } from "@/hooks/use-auth";
