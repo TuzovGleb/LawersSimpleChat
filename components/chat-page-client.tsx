@@ -146,6 +146,9 @@ export function ChatPageClient() {
   } | null>(null);
   const { toast } = useToast();
   const { exportMessage } = useExportMessage();
+  const [anonymousMode, setAnonymousMode] = useState(false);
+  const [anonymizationProgress, setAnonymizationProgress] = useState<AnonymizationProgress | null>(null);
+  const [anonymizationMaps, setAnonymizationMaps] = useState<Map<string, AnonymizationMapData>>(new Map());
 
   // Отслеживание видимости страницы для восстановления соединений
   useEffect(() => {
