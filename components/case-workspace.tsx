@@ -15,9 +15,11 @@ import { useToast } from "@/hooks/use-toast";
 import {
   ArrowLeft,
   Bot,
+  ChevronDown,
   Download,
   FileText,
   Loader2,
+  LogOut,
   Menu,
   MessageSquare,
   Moon,
@@ -28,7 +30,6 @@ import {
   Trash2,
   Upload,
   X,
-  ChevronDown,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -71,6 +72,7 @@ interface CaseWorkspaceProps {
   onAttachDocument: (files: FileList | null) => void;
   onRemoveDocument: (documentId: string) => void;
   onExportMessage?: (messageIndex: number) => void;
+  onSignOut: () => void;
 }
 
 export function CaseWorkspace({
@@ -93,6 +95,7 @@ export function CaseWorkspace({
   onAttachDocument,
   onRemoveDocument,
   onExportMessage,
+  onSignOut,
 }: CaseWorkspaceProps) {
   const { toast } = useToast();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -275,6 +278,16 @@ export function CaseWorkspace({
                 <Moon className="h-5 w-5" />
               )}
               <span className="sr-only">Переключить тему чата</span>
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onSignOut}
+              title="Выйти"
+              style={{ color: textColor }}
+            >
+              <LogOut className="h-5 w-5" />
+              <span className="sr-only">Выйти</span>
             </Button>
           </div>
         </div>

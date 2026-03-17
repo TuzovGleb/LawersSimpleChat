@@ -85,7 +85,7 @@ function isValidDocumentStrategy(value: unknown): value is SessionDocument["stra
 export function ChatPageClient() {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, signOut } = useAuth();
   
   const utmQuery = useMemo(() => {
     const params = new URLSearchParams();
@@ -1320,6 +1320,7 @@ export function ChatPageClient() {
         onCreateProject={handleCreateProject}
         onRenameProject={handleRenameProject}
         onDeleteProject={handleDeleteProject}
+        onSignOut={signOut}
       />
       <ToasterClient />
     </>
@@ -1355,6 +1356,7 @@ export function ChatPageClient() {
         onAttachDocument={processDocumentFiles}
         onRemoveDocument={handleRemoveDocument}
         onExportMessage={handleExportMessage}
+        onSignOut={signOut}
       />
       <ToasterClient />
     </>
