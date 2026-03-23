@@ -85,7 +85,7 @@ function isValidDocumentStrategy(value: unknown): value is SessionDocument["stra
 export function ChatPageClient() {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, signOut } = useAuth();
   
   const utmQuery = useMemo(() => {
     const params = new URLSearchParams();
@@ -763,13 +763,52 @@ export function ChatPageClient() {
       const files = Array.from(fileList);
       for (const file of files) {
         try {
-          const formData = new FormData();
-          formData.append("file", file);
-          formData.append("userId", user.id);
+          // Step 1: Get presigned URL
+          const presignResponse = await fetchWithRetry("/api/upload/presign", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              filename: file.name,
+              mimeType: file.type || "application/octet-stream",
+              size: file.size,
+              projectId: selectedProjectId,
+              userId: user.id,
+            }),
+          });
 
+          if (!presignResponse.ok) {
+            const errorPayload = await presignResponse.json().catch(() => ({}));
+            const message =
+              typeof errorPayload?.error === "string" && errorPayload.error.trim()
+                ? errorPayload.error
+                : "Не удалось получить ссылку для загрузки.";
+            throw new Error(message);
+          }
+
+          const { uploadUrl, objectKey } = await presignResponse.json();
+
+          // Step 2: Upload file directly to S3
+          const uploadResponse = await fetch(uploadUrl, {
+            method: "PUT",
+            headers: { "Content-Type": file.type || "application/octet-stream" },
+            body: file,
+          });
+
+          if (!uploadResponse.ok) {
+            throw new Error(`Ошибка загрузки файла в хранилище (${uploadResponse.status}).`);
+          }
+
+          // Step 3: Notify backend to process the uploaded file
           const response = await fetchWithRetry(`/api/projects/${selectedProjectId}/documents`, {
             method: "POST",
-            body: formData,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              objectKey,
+              filename: file.name,
+              mimeType: file.type || "application/octet-stream",
+              size: file.size,
+              userId: user.id,
+            }),
           });
 
           if (!response.ok) {
@@ -1281,6 +1320,7 @@ export function ChatPageClient() {
         onCreateProject={handleCreateProject}
         onRenameProject={handleRenameProject}
         onDeleteProject={handleDeleteProject}
+        onSignOut={signOut}
       />
       <ToasterClient />
     </>
@@ -1316,6 +1356,7 @@ export function ChatPageClient() {
         onAttachDocument={processDocumentFiles}
         onRemoveDocument={handleRemoveDocument}
         onExportMessage={handleExportMessage}
+        onSignOut={signOut}
       />
       <ToasterClient />
     </>

@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getSupabase } from '@/lib/supabase';
 import { extractTextFromDocument } from '@/lib/document-processing';
 import { mapProjectDocument } from '@/lib/projects';
+import { downloadFileFromS3 } from '@/lib/s3-client';
 
 // NOTE: Для Yandex Cloud Serverless Containers используем Node.js runtime
 // Node.js runtime обеспечивает лучшую поддержку DNS lookup и внешних API
@@ -148,19 +149,41 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const formData = await req.formData();
-    const file = formData.get('file');
-    const userIdRaw = formData.get('userId');
-    const userId = typeof userIdRaw === 'string' ? userIdRaw.trim() : null;
+    const body = await req.json();
+    const { objectKey, filename, mimeType, size, userId } = body;
 
-    if (!(file instanceof File)) {
-      return NextResponse.json({ error: 'Файл не найден в запросе.' }, { status: 400 });
+    if (!objectKey || typeof objectKey !== 'string') {
+      return NextResponse.json({ error: 'objectKey is required' }, { status: 400 });
+    }
+    if (!filename || typeof filename !== 'string') {
+      return NextResponse.json({ error: 'filename is required' }, { status: 400 });
+    }
+    if (!mimeType || typeof mimeType !== 'string') {
+      return NextResponse.json({ error: 'mimeType is required' }, { status: 400 });
+    }
+    if (!size || typeof size !== 'number' || size <= 0) {
+      return NextResponse.json({ error: 'size must be a positive number' }, { status: 400 });
     }
 
-    const arrayBuffer = await file.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    const mimeType = file.type || 'application/octet-stream';
-    const filename = file.name || 'uploaded-document';
+    const userIdClean = typeof userId === 'string' ? userId.trim() : null;
+
+    let buffer: Buffer;
+    try {
+      buffer = await downloadFileFromS3(objectKey);
+    } catch (downloadError) {
+      console.error('[project-documents][POST] S3 download error:', {
+        projectId,
+        objectKey,
+        error: downloadError instanceof Error ? {
+          message: downloadError.message,
+          stack: downloadError.stack,
+        } : downloadError,
+      });
+      return NextResponse.json(
+        { error: 'Не удалось скачать файл из хранилища.' },
+        { status: 500 },
+      );
+    }
 
     if (buffer.length === 0) {
       return NextResponse.json({ error: 'Пустой файл не может быть обработан.' }, { status: 400 });
@@ -174,7 +197,7 @@ export async function POST(req: NextRequest) {
         projectId,
         filename,
         mimeType,
-        fileSize: file.size,
+        fileSize: size,
         error: extractionError instanceof Error ? {
           message: extractionError.message,
           stack: extractionError.stack,
@@ -182,7 +205,7 @@ export async function POST(req: NextRequest) {
       });
       return NextResponse.json(
         { error: 'Ошибка при извлечении текста из документа.' },
-        { status: 500 }
+        { status: 500 },
       );
     }
 
@@ -194,7 +217,7 @@ export async function POST(req: NextRequest) {
     }
 
     const supabase = await getSupabase();
-    
+
     if (!supabase) {
       console.error('[project-documents][POST] Failed to create Supabase client:', {
         projectId,
@@ -204,7 +227,7 @@ export async function POST(req: NextRequest) {
       });
       return NextResponse.json(
         { error: 'Не удалось подключиться к базе данных.' },
-        { status: 500 }
+        { status: 500 },
       );
     }
 
@@ -215,7 +238,7 @@ export async function POST(req: NextRequest) {
       project_id: projectId,
       name: filename,
       mime_type: mimeType,
-      size: file.size,
+      size,
       text: extraction.text,
       truncated: extraction.truncated,
       raw_text_length: extraction.rawTextLength,
@@ -223,6 +246,7 @@ export async function POST(req: NextRequest) {
       uploaded_at: now,
       checksum: null,
       created_at: now,
+      object_key: objectKey,
     };
 
     const { data, error } = await supabase
@@ -245,7 +269,7 @@ export async function POST(req: NextRequest) {
       });
       return NextResponse.json(
         { error: 'Не удалось сохранить документ.' },
-        { status: 500 }
+        { status: 500 },
       );
     }
 
@@ -255,15 +279,14 @@ export async function POST(req: NextRequest) {
         .from('projects')
         .update({ updated_at: now })
         .eq('id', projectId);
-      if (userId) {
-        projectUpdate = projectUpdate.eq('user_id', userId);
+      if (userIdClean) {
+        projectUpdate = projectUpdate.eq('user_id', userIdClean);
       }
       await projectUpdate;
     } catch (updateError) {
-      // Log but don't fail the request if project update fails
       console.warn('[project-documents][POST] Failed to update project timestamp:', {
         projectId,
-        userId,
+        userId: userIdClean,
         error: updateError instanceof Error ? {
           message: updateError.message,
           stack: updateError.stack,
@@ -274,9 +297,7 @@ export async function POST(req: NextRequest) {
     try {
       const mappedDocument = mapProjectDocument(data);
       return NextResponse.json(
-        {
-          document: mappedDocument,
-        },
+        { document: mappedDocument },
         { status: 201 },
       );
     } catch (mappingError) {
@@ -290,7 +311,7 @@ export async function POST(req: NextRequest) {
       });
       return NextResponse.json(
         { error: 'Ошибка при обработке данных документа.' },
-        { status: 500 }
+        { status: 500 },
       );
     }
   } catch (error) {
