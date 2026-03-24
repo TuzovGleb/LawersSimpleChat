@@ -444,8 +444,17 @@ export function AuthForm() {
         throw error;
       }
 
-      // After successful signup, automatically sign in
       if (data?.user) {
+        // If session is null, email confirmation is required
+        if (!data.session) {
+          toast({
+            title: "Проверьте почту",
+            description: "На вашу почту отправлено письмо для подтверждения аккаунта.",
+          });
+          return;
+        }
+
+        // Email confirmation disabled — sign in immediately
         const { error: signInError } = await signIn(signupEmail, signupPassword);
         
         if (signInError) {

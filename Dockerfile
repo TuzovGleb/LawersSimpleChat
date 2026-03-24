@@ -53,6 +53,8 @@ EXPOSE 8080
 
 # Yandex Cloud Serverless Containers ожидают порт 8080
 # Переменная PORT будет установлена Yandex Cloud, но используем 8080 по умолчанию
+# S3 env vars (S3_BUCKET_NAME, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_REGION, S3_ENDPOINT)
+# are runtime secrets — set them via Yandex Cloud container environment variables
 ENV PORT=8080
 ENV HOSTNAME="0.0.0.0"
 

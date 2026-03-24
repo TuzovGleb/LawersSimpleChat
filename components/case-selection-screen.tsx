@@ -25,7 +25,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Bot, FileText, FolderPlus, Loader2, MessageSquare, MoreVertical, Pencil, Trash2 } from "lucide-react";
+import { Bot, FileText, FolderPlus, Loader2, LogOut, MessageSquare, MoreVertical, Pencil, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Project, SessionDocument } from "@/lib/types";
 
@@ -48,6 +48,7 @@ interface CaseSelectionScreenProps {
   onCreateProject: (name: string) => void;
   onRenameProject: (projectId: string, newName: string) => void;
   onDeleteProject: (projectId: string) => void;
+  onSignOut: () => void;
 }
 
 export function CaseSelectionScreen({
@@ -58,6 +59,7 @@ export function CaseSelectionScreen({
   onCreateProject,
   onRenameProject,
   onDeleteProject,
+  onSignOut,
 }: CaseSelectionScreenProps) {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false);
@@ -121,7 +123,18 @@ export function CaseSelectionScreen({
               <Bot className="h-6 w-6" style={{ color: '#982525' }} />
               <h1 className="text-xl font-bold" style={{ fontFamily: "'Courier New', 'Monaco', monospace", textTransform: 'uppercase' }}>МОИ ДЕЛА</h1>
             </div>
-            <ThemeToggle />
+            <div className="flex items-center gap-2">
+              <ThemeToggle />
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={onSignOut}
+                title="Выйти"
+              >
+                <LogOut className="h-5 w-5" />
+                <span className="sr-only">Выйти</span>
+              </Button>
+            </div>
           </div>
         </header>
 
