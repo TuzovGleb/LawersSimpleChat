@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from "uuid";
 import { CaseSelectionScreen } from "@/components/case-selection-screen";
 import { CaseWorkspace } from "@/components/case-workspace";
 import type { ChatMessage, Project, SessionDocument, SelectedModel } from "@/lib/types";
+import type { AnonymizationProgress, AnonymizationMapData } from "@/lib/anonymizer/types";
 import { useToast } from "@/hooks/use-toast";
 import { useExportMessage } from "@/hooks/use-export-message";
 import { useAuth } from "@/hooks/use-auth";
@@ -82,6 +83,29 @@ function isValidDocumentStrategy(value: unknown): value is SessionDocument["stra
   return value === "text" || value === "pdf" || value === "docx" || value === "vision" || value === "llm-file";
 }
 
+function mergeMapData(a: AnonymizationMapData, b: AnonymizationMapData): AnonymizationMapData {
+  const existingOriginals = new Set(a.entries.map((e) => e.original));
+  const merged = [...a.entries];
+  const counters = { ...a.counters };
+
+  for (const entry of b.entries) {
+    if (!existingOriginals.has(entry.original)) {
+      counters[entry.piiType] = (counters[entry.piiType] ?? 0) + 1;
+      merged.push(entry);
+    }
+  }
+
+  return { entries: merged, counters };
+}
+
+function deanonymizeText(text: string, mapData: AnonymizationMapData): string {
+  let result = text;
+  for (const entry of mapData.entries) {
+    result = result.split(entry.placeholder).join(entry.original);
+  }
+  return result;
+}
+
 export function ChatPageClient() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -122,6 +146,9 @@ export function ChatPageClient() {
   } | null>(null);
   const { toast } = useToast();
   const { exportMessage } = useExportMessage();
+  const [anonymousMode, setAnonymousMode] = useState(false);
+  const [anonymizationProgress, setAnonymizationProgress] = useState<AnonymizationProgress | null>(null);
+  const [anonymizationMaps, setAnonymizationMaps] = useState<Map<string, AnonymizationMapData>>(new Map());
 
   // Отслеживание видимости страницы для восстановления соединений
   useEffect(() => {
@@ -763,14 +790,57 @@ export function ChatPageClient() {
       const files = Array.from(fileList);
       for (const file of files) {
         try {
+          let fileToUpload: File = file;
+          let wasAnonymized = false;
+
+          const isImage = file.type.startsWith("image/") ||
+            /\.(png|jpe?g|gif|webp|bmp|heic)$/i.test(file.name);
+
+          if (anonymousMode && isImage) {
+            setAnonymizationProgress({ stage: 'loading', progress: 0, message: 'Начинаем анонимизацию...' });
+            try {
+              const { anonymizeDocument } = await import("@/lib/anonymizer/document-anonymizer");
+              const result = await anonymizeDocument(file, setAnonymizationProgress);
+
+              if (result.anonymousText.trim()) {
+                const anonBlob = new Blob([result.anonymousText], { type: "text/plain" });
+                const anonFileName = file.name.replace(/\.[^.]+$/, "_anon.txt");
+                fileToUpload = new File([anonBlob], anonFileName, { type: "text/plain" });
+
+                setAnonymizationMaps((prev) => {
+                  const next = new Map(prev);
+                  const existing = next.get(selectedProjectId);
+                  if (existing) {
+                    const merged = mergeMapData(existing, result.map);
+                    next.set(selectedProjectId, merged);
+                  } else {
+                    next.set(selectedProjectId, result.map);
+                  }
+                  return next;
+                });
+
+                wasAnonymized = true;
+              }
+            } catch (anonError) {
+              console.error("Ошибка анонимизации, загружаем без анонимизации:", anonError);
+              toast({
+                variant: "destructive",
+                title: "Ошибка анонимизации",
+                description: "Документ будет загружен без анонимизации.",
+              });
+            } finally {
+              setAnonymizationProgress(null);
+            }
+          }
+
           // Step 1: Get presigned URL
           const presignResponse = await fetchWithRetry("/api/upload/presign", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              filename: file.name,
-              mimeType: file.type || "application/octet-stream",
-              size: file.size,
+              filename: fileToUpload.name,
+              mimeType: fileToUpload.type || "application/octet-stream",
+              size: fileToUpload.size,
               projectId: selectedProjectId,
               userId: user.id,
             }),
@@ -790,8 +860,8 @@ export function ChatPageClient() {
           // Step 2: Upload file directly to S3
           const uploadResponse = await fetch(uploadUrl, {
             method: "PUT",
-            headers: { "Content-Type": file.type || "application/octet-stream" },
-            body: file,
+            headers: { "Content-Type": fileToUpload.type || "application/octet-stream" },
+            body: fileToUpload,
           });
 
           if (!uploadResponse.ok) {
@@ -804,9 +874,9 @@ export function ChatPageClient() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               objectKey,
-              filename: file.name,
-              mimeType: file.type || "application/octet-stream",
-              size: file.size,
+              filename: fileToUpload.name,
+              mimeType: fileToUpload.type || "application/octet-stream",
+              size: fileToUpload.size,
               userId: user.id,
             }),
           });
@@ -826,9 +896,13 @@ export function ChatPageClient() {
             throw new Error("Ответ сервера не содержит текст документа.");
           }
 
+          const statusText = wasAnonymized
+            ? `Документ «${file.name}» анонимизирован и добавлен в контекст проекта.`
+            : `Документ «${normalized.name}» добавлен в контекст этого проекта.`;
+
           const contextMessage: ChatMessage = {
             role: "assistant",
-            content: `Документ «${normalized.name}» добавлен в контекст этого проекта.`,
+            content: statusText,
           };
 
           setSessions((prev) =>
@@ -870,8 +944,10 @@ export function ChatPageClient() {
           });
 
           toast({
-            title: "Документ добавлен",
-            description: `Текст из «${normalized.name}» будет использоваться при ответах.`,
+            title: wasAnonymized ? "Документ анонимизирован" : "Документ добавлен",
+            description: wasAnonymized
+              ? `«${file.name}» анонимизирован. Персональные данные защищены.`
+              : `Текст из «${normalized.name}» будет использоваться при ответах.`,
           });
         } catch (error) {
           console.error("Ошибка при обработке документа:", error);
@@ -886,7 +962,7 @@ export function ChatPageClient() {
 
       setIsUploadingDocument(false);
     },
-    [activeSession, selectedProjectId, setSessions, setProjects, toast, user?.id],
+    [activeSession, anonymousMode, selectedProjectId, setSessions, setProjects, toast, user?.id],
   );
 
   const handleDocumentInputChange = useCallback(
@@ -1199,9 +1275,17 @@ export function ChatPageClient() {
                   ? Math.floor(data.metadata.responseTimeMs / 1000) 
                   : undefined;
                 
+                let messageContent: string = data.message;
+                const projectMapData = selectedProjectId
+                  ? anonymizationMaps.get(selectedProjectId)
+                  : undefined;
+                if (projectMapData && projectMapData.entries.length > 0) {
+                  messageContent = deanonymizeText(messageContent, projectMapData);
+                }
+
                 const assistantMessage: ChatMessage = {
                   role: "assistant",
-                  content: data.message,
+                  content: messageContent,
                   metadata: {
                     modelUsed: data.metadata?.modelUsed,
                     thinkingTimeSeconds,
@@ -1289,7 +1373,7 @@ export function ChatPageClient() {
       setIsLoading(false);
       setIsThinking(false);
     }
-  }, [activeSession, input, isLoading, isPageVisible, selectedProjectId, selectedModel, toast, user?.id, utmQuery]);
+  }, [activeSession, anonymizationMaps, input, isLoading, isPageVisible, selectedProjectId, selectedModel, toast, user?.id, utmQuery]);
 
   // Show loading while checking auth
   if (authLoading) {
@@ -1347,7 +1431,10 @@ export function ChatPageClient() {
         isDocumentsLoading={isDocumentsLoading}
         isLoadingChats={isLoadingChatsFromDB}
         selectedModel={selectedModel}
+        anonymousMode={anonymousMode}
+        anonymizationProgress={anonymizationProgress}
         onModelChange={setSelectedModel}
+        onAnonymousModeChange={setAnonymousMode}
         onBack={handleBackToSelection}
         onSelectSession={handleSelectSession}
         onNewChat={handleNewChat}

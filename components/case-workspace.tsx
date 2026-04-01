@@ -10,6 +10,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { ThinkingIndicator } from "@/components/thinking-indicator";
 import { cn } from "@/lib/utils";
 import type { ChatMessage, Project, SessionDocument, SelectedModel } from "@/lib/types";
+import type { AnonymizationProgress } from "@/lib/anonymizer/types";
 import { getModelDisplayName } from "@/lib/model-config";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -26,6 +27,8 @@ import {
   Paperclip,
   Plus,
   Send,
+  Shield,
+  ShieldOff,
   Sun,
   Trash2,
   Upload,
@@ -63,7 +66,10 @@ interface CaseWorkspaceProps {
   isDocumentsLoading: boolean;
   isLoadingChats: boolean;
   selectedModel: SelectedModel;
+  anonymousMode: boolean;
+  anonymizationProgress: AnonymizationProgress | null;
   onModelChange: (model: SelectedModel) => void;
+  onAnonymousModeChange: (enabled: boolean) => void;
   onBack: () => void;
   onSelectSession: (sessionId: string) => void;
   onNewChat: () => void;
@@ -86,7 +92,10 @@ export function CaseWorkspace({
   isDocumentsLoading,
   isLoadingChats,
   selectedModel,
+  anonymousMode,
+  anonymizationProgress,
   onModelChange,
+  onAnonymousModeChange,
   onBack,
   onSelectSession,
   onNewChat,
@@ -266,6 +275,23 @@ export function CaseWorkspace({
               </DropdownMenuContent>
             </DropdownMenu>
             <Button
+              variant={anonymousMode ? "default" : "ghost"}
+              size="icon"
+              onClick={() => onAnonymousModeChange(!anonymousMode)}
+              title={anonymousMode ? "Анонимный режим включён" : "Включить анонимный режим"}
+              style={{
+                color: anonymousMode ? '#ffffff' : textColor,
+                background: anonymousMode ? (isDarkMode ? '#166534' : '#16a34a') : 'transparent',
+              }}
+            >
+              {anonymousMode ? (
+                <Shield className="h-5 w-5" />
+              ) : (
+                <ShieldOff className="h-5 w-5" />
+              )}
+              <span className="sr-only">Анонимный режим</span>
+            </Button>
+            <Button
               variant="ghost"
               size="icon"
               onClick={() => setIsDarkMode(!isDarkMode)}
@@ -292,6 +318,35 @@ export function CaseWorkspace({
           </div>
         </div>
       </header>
+
+      {/* Anonymization Progress Banner */}
+      {anonymizationProgress && anonymizationProgress.stage !== 'done' && (
+        <div
+          className="border-b px-4 py-2"
+          style={{ background: isDarkMode ? '#1e3a2e' : '#f0fdf4', borderBottomColor: isDarkMode ? '#166534' : '#86efac' }}
+        >
+          <div className="mx-auto flex max-w-4xl items-center gap-3">
+            <Shield className="h-4 w-4 flex-shrink-0" style={{ color: isDarkMode ? '#86efac' : '#16a34a' }} />
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-medium truncate" style={{ color: isDarkMode ? '#bbf7d0' : '#166534' }}>
+                {anonymizationProgress.message}
+              </p>
+              <div className="mt-1 h-1.5 w-full rounded-full overflow-hidden" style={{ background: isDarkMode ? '#14532d' : '#dcfce7' }}>
+                <div
+                  className="h-full rounded-full transition-all duration-300"
+                  style={{
+                    width: `${Math.round(anonymizationProgress.progress * 100)}%`,
+                    background: isDarkMode ? '#4ade80' : '#16a34a',
+                  }}
+                />
+              </div>
+            </div>
+            <span className="text-xs font-mono flex-shrink-0" style={{ color: isDarkMode ? '#86efac' : '#16a34a' }}>
+              {Math.round(anonymizationProgress.progress * 100)}%
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Main Content - Two Columns */}
       <div className="flex flex-1 overflow-hidden">
