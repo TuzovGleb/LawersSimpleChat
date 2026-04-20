@@ -1,6 +1,7 @@
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+  attachedDocumentIds?: string[];
   metadata?: {
     modelUsed?: string;
     thinkingTimeSeconds?: number;

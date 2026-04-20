@@ -33,8 +33,11 @@ import {
 } from "lucide-react";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
@@ -68,7 +71,7 @@ interface CaseWorkspaceProps {
   onSelectSession: (sessionId: string) => void;
   onNewChat: () => void;
   onInputChange: (value: string) => void;
-  onSendMessage: () => void;
+  onSendMessage: (attachedDocumentIds: string[]) => void;
   onAttachDocument: (files: FileList | null) => void;
   onRemoveDocument: (documentId: string) => void;
   onExportMessage?: (messageIndex: number) => void;
@@ -101,6 +104,7 @@ export function CaseWorkspace({
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [sidebarView, setSidebarView] = useState<'chats' | 'documents'>('chats');
   const [isDarkMode, setIsDarkMode] = useState(false);
+  const [pendingAttachmentIds, setPendingAttachmentIds] = useState<string[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -118,27 +122,61 @@ export function CaseWorkspace({
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [activeSession?.messages]);
 
+  useEffect(() => {
+    setPendingAttachmentIds([]);
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    if (pendingAttachmentIds.length === 0) return;
+    const availableIds = new Set(project.documents.map((doc) => doc.id));
+    setPendingAttachmentIds((prev) => prev.filter((id) => availableIds.has(id)));
+  }, [project.documents, pendingAttachmentIds.length]);
+
+  const submitMessage = useCallback(() => {
+    const idsToSend = [...pendingAttachmentIds];
+    onSendMessage(idsToSend);
+    setPendingAttachmentIds([]);
+  }, [onSendMessage, pendingAttachmentIds]);
+
   const handleSubmit = useCallback(
     (event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault();
-      onSendMessage();
+      submitMessage();
     },
-    [onSendMessage],
+    [submitMessage],
   );
 
   const handleInputKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
-        onSendMessage();
+        submitMessage();
       }
     },
-    [onSendMessage],
+    [submitMessage],
   );
 
   const handleAttachButtonClick = useCallback(() => {
     fileInputRef.current?.click();
   }, []);
+
+  const toggleAttachment = useCallback((documentId: string) => {
+    setPendingAttachmentIds((prev) =>
+      prev.includes(documentId) ? prev.filter((id) => id !== documentId) : [...prev, documentId],
+    );
+  }, []);
+
+  const removePendingAttachment = useCallback((documentId: string) => {
+    setPendingAttachmentIds((prev) => prev.filter((id) => id !== documentId));
+  }, []);
+
+  const pendingAttachments = useMemo(
+    () =>
+      pendingAttachmentIds
+        .map((id) => project.documents.find((doc) => doc.id === id))
+        .filter((doc): doc is SessionDocument => Boolean(doc)),
+    [pendingAttachmentIds, project.documents],
+  );
 
   const handleFileInputChange = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -563,6 +601,25 @@ export function CaseWorkspace({
                           <p className="mobile-safe-text whitespace-pre-wrap text-sm font-normal leading-relaxed text-foreground/90" style={{ wordBreak: 'normal', overflowWrap: 'break-word', color: textColor }}>
                             {message.content}
                           </p>
+                          {Array.isArray(message.attachedDocumentIds) && message.attachedDocumentIds.length > 0 && (
+                            <div className="mt-2 flex flex-wrap justify-end gap-1.5">
+                              {message.attachedDocumentIds.map((docId) => {
+                                const doc = project.documents.find((d) => d.id === docId);
+                                const label = doc?.name ?? "Документ удалён";
+                                return (
+                                  <span
+                                    key={docId}
+                                    className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px]"
+                                    style={{ border: `1px solid ${borderColor}`, background: isDarkMode ? '#253141' : '#fafaf5', color: textColor }}
+                                    title={label}
+                                  >
+                                    <FileText className="h-3 w-3 shrink-0" style={{ color: isDarkMode ? textColor : '#982525' }} />
+                                    <span className="truncate max-w-[200px]">{label}</span>
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
                         </div>
                       </div>
                     ) : (
@@ -690,36 +747,97 @@ export function CaseWorkspace({
                 disabled={isLoading || isLoadingChats}
                 style={{ border: `1px solid ${borderColor}`, background: isDarkMode ? '#253141' : '#fafaf5', color: textColor }}
               />
+
+              {pendingAttachments.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {pendingAttachments.map((doc) => (
+                    <span
+                      key={doc.id}
+                      className="inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs"
+                      style={{ border: `1px solid ${borderColor}`, background: isDarkMode ? '#253141' : '#fafaf5', color: textColor }}
+                    >
+                      <FileText className="h-3 w-3 shrink-0" style={{ color: isDarkMode ? textColor : '#982525' }} />
+                      <span className="truncate max-w-[220px]" title={doc.name}>{doc.name}</span>
+                      <button
+                        type="button"
+                        className="-mr-1 rounded-full p-0.5 hover:opacity-70"
+                        onClick={() => removePendingAttachment(doc.id)}
+                        aria-label={`Убрать ${doc.name}`}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+
               <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleAttachButtonClick}
+                    disabled={isUploadingDocument}
+                    className="gap-2"
+                    style={{ border: `1px solid ${borderColor}`, background: isDarkMode ? '#253141' : '#fafaf5', color: textColor }}
+                  >
+                    {isUploadingDocument ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Upload className="h-4 w-4" style={{ color: isDarkMode ? textColor : '#982525' }} />
+                    )}
+                    {isUploadingDocument ? "Обработка…" : "Загрузить файл"}
+                  </Button>
+
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={isUploadingDocument || project.documents.length === 0}
+                        className="gap-2"
+                        style={{ border: `1px solid ${borderColor}`, background: isDarkMode ? '#253141' : '#fafaf5', color: textColor }}
+                      >
+                        <Paperclip className="h-4 w-4" style={{ color: isDarkMode ? textColor : '#982525' }} />
+                        {pendingAttachmentIds.length > 0
+                          ? `К сообщению: ${pendingAttachmentIds.length}`
+                          : "К сообщению"}
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start" className="w-72">
+                      <DropdownMenuLabel>Прикрепить к сообщению</DropdownMenuLabel>
+                      <DropdownMenuSeparator />
+                      {project.documents.length === 0 ? (
+                        <DropdownMenuItem disabled>Нет загруженных документов</DropdownMenuItem>
+                      ) : (
+                        project.documents.map((doc) => (
+                          <DropdownMenuCheckboxItem
+                            key={doc.id}
+                            checked={pendingAttachmentIds.includes(doc.id)}
+                            onCheckedChange={() => toggleAttachment(doc.id)}
+                            onSelect={(event) => event.preventDefault()}
+                          >
+                            <span className="truncate" title={doc.name}>{doc.name}</span>
+                          </DropdownMenuCheckboxItem>
+                        ))
+                      )}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
                 <Button
-                  type="button"
+                  type="submit"
+                  disabled={isLoading || isUploadingDocument || isLoadingChats || !input.trim()}
                   variant="outline"
-                  onClick={handleAttachButtonClick}
-                  disabled={isUploadingDocument}
                   className="gap-2"
                   style={{ border: `1px solid ${borderColor}`, background: isDarkMode ? '#253141' : '#fafaf5', color: textColor }}
                 >
-                  {isUploadingDocument ? (
+                  {isLoading || isLoadingChats ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                   ) : (
-                    <Paperclip className="h-4 w-4" style={{ color: isDarkMode ? textColor : '#982525' }} />
+                    <Send className="h-4 w-4" style={{ color: isDarkMode ? textColor : '#982525' }} />
                   )}
-                  {isUploadingDocument ? "Обработка…" : "Прикрепить"}
+                  {isLoadingChats ? "Загрузка..." : "Отправить"}
                 </Button>
-              <Button 
-                type="submit" 
-                disabled={isLoading || isUploadingDocument || isLoadingChats || !input.trim()} 
-                variant="outline"
-                className="gap-2"
-                style={{ border: `1px solid ${borderColor}`, background: isDarkMode ? '#253141' : '#fafaf5', color: textColor }}
-              >
-                {isLoading || isLoadingChats ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Send className="h-4 w-4" style={{ color: isDarkMode ? textColor : '#982525' }} />
-                )}
-                {isLoadingChats ? "Загрузка..." : "Отправить"}
-              </Button>
               </div>
             </form>
           </div>

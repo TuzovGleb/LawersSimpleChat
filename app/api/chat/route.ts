@@ -4,7 +4,6 @@ import { v4 as uuidv4 } from 'uuid';
 import { createClient } from '@/lib/supabase/server';
 import { getUKLawyerPrompt } from '@/lib/prompts';
 import type { ChatMessage, ChatRequestDocument, UTMData, AIResponseMetadata, SelectedModel } from '@/lib/types';
-import { projectDocumentToSessionDocument } from '@/lib/projects';
 import { generateAIResponse } from '@/lib/ai-service';
 
 // Ленивая инициализация OpenAI - только при наличии API ключа
@@ -32,14 +31,12 @@ export async function POST(req: NextRequest) {
       messages,
       sessionId,
       userId,
-      documents,
       projectId,
       selectedModel,
     }: {
       messages: ChatMessage[];
       sessionId?: string;
       userId?: string;
-      documents?: ChatRequestDocument[];
       projectId?: string;
       selectedModel?: SelectedModel;
     } = await req.json();
@@ -76,12 +73,11 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const sharedDocuments =
-      resolvedProjectId != null
-        ? await loadProjectDocumentsForContext(supabase, resolvedProjectId)
-        : [];
-
-    const combinedDocuments = mergeDocumentsForContext(sharedDocuments, documents);
+    const attachedDocuments = await loadAttachedDocumentsForMessages(
+      supabase,
+      resolvedProjectId,
+      messages,
+    );
 
     // Format messages for OpenAI
     // Используем тип из OpenAI, но не создаем экземпляр клиента до проверки
@@ -94,7 +90,7 @@ export async function POST(req: NextRequest) {
       }))
     ];
 
-    const documentContext = buildDocumentContext(combinedDocuments);
+    const documentContext = buildDocumentContext(attachedDocuments);
     if (documentContext) {
       formattedMessages.splice(1, 0, {
         role: "system",
@@ -337,57 +333,51 @@ function buildDocumentContext(documents?: ChatRequestDocument[]) {
   return `Пользователь загрузил вспомогательные документы. При ответах опирайся на их содержание, но перепроверяй факты. Если данные противоречат законодательству, объясни это. Документы:\n\n${prepared.join('\n\n---\n\n')}`;
 }
 
-async function loadProjectDocumentsForContext(
+async function loadAttachedDocumentsForMessages(
   supabase: Awaited<ReturnType<typeof createClient>>,
-  projectId: string,
-) {
+  projectId: string | undefined,
+  messages: ChatMessage[],
+): Promise<ChatRequestDocument[]> {
+  if (!projectId) {
+    return [];
+  }
+
+  const uniqueIds = new Set<string>();
+  for (const message of messages) {
+    if (!Array.isArray(message.attachedDocumentIds)) continue;
+    for (const id of message.attachedDocumentIds) {
+      if (typeof id === 'string' && id.trim()) {
+        uniqueIds.add(id);
+      }
+    }
+  }
+
+  if (uniqueIds.size === 0) {
+    return [];
+  }
+
   try {
     const { data, error } = await supabase
       .from('project_documents')
-      .select('*')
+      .select('id, name, text')
       .eq('project_id', projectId)
-      .order('uploaded_at', { ascending: false })
+      .in('id', Array.from(uniqueIds))
       .limit(MAX_CONTEXT_DOCUMENTS);
 
     if (error) {
-      console.error('Failed to load project documents for context:', error);
+      console.error('Failed to load attached documents for context:', error);
       return [];
     }
 
-    return (data ?? []).map(projectDocumentToSessionDocument);
-  } catch (error) {
-    console.error('Unexpected error while loading project documents:', error);
-    return [];
-  }
-}
-
-function mergeDocumentsForContext(
-  sharedDocuments: ReturnType<typeof projectDocumentToSessionDocument>[],
-  requestDocuments?: ChatRequestDocument[],
-): ChatRequestDocument[] {
-  const merged = new Map<string, ChatRequestDocument>();
-
-  sharedDocuments.forEach((doc: any) => {
-    if (doc.text?.trim()) {
-      merged.set(doc.id, {
+    return (data ?? [])
+      .filter((doc: any) => typeof doc?.text === 'string' && doc.text.trim())
+      .map((doc: any) => ({
         id: doc.id,
         name: doc.name,
         text: doc.text,
-      });
-    }
-  });
-
-  if (Array.isArray(requestDocuments)) {
-    requestDocuments.forEach((doc: any) => {
-      if (doc?.id && doc.text?.trim()) {
-        merged.set(doc.id, {
-          id: doc.id,
-          name: doc.name,
-          text: doc.text,
-        });
-      }
-    });
+      }));
+  } catch (error) {
+    console.error('Unexpected error while loading attached documents:', error);
+    return [];
   }
-
-  return Array.from(merged.values()).slice(0, MAX_CONTEXT_DOCUMENTS);
 }

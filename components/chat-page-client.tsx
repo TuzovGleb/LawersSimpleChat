@@ -115,7 +115,6 @@ export function ChatPageClient() {
   const [pendingRequest, setPendingRequest] = useState<{
     sessionLocalId: string;
     messagesForRequest: ChatMessage[];
-    documentsForRequest: Array<{ id: string; name: string; text: string }>;
     backendSessionId?: string;
     isFirstUserMessage: boolean;
     trimmedMessage: string;
@@ -1026,7 +1025,7 @@ export function ChatPageClient() {
     [activeSession, activeProject, exportMessage, toast]
   );
 
-  const handleSendMessage = useCallback(async () => {
+  const handleSendMessage = useCallback(async (attachedDocumentIds: string[] = []) => {
     if (!activeSession || isLoading) return;
     if (!selectedProjectId) {
       toast({
@@ -1051,16 +1050,16 @@ export function ChatPageClient() {
     const backendSessionId = activeSession.backendSessionId;
     const hasUserMessages = activeSession.messages.some((message) => message.role === "user");
     const isFirstUserMessage = !hasUserMessages;
+    const availableDocumentIds = new Set(activeSession.documents.map((doc) => doc.id));
+    const sanitizedAttachmentIds = Array.from(
+      new Set((attachedDocumentIds ?? []).filter((id) => availableDocumentIds.has(id))),
+    );
     const userMessage: ChatMessage = {
       role: "user",
       content: trimmedMessage,
+      ...(sanitizedAttachmentIds.length > 0 ? { attachedDocumentIds: sanitizedAttachmentIds } : {}),
     };
     const messagesForRequest = [...activeSession.messages, userMessage];
-    const documentsForRequest = activeSession.documents.map((document) => ({
-      id: document.id,
-      name: document.name,
-      text: document.text,
-    }));
 
     setInput("");
     setIsLoading(true);
@@ -1072,7 +1071,6 @@ export function ChatPageClient() {
     setPendingRequest({
       sessionLocalId,
       messagesForRequest,
-      documentsForRequest,
       backendSessionId,
       isFirstUserMessage,
       trimmedMessage,
@@ -1118,7 +1116,6 @@ export function ChatPageClient() {
         body: JSON.stringify({
           messages: messagesForRequest,
           sessionId: backendSessionId,
-          documents: documentsForRequest,
           projectId: selectedProjectId,
           userId: user.id,
           selectedModel, // Передаем выбранную модель для OpenRouter
