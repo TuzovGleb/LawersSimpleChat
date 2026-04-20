@@ -127,9 +127,15 @@ async function extractDocx(buffer: Buffer): Promise<string> {
   }
 }
 
-async function extractDoc(_buffer: Buffer) {
-  // .doc (бинарный MS Word) — mammoth не поддерживает, оставляем fallback через API
-  return '';
+async function extractDoc(buffer: Buffer): Promise<string> {
+  try {
+    const WordExtractor = (await import('word-extractor')).default;
+    const extractor = new WordExtractor();
+    const doc = await extractor.extract(buffer);
+    return (doc.getBody() ?? '').trim();
+  } catch {
+    return '';
+  }
 }
 
 async function extractPdf(buffer: Buffer): Promise<string> {
