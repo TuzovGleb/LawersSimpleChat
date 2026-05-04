@@ -1,11 +1,20 @@
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+  attachedDocumentIds?: string[];
+  attachedDocuments?: ChatMessageDocument[];
   metadata?: {
     modelUsed?: string;
     thinkingTimeSeconds?: number;
     wasReasoning?: boolean;
   };
+}
+
+export interface ChatMessageDocument {
+  id: string;
+  name: string;
+  mimeType?: string;
+  size?: number;
 }
 
 export interface SessionDocument {
@@ -16,7 +25,7 @@ export interface SessionDocument {
   text: string;
   truncated: boolean;
   rawTextLength: number;
-  strategy: 'text' | 'pdf' | 'docx' | 'vision' | 'llm-file';
+  strategy: 'text' | 'pdf' | 'docx' | 'doc' | 'vision' | 'llm-file';
   uploadedAt: string;
 }
 
@@ -138,6 +147,7 @@ export interface Database {
           session_id: string;
           role: string;
           content: string;
+          attached_document_ids: string[];
           created_at: string;
         };
         Insert: {
@@ -145,6 +155,7 @@ export interface Database {
           session_id: string;
           role: string;
           content: string;
+          attached_document_ids?: string[];
           created_at?: string;
         };
         Update: {
@@ -152,6 +163,7 @@ export interface Database {
           session_id?: string;
           role?: string;
           content?: string;
+          attached_document_ids?: string[];
           created_at?: string;
         };
       };

@@ -5,7 +5,7 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { v4 as uuidv4 } from "uuid";
 import { CaseSelectionScreen } from "@/components/case-selection-screen";
 import { CaseWorkspace } from "@/components/case-workspace";
-import type { ChatMessage, Project, SessionDocument, SelectedModel } from "@/lib/types";
+import type { ChatMessage, ChatMessageDocument, Project, SessionDocument, SelectedModel } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
 import { useExportMessage } from "@/hooks/use-export-message";
 import { useAuth } from "@/hooks/use-auth";
@@ -79,7 +79,16 @@ function normalizeDocument(raw: unknown): SessionDocument | null {
 }
 
 function isValidDocumentStrategy(value: unknown): value is SessionDocument["strategy"] {
-  return value === "text" || value === "pdf" || value === "docx" || value === "vision" || value === "llm-file";
+  return value === "text" || value === "pdf" || value === "docx" || value === "doc" || value === "vision" || value === "llm-file";
+}
+
+function toMessageDocument(document: SessionDocument): ChatMessageDocument {
+  return {
+    id: document.id,
+    name: document.name,
+    mimeType: document.mimeType,
+    size: document.size,
+  };
 }
 
 export function ChatPageClient() {
@@ -101,7 +110,6 @@ export function ChatPageClient() {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [isInWorkspace, setIsInWorkspace] = useState<boolean>(false);
   const [isProjectsLoading, setIsProjectsLoading] = useState<boolean>(true);
-  const [isDocumentsLoading, setIsDocumentsLoading] = useState<boolean>(false);
   const [sessions, setSessions] = useState<LocalChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [input, setInput] = useState("");
@@ -109,13 +117,13 @@ export function ChatPageClient() {
   const [isThinking, setIsThinking] = useState(false); // Для reasoning модели
   const [hasInitialized, setHasInitialized] = useState(false);
   const [isUploadingDocument, setIsUploadingDocument] = useState(false);
+  const [pendingMessageDocuments, setPendingMessageDocuments] = useState<SessionDocument[]>([]);
   const [isLoadingChatsFromDB, setIsLoadingChatsFromDB] = useState(false);
   const [selectedModel, setSelectedModel] = useState<SelectedModel>('openai'); // Выбранная модель (по умолчанию openai)
   const [isPageVisible, setIsPageVisible] = useState(true);
   const [pendingRequest, setPendingRequest] = useState<{
     sessionLocalId: string;
     messagesForRequest: ChatMessage[];
-    documentsForRequest: Array<{ id: string; name: string; text: string }>;
     backendSessionId?: string;
     isFirstUserMessage: boolean;
     trimmedMessage: string;
@@ -349,6 +357,16 @@ export function ChatPageClient() {
                 ? messagesData.messages.map((msg: any) => ({
                     role: msg.role,
                     content: msg.content,
+                    attachedDocumentIds: Array.isArray(msg.attachedDocumentIds)
+                      ? msg.attachedDocumentIds
+                      : Array.isArray(msg.attached_document_ids)
+                        ? msg.attached_document_ids
+                        : undefined,
+                    attachedDocuments: Array.isArray(msg.attachedDocuments)
+                      ? msg.attachedDocuments
+                      : Array.isArray(msg.attached_documents)
+                        ? msg.attached_documents
+                        : undefined,
                   }))
                 : [];
 
@@ -461,74 +479,9 @@ export function ChatPageClient() {
     }
   }, [activeSessionId, selectedProjectId, sessions]);
 
-  useEffect(() => {
-    if (!selectedProjectId) return;
-    let isCancelled = false;
-
-    setProjects((prev) =>
-      prev.map((project) => {
-        if (project.id !== selectedProjectId) {
-          return project;
-        }
-        return {
-          ...project,
-          documents: [],
-        };
-      }),
-    );
-
-    const loadDocuments = async () => {
-      setIsDocumentsLoading(true);
-      try {
-        const response = await fetchWithRetry(`/api/projects/${selectedProjectId}/documents`);
-        if (response.ok) {
-          const data = await response.json();
-          const docs: SessionDocument[] = Array.isArray(data?.documents)
-            ? (data.documents
-                .map((doc: any) => normalizeDocument(doc))
-                .filter((doc: any): doc is SessionDocument => Boolean(doc)) as SessionDocument[])
-                .sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime())
-            : [];
-
-          if (!isCancelled) {
-            setProjects((prev) =>
-              prev.map((project) => {
-                if (project.id !== selectedProjectId) {
-                  return project;
-                }
-                return {
-                  ...project,
-                  documents: docs,
-                };
-              }),
-            );
-          }
-        } else {
-          console.error("Не удалось получить документы проекта:", await response.text());
-        }
-      } catch (error) {
-        console.error("Ошибка при загрузке документов проекта:", error);
-      } finally {
-        if (!isCancelled) {
-          setIsDocumentsLoading(false);
-        }
-      }
-    };
-
-    void loadDocuments();
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [selectedProjectId]);
-
   const activeProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
     [projects, selectedProjectId],
-  );
-  const projectDocuments = useMemo(
-    () => activeProject?.documents ?? [],
-    [activeProject],
   );
   const sessionsForActiveProject = useMemo(
     () =>
@@ -554,11 +507,13 @@ export function ChatPageClient() {
     setSessions((prev) => [newSession, ...prev]);
     setActiveSessionId(newSession.id);
     setInput("");
+    setPendingMessageDocuments([]);
   }, [selectedProjectId]);
 
   const handleSelectSession = useCallback((sessionId: string) => {
     setActiveSessionId(sessionId);
     setInput("");
+    setPendingMessageDocuments([]);
   }, []);
 
   const handleSelectProject = useCallback(
@@ -572,6 +527,7 @@ export function ChatPageClient() {
   const handleBackToSelection = useCallback(() => {
     setIsInWorkspace(false);
     setSelectedProjectId(null);
+    setPendingMessageDocuments([]);
   }, []);
 
   const handleCreateProject = useCallback(async (name: string) => {
@@ -622,7 +578,7 @@ export function ChatPageClient() {
         setIsInWorkspace(true);
         toast({
           title: "Проект создан",
-          description: `Папка «${project.name}» готова. Добавляйте документы и создавайте чаты.`,
+          description: `Папка «${project.name}» готова. Создавайте чаты и прикрепляйте документы к сообщениям.`,
         });
       }
     } catch (error) {
@@ -745,7 +701,7 @@ export function ChatPageClient() {
 
   const processDocumentFiles = useCallback(
     async (fileList: FileList | null) => {
-      if (!selectedProjectId || !activeSession || !fileList || fileList.length === 0) {
+      if (!selectedProjectId || !fileList || fileList.length === 0) {
         return;
       }
       if (!user?.id) {
@@ -757,7 +713,6 @@ export function ChatPageClient() {
         return;
       }
 
-      const sessionLocalId = activeSession.id;
       setIsUploadingDocument(true);
 
       const files = Array.from(fileList);
@@ -826,22 +781,10 @@ export function ChatPageClient() {
             throw new Error("Ответ сервера не содержит текст документа.");
           }
 
-          const contextMessage: ChatMessage = {
-            role: "assistant",
-            content: `Документ «${normalized.name}» добавлен в контекст этого проекта.`,
-          };
-
-          setSessions((prev) =>
-            prev.map((session) => {
-              if (session.id !== sessionLocalId) {
-                return session;
-              }
-              return {
-                ...session,
-                messages: [...session.messages, contextMessage],
-              };
-            }),
-          );
+          setPendingMessageDocuments((prev) => {
+            const withoutDuplicate = prev.filter((document) => document.id !== normalized.id);
+            return [...withoutDuplicate, normalized];
+          });
 
           setProjects((prev) => {
             const next = prev.map((project) => {
@@ -870,8 +813,8 @@ export function ChatPageClient() {
           });
 
           toast({
-            title: "Документ добавлен",
-            description: `Текст из «${normalized.name}» будет использоваться при ответах.`,
+            title: "Документ прикреплён",
+            description: `«${normalized.name}» будет отправлен вместе со следующим сообщением.`,
           });
         } catch (error) {
           console.error("Ошибка при обработке документа:", error);
@@ -886,108 +829,12 @@ export function ChatPageClient() {
 
       setIsUploadingDocument(false);
     },
-    [activeSession, selectedProjectId, setSessions, setProjects, toast, user?.id],
+    [selectedProjectId, setProjects, toast, user?.id],
   );
 
-  const handleDocumentInputChange = useCallback(
-    async (event: React.ChangeEvent<HTMLInputElement>) => {
-      await processDocumentFiles(event.target.files);
-      if (event.target) {
-        event.target.value = "";
-      }
-    },
-    [processDocumentFiles],
-  );
-
-  const handleRemoveDocument = useCallback(
-    async (documentId: string) => {
-      if (!selectedProjectId) {
-        return;
-      }
-      if (!user?.id) {
-        toast({
-          variant: "destructive",
-          title: "Не удалось определить пользователя",
-          description: "Обновите страницу и попробуйте снова.",
-        });
-        return;
-      }
-
-      const removedDocument = projectDocuments.find((doc) => doc.id === documentId);
-
-      setProjects((prev) => {
-        const next = prev.map((project) => {
-          if (project.id !== selectedProjectId) {
-            return project;
-          }
-          return {
-            ...project,
-            documents: project.documents.filter((document) => document.id !== documentId),
-            updated_at: new Date().toISOString(),
-          };
-        });
-
-        return next.sort(
-          (a, b) =>
-            new Date(b.updated_at ?? b.created_at).getTime() - new Date(a.updated_at ?? a.created_at).getTime(),
-        );
-      });
-
-      try {
-        const response = await fetchWithRetry(`/api/projects/${selectedProjectId}/documents/${documentId}`, {
-          method: "DELETE",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userId: user.id }),
-        });
-
-        if (!response.ok) {
-          const payload = await response.json().catch(() => ({}));
-          const message =
-            typeof payload?.error === "string" && payload.error.trim()
-              ? payload.error
-              : "Не удалось удалить документ. Попробуйте снова.";
-          throw new Error(message);
-        }
-
-        toast({
-          title: "Документ удалён",
-          description: "Этот документ больше не будет использоваться в ответах.",
-        });
-      } catch (error) {
-        console.error("Ошибка при удалении документа:", error);
-        if (removedDocument) {
-          setProjects((prev) => {
-            const next = prev.map((project) => {
-              if (project.id !== selectedProjectId) {
-                return project;
-              }
-              const restored = [...project.documents, removedDocument].sort(
-                (a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime(),
-              );
-              return {
-                ...project,
-                documents: restored,
-                updated_at: new Date().toISOString(),
-              };
-            });
-
-            return next.sort(
-              (a, b) =>
-                new Date(b.updated_at ?? b.created_at).getTime() -
-                new Date(a.updated_at ?? a.created_at).getTime(),
-            );
-          });
-        }
-        toast({
-          variant: "destructive",
-          title: "Не удалось удалить документ",
-          description:
-            error instanceof Error ? error.message : "Попробуйте другой файл или повторите попытку позже.",
-        });
-      }
-    },
-    [projectDocuments, selectedProjectId, setProjects, toast, user?.id],
-  );
+  const handleRemovePendingDocument = useCallback((documentId: string) => {
+    setPendingMessageDocuments((prev) => prev.filter((document) => document.id !== documentId));
+  }, []);
 
   const handleExportMessage = useCallback(
     async (messageIndex: number) => {
@@ -1045,24 +892,25 @@ export function ChatPageClient() {
       return;
     }
     const trimmedMessage = input.trim();
-    if (!trimmedMessage) return;
+    if (!trimmedMessage && pendingMessageDocuments.length === 0) return;
 
     const sessionLocalId = activeSession.id;
     const backendSessionId = activeSession.backendSessionId;
     const hasUserMessages = activeSession.messages.some((message) => message.role === "user");
     const isFirstUserMessage = !hasUserMessages;
+    const attachedDocuments = pendingMessageDocuments.map(toMessageDocument);
+    const attachedDocumentIds = attachedDocuments.map((document) => document.id);
     const userMessage: ChatMessage = {
       role: "user",
-      content: trimmedMessage,
+      content: trimmedMessage || "Проанализируй прикрепленные документы.",
+      ...(attachedDocumentIds.length > 0
+        ? { attachedDocumentIds, attachedDocuments }
+        : {}),
     };
     const messagesForRequest = [...activeSession.messages, userMessage];
-    const documentsForRequest = activeSession.documents.map((document) => ({
-      id: document.id,
-      name: document.name,
-      text: document.text,
-    }));
 
     setInput("");
+    setPendingMessageDocuments([]);
     setIsLoading(true);
     
     // Reasoning модель включена на постоянку - всегда показываем thinking indicator
@@ -1072,10 +920,9 @@ export function ChatPageClient() {
     setPendingRequest({
       sessionLocalId,
       messagesForRequest,
-      documentsForRequest,
       backendSessionId,
       isFirstUserMessage,
-      trimmedMessage,
+      trimmedMessage: userMessage.content,
     });
 
     setSessions((prev) =>
@@ -1084,7 +931,7 @@ export function ChatPageClient() {
         return {
           ...session,
           messages: messagesForRequest,
-          title: isFirstUserMessage ? generateTitle(trimmedMessage) : session.title,
+          title: isFirstUserMessage ? generateTitle(userMessage.content) : session.title,
         };
       }),
     );
@@ -1118,7 +965,6 @@ export function ChatPageClient() {
         body: JSON.stringify({
           messages: messagesForRequest,
           sessionId: backendSessionId,
-          documents: documentsForRequest,
           projectId: selectedProjectId,
           userId: user.id,
           selectedModel, // Передаем выбранную модель для OpenRouter
@@ -1289,7 +1135,7 @@ export function ChatPageClient() {
       setIsLoading(false);
       setIsThinking(false);
     }
-  }, [activeSession, input, isLoading, isPageVisible, selectedProjectId, selectedModel, toast, user?.id, utmQuery]);
+  }, [activeSession, input, isLoading, isPageVisible, pendingMessageDocuments, selectedProjectId, selectedModel, toast, user?.id, utmQuery]);
 
   // Show loading while checking auth
   if (authLoading) {
@@ -1344,8 +1190,8 @@ export function ChatPageClient() {
         isLoading={isLoading}
         isThinking={isThinking}
         isUploadingDocument={isUploadingDocument}
-        isDocumentsLoading={isDocumentsLoading}
         isLoadingChats={isLoadingChatsFromDB}
+        pendingDocuments={pendingMessageDocuments}
         selectedModel={selectedModel}
         onModelChange={setSelectedModel}
         onBack={handleBackToSelection}
@@ -1354,7 +1200,7 @@ export function ChatPageClient() {
         onInputChange={setInput}
         onSendMessage={handleSendMessage}
         onAttachDocument={processDocumentFiles}
-        onRemoveDocument={handleRemoveDocument}
+        onRemovePendingDocument={handleRemovePendingDocument}
         onExportMessage={handleExportMessage}
         onSignOut={signOut}
       />

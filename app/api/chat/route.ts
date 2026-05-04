@@ -4,7 +4,6 @@ import { v4 as uuidv4 } from 'uuid';
 import { createClient } from '@/lib/supabase/server';
 import { getUKLawyerPrompt } from '@/lib/prompts';
 import type { ChatMessage, ChatRequestDocument, UTMData, AIResponseMetadata, SelectedModel } from '@/lib/types';
-import { projectDocumentToSessionDocument } from '@/lib/projects';
 import { generateAIResponse } from '@/lib/ai-service';
 
 // Ленивая инициализация OpenAI - только при наличии API ключа
@@ -32,14 +31,12 @@ export async function POST(req: NextRequest) {
       messages,
       sessionId,
       userId,
-      documents,
       projectId,
       selectedModel,
     }: {
       messages: ChatMessage[];
       sessionId?: string;
       userId?: string;
-      documents?: ChatRequestDocument[];
       projectId?: string;
       selectedModel?: SelectedModel;
     } = await req.json();
@@ -76,12 +73,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const sharedDocuments =
-      resolvedProjectId != null
-        ? await loadProjectDocumentsForContext(supabase, resolvedProjectId)
-        : [];
-
-    const combinedDocuments = mergeDocumentsForContext(sharedDocuments, documents);
+    const documentsById = await loadAttachedDocumentsById(supabase, resolvedProjectId, messages);
 
     // Format messages for OpenAI
     // Используем тип из OpenAI, но не создаем экземпляр клиента до проверки
@@ -90,19 +82,16 @@ export async function POST(req: NextRequest) {
       { role: "system", content: lawyerPrompt },
       ...messages.map(msg => ({
         role: msg.role as "user" | "assistant",
-        content: msg.content
+        content: formatMessageContentWithAttachments(msg, documentsById),
       }))
     ];
 
-    const documentContext = buildDocumentContext(combinedDocuments);
-    if (documentContext) {
-      formattedMessages.splice(1, 0, {
-        role: "system",
-        content: documentContext,
-      });
-    }
-
-    console.log('Sending request to AI service with messages:', formattedMessages)
+    console.log('Sending request to AI service:', {
+      messages: formattedMessages.map((message) => ({
+        role: message.role,
+        contentLength: typeof message.content === 'string' ? message.content.length : 0,
+      })),
+    });
 
     // Получаем последнее сообщение пользователя для анализа
     const lastUserMessage = messages[messages.length - 1]?.content || '';
@@ -226,12 +215,14 @@ export async function POST(req: NextRequest) {
                   session_id: currentSessionId,
                   role: 'user',
                   content: messages[messages.length - 1].content,
+                  attached_document_ids: getAttachedDocumentIds(messages[messages.length - 1]),
                   created_at: new Date().toISOString(),
                 },
                 {
                   session_id: currentSessionId,
                   role: 'assistant',
                   content: assistantMessage,
+                  attached_document_ids: [],
                   created_at: new Date().toISOString(),
                 },
               ];
@@ -311,83 +302,82 @@ export async function POST(req: NextRequest) {
 const MAX_CONTEXT_DOCUMENTS = 20;
 const MAX_CHARACTERS_PER_DOCUMENT = 50000;
 
-function buildDocumentContext(documents?: ChatRequestDocument[]) {
-  if (!Array.isArray(documents) || documents.length === 0) {
-    return null;
+function getAttachedDocumentIds(message: ChatMessage | undefined) {
+  if (!message || !Array.isArray(message.attachedDocumentIds)) {
+    return [];
   }
 
-  const prepared = documents
-    .slice(0, MAX_CONTEXT_DOCUMENTS)
-    .map((doc: any, index: number) => {
-      if (!doc || typeof doc.text !== 'string' || !doc.text.trim()) {
-        return null;
-      }
-      const name = doc.name?.trim() || `Document ${index + 1}`;
-      const text = doc.text.length > MAX_CHARACTERS_PER_DOCUMENT
-        ? `${doc.text.slice(0, MAX_CHARACTERS_PER_DOCUMENT)}\n\n[Текст усечён для контекста]`
-        : doc.text;
-      return `Источник: ${name}\n\n${text}`;
-    })
-    .filter((entry: any): entry is string => Boolean(entry));
-
-  if (prepared.length === 0) {
-    return null;
-  }
-
-  return `Пользователь загрузил вспомогательные документы. При ответах опирайся на их содержание, но перепроверяй факты. Если данные противоречат законодательству, объясни это. Документы:\n\n${prepared.join('\n\n---\n\n')}`;
+  return Array.from(
+    new Set(message.attachedDocumentIds.filter((id) => typeof id === 'string' && id.trim())),
+  ).slice(0, MAX_CONTEXT_DOCUMENTS);
 }
 
-async function loadProjectDocumentsForContext(
+async function loadAttachedDocumentsById(
   supabase: Awaited<ReturnType<typeof createClient>>,
-  projectId: string,
-) {
+  projectId: string | undefined,
+  messages: ChatMessage[],
+): Promise<Map<string, ChatRequestDocument>> {
+  const ids = Array.from(
+    new Set(messages.flatMap((message) => getAttachedDocumentIds(message))),
+  ).slice(0, MAX_CONTEXT_DOCUMENTS);
+
+  if (!projectId || ids.length === 0) {
+    return new Map();
+  }
+
   try {
     const { data, error } = await supabase
       .from('project_documents')
-      .select('*')
+      .select('id, name, text')
       .eq('project_id', projectId)
-      .order('uploaded_at', { ascending: false })
-      .limit(MAX_CONTEXT_DOCUMENTS);
+      .in('id', ids);
 
     if (error) {
-      console.error('Failed to load project documents for context:', error);
-      return [];
+      console.error('Failed to load attached documents for context:', error);
+      return new Map();
     }
 
-    return (data ?? []).map(projectDocumentToSessionDocument);
+    return new Map(
+      (data ?? [])
+        .filter((doc: any) => typeof doc?.id === 'string' && typeof doc?.text === 'string' && doc.text.trim())
+        .map((doc: any) => [
+          doc.id,
+          {
+            id: doc.id,
+            name: typeof doc.name === 'string' && doc.name.trim() ? doc.name : 'Документ',
+            text: doc.text,
+          },
+        ]),
+    );
   } catch (error) {
-    console.error('Unexpected error while loading project documents:', error);
-    return [];
+    console.error('Unexpected error while loading attached documents:', error);
+    return new Map();
   }
 }
 
-function mergeDocumentsForContext(
-  sharedDocuments: ReturnType<typeof projectDocumentToSessionDocument>[],
-  requestDocuments?: ChatRequestDocument[],
-): ChatRequestDocument[] {
-  const merged = new Map<string, ChatRequestDocument>();
-
-  sharedDocuments.forEach((doc: any) => {
-    if (doc.text?.trim()) {
-      merged.set(doc.id, {
-        id: doc.id,
-        name: doc.name,
-        text: doc.text,
-      });
-    }
-  });
-
-  if (Array.isArray(requestDocuments)) {
-    requestDocuments.forEach((doc: any) => {
-      if (doc?.id && doc.text?.trim()) {
-        merged.set(doc.id, {
-          id: doc.id,
-          name: doc.name,
-          text: doc.text,
-        });
-      }
-    });
+function formatMessageContentWithAttachments(
+  message: ChatMessage,
+  documentsById: Map<string, ChatRequestDocument>,
+) {
+  const attachmentIds = getAttachedDocumentIds(message);
+  if (message.role !== 'user' || attachmentIds.length === 0) {
+    return message.content;
   }
 
-  return Array.from(merged.values()).slice(0, MAX_CONTEXT_DOCUMENTS);
+  const prepared = attachmentIds
+    .map((id) => documentsById.get(id))
+    .filter((doc): doc is ChatRequestDocument => Boolean(doc))
+    .map((doc) => {
+      const text = doc.text.length > MAX_CHARACTERS_PER_DOCUMENT
+        ? `${doc.text.slice(0, MAX_CHARACTERS_PER_DOCUMENT)}\n\n[Текст документа усечён]`
+        : doc.text;
+
+      return `Документ: ${doc.name}\n\n${text}`;
+    });
+
+  if (prepared.length === 0) {
+    return message.content;
+  }
+
+  return `${message.content}\n\n[Прикрепленные документы к этому сообщению]\n\n${prepared.join('\n\n---\n\n')}`;
 }

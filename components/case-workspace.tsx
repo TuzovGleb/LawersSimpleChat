@@ -11,7 +11,6 @@ import { ThinkingIndicator } from "@/components/thinking-indicator";
 import { cn } from "@/lib/utils";
 import type { ChatMessage, Project, SessionDocument, SelectedModel } from "@/lib/types";
 import { getModelDisplayName } from "@/lib/model-config";
-import { useToast } from "@/hooks/use-toast";
 import {
   ArrowLeft,
   Bot,
@@ -27,8 +26,6 @@ import {
   Plus,
   Send,
   Sun,
-  Trash2,
-  Upload,
   X,
 } from "lucide-react";
 import {
@@ -60,8 +57,8 @@ interface CaseWorkspaceProps {
   isLoading: boolean;
   isThinking: boolean;
   isUploadingDocument: boolean;
-  isDocumentsLoading: boolean;
   isLoadingChats: boolean;
+  pendingDocuments: SessionDocument[];
   selectedModel: SelectedModel;
   onModelChange: (model: SelectedModel) => void;
   onBack: () => void;
@@ -70,7 +67,7 @@ interface CaseWorkspaceProps {
   onInputChange: (value: string) => void;
   onSendMessage: () => void;
   onAttachDocument: (files: FileList | null) => void;
-  onRemoveDocument: (documentId: string) => void;
+  onRemovePendingDocument: (documentId: string) => void;
   onExportMessage?: (messageIndex: number) => void;
   onSignOut: () => void;
 }
@@ -83,8 +80,8 @@ export function CaseWorkspace({
   isLoading,
   isThinking,
   isUploadingDocument,
-  isDocumentsLoading,
   isLoadingChats,
+  pendingDocuments,
   selectedModel,
   onModelChange,
   onBack,
@@ -93,13 +90,11 @@ export function CaseWorkspace({
   onInputChange,
   onSendMessage,
   onAttachDocument,
-  onRemoveDocument,
+  onRemovePendingDocument,
   onExportMessage,
   onSignOut,
 }: CaseWorkspaceProps) {
-  const { toast } = useToast();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [sidebarView, setSidebarView] = useState<'chats' | 'documents'>('chats');
   const [isDarkMode, setIsDarkMode] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -201,13 +196,7 @@ export function CaseWorkspace({
               <div className="flex flex-col">
                 <span className="text-sm font-semibold leading-tight" style={{ color: textColor }}>{project.name}</span>
                 <span className="hidden text-xs text-muted-foreground sm:block" style={{ color: mutedTextColor }}>
-                  {isDocumentsLoading ? (
-                    <>
-                      <Loader2 className="inline h-3 w-3 animate-spin" /> документов
-                    </>
-                  ) : (
-                    `${project.documents.length} документов`
-                  )} · {isLoadingChats ? (
+                  {isLoadingChats ? (
                     <>
                       <Loader2 className="inline h-3 w-3 animate-spin" /> чатов
                     </>
@@ -295,7 +284,7 @@ export function CaseWorkspace({
 
       {/* Main Content - Two Columns */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Left Sidebar - Chats & Documents with Toggle */}
+        {/* Left Sidebar - Chats */}
         <aside
           className={cn(
             "fixed inset-y-0 left-0 z-40 flex w-80 flex-col border-r bg-muted/30 transition-transform duration-300 md:static md:translate-x-0",
@@ -305,9 +294,7 @@ export function CaseWorkspace({
         >
           {/* Mobile Header */}
           <div className="flex items-center justify-between border-b p-4 md:hidden" style={{ borderBottomColor: borderColor }}>
-            <h2 className="text-sm font-semibold" style={{ color: textColor }}>
-              {sidebarView === 'chats' ? 'Чаты' : 'Документы'}
-            </h2>
+            <h2 className="text-sm font-semibold" style={{ color: textColor }}>Чаты</h2>
             <Button
               variant="ghost"
               size="icon"
@@ -318,206 +305,76 @@ export function CaseWorkspace({
             </Button>
           </div>
 
-          {/* Tab Switcher */}
-          <div className="border-b bg-background/50" style={{ background: sidebarBg, borderBottom: `1px solid ${borderColor}` }}>
-            <div className="flex">
-              <button
-                onClick={() => setSidebarView('chats')}
-                className={cn(
-                  "flex flex-1 items-center justify-center gap-2 px-4 py-3 text-sm font-medium transition-all",
-                  sidebarView === 'chats'
-                    ? "border-b-2 border-primary text-foreground"
-                    : "text-muted-foreground hover:text-foreground"
-                )}
-                style={{ borderBottomColor: sidebarView === 'chats' ? (isDarkMode ? textColor : '#982525') : 'transparent', color: textColor }}
-              >
-                <MessageSquare className="h-4 w-4" style={{ color: sidebarView === 'chats' ? (isDarkMode ? textColor : '#982525') : mutedTextColor }} />
-                <span>Чаты</span>
-                <span className="text-xs" style={{ color: mutedTextColor }}>
-                  {sessions.length}
-                </span>
-              </button>
-              <button
-                onClick={() => setSidebarView('documents')}
-                className={cn(
-                  "flex flex-1 items-center justify-center gap-2 px-4 py-3 text-sm font-medium transition-all",
-                  sidebarView === 'documents'
-                    ? "border-b-2 border-primary text-foreground"
-                    : "text-muted-foreground hover:text-foreground"
-                )}
-                style={{ borderBottomColor: sidebarView === 'documents' ? (isDarkMode ? textColor : '#982525') : 'transparent', color: textColor }}
-              >
-                <FileText className="h-4 w-4" style={{ color: sidebarView === 'documents' ? (isDarkMode ? textColor : '#982525') : mutedTextColor }} />
-                <span>Документы</span>
-                <span className="text-xs" style={{ color: mutedTextColor }}>
-                  {project.documents.length}
-                </span>
-              </button>
+          <div className="border-b p-4" style={{ borderBottomColor: borderColor }}>
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-sm font-semibold" style={{ color: textColor }}>Чаты дела</h3>
+              {isLoadingChats && <Loader2 className="h-4 w-4 animate-spin" style={{ color: mutedTextColor }} />}
             </div>
+            <Button onClick={onNewChat} variant="outline" className="w-full gap-2" style={{ border: `1px solid ${borderColor}`, background: isDarkMode ? '#253141' : '#fafaf5', color: textColor }}>
+              <Plus className="h-4 w-4" style={{ color: isDarkMode ? textColor : '#982525' }} />
+              Новый чат
+            </Button>
           </div>
-
-          {/* Chats View */}
-          {sidebarView === 'chats' && (
-            <>
-              <div className="border-b p-4" style={{ borderBottomColor: borderColor }}>
-                <div className="mb-3 flex items-center justify-between">
-                  <h3 className="text-sm font-semibold" style={{ color: textColor }}>Чаты проекта</h3>
-                  {isLoadingChats && <Loader2 className="h-4 w-4 animate-spin" style={{ color: mutedTextColor }} />}
-                </div>
-                <Button onClick={onNewChat} variant="outline" className="w-full gap-2" style={{ border: `1px solid ${borderColor}`, background: isDarkMode ? '#253141' : '#fafaf5', color: textColor }}>
-                  <Plus className="h-4 w-4" style={{ color: isDarkMode ? textColor : '#982525' }} />
-                  Новый чат
-                </Button>
-              </div>
-              <div className="flex-1 overflow-hidden">
-                <ScrollArea className="h-full">
-                  <div className="space-y-1 pb-4 px-2 pt-2">
-                    {isLoadingChats ? (
-                      <div className="rounded-lg border border-dashed px-4 py-8 text-center" style={{ borderColor: borderColor }}>
-                        <Loader2 className="mx-auto h-8 w-8 animate-spin" style={{ color: mutedTextColor }} />
-                        <p className="mt-2 text-sm" style={{ color: mutedTextColor }}>Загрузка чатов...</p>
-                        <p className="mt-1 text-xs" style={{ color: mutedTextColor }}>
-                          Получаем историю разговоров
-                        </p>
-                      </div>
-                    ) : sortedSessions.length === 0 ? (
-                      <div className="rounded-lg border border-dashed px-4 py-8 text-center" style={{ borderColor: borderColor }}>
-                        <MessageSquare className="mx-auto h-8 w-8" style={{ color: mutedTextColor }} />
-                        <p className="mt-2 text-sm" style={{ color: mutedTextColor }}>Нет чатов</p>
-                        <p className="mt-1 text-xs" style={{ color: mutedTextColor }}>Создайте первый чат</p>
-                      </div>
-                    ) : (
-                      sortedSessions.map((session) => (
-                        <button
-                          key={session.id}
-                          onClick={() => {
-                            onSelectSession(session.id);
-                            setIsSidebarOpen(false);
-                          }}
-                          className={cn(
-                            "flex w-full flex-col items-start rounded-lg px-3 py-3 text-left transition-all hover:bg-muted",
-                            session.id === activeSessionId
-                              ? "bg-muted shadow-sm border-l-2"
-                              : "bg-transparent",
-                          )}
-                          style={{ 
-                            background: session.id === activeSessionId ? (isDarkMode ? '#334155' : '#f0f0eb') : 'transparent', 
-                            color: textColor,
-                            borderLeftColor: session.id === activeSessionId ? (isDarkMode ? textColor : '#982525') : 'transparent',
-                            borderLeftWidth: session.id === activeSessionId ? '2px' : '0',
-                            maxWidth: '100%',
-                            overflow: 'hidden'
-                          }}
-                        >
-                          <div className="flex w-full items-start gap-2 min-w-0" style={{ width: '100%' }}>
-                            <MessageSquare className="h-4 w-4 flex-shrink-0 mt-0.5" style={{ color: isDarkMode ? textColor : '#982525' }} />
-                            <span className="flex-1 text-sm font-medium break-words" style={{ wordBreak: 'break-word', overflowWrap: 'break-word', lineHeight: '1.4', minWidth: 0, color: textColor }}>
-                              {session.title || "Новый чат"}
-                            </span>
-                          </div>
-                          <span className="ml-6 mt-1 text-xs text-muted-foreground" style={{ color: mutedTextColor }}>
-                            {new Date(session.createdAt).toLocaleString("ru-RU", {
-                              day: "numeric",
-                              month: "short",
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })}
-                          </span>
-                        </button>
-                      ))
-                    )}
+          <div className="flex-1 overflow-hidden">
+            <ScrollArea className="h-full">
+              <div className="space-y-1 pb-4 px-2 pt-2">
+                {isLoadingChats ? (
+                  <div className="rounded-lg border border-dashed px-4 py-8 text-center" style={{ borderColor: borderColor }}>
+                    <Loader2 className="mx-auto h-8 w-8 animate-spin" style={{ color: mutedTextColor }} />
+                    <p className="mt-2 text-sm" style={{ color: mutedTextColor }}>Загрузка чатов...</p>
+                    <p className="mt-1 text-xs" style={{ color: mutedTextColor }}>
+                      Получаем историю разговоров
+                    </p>
                   </div>
-                </ScrollArea>
-              </div>
-            </>
-          )}
-
-          {/* Documents View */}
-          {sidebarView === 'documents' && (
-            <>
-              <div className="border-b p-4" style={{ borderBottom: `1px solid ${borderColor}` }}>
-                <div className="mb-3 flex items-center justify-between">
-                  <h3 className="text-sm font-semibold" style={{ color: textColor }}>Документы проекта</h3>
-                  {isDocumentsLoading && <Loader2 className="h-4 w-4 animate-spin" style={{ color: mutedTextColor }} />}
-                </div>
-                <Button
-                  onClick={handleAttachButtonClick}
-                  disabled={isUploadingDocument}
-                  variant="outline"
-                  className="w-full gap-2"
-                  size="sm"
-                  style={{ border: `1px solid ${borderColor}`, background: isDarkMode ? '#253141' : '#fafaf5', color: textColor }}
-                >
-                  {isUploadingDocument ? (
-                    <Loader2 className="h-4 w-4 animate-spin" style={{ color: textColor }} />
-                  ) : (
-                    <Upload className="h-4 w-4" style={{ color: isDarkMode ? textColor : '#982525' }} />
-                  )}
-                  <span style={{ color: textColor }}>Загрузить документ</span>
-                </Button>
-              </div>
-              <div className="flex-1 overflow-hidden">
-                <ScrollArea className="h-full">
-                  <div className="space-y-2 pb-4 px-2 pt-2">
-                    {isDocumentsLoading ? (
-                      <div className="rounded-lg border border-dashed px-4 py-8 text-center" style={{ borderColor: borderColor }}>
-                        <Loader2 className="mx-auto h-8 w-8 animate-spin" style={{ color: mutedTextColor }} />
-                        <p className="mt-2 text-sm" style={{ color: mutedTextColor }}>Загрузка документов...</p>
-                        <p className="mt-1 text-xs" style={{ color: mutedTextColor }}>
-                          Получаем прикрепленные файлы
-                        </p>
-                      </div>
-                    ) : project.documents.length === 0 ? (
-                      <div className="rounded-lg border border-dashed px-4 py-8 text-center" style={{ borderColor: borderColor }}>
-                        <FileText className="mx-auto h-8 w-8" style={{ color: mutedTextColor }} />
-                        <p className="mt-2 text-sm" style={{ color: mutedTextColor }}>Нет документов</p>
-                        <p className="mt-1 text-xs" style={{ color: mutedTextColor }}>
-                          Загрузите документы для работы
-                        </p>
-                      </div>
-                    ) : (
-                      project.documents.map((document) => (
-                        <div
-                          key={document.id}
-                          className="group rounded-lg border bg-card p-3 transition-all hover:shadow-sm"
-                          style={{ border: `1px solid ${borderColor}`, background: isDarkMode ? '#253141' : '#fafaf5', width: 'calc(100% - 0.5rem)', marginLeft: '0.25rem', marginRight: '0.25rem' }}
-                        >
-                          <div className="flex items-start gap-3" style={{ width: '100%' }}>
-                            <div className="rounded-md p-2 shrink-0" style={{ background: isDarkMode ? '#334155' : '#f0f0eb' }}>
-                              <FileText className="h-4 w-4" style={{ color: isDarkMode ? textColor : '#982525' }} />
-                            </div>
-                            <div className="min-w-0 flex-1" style={{ minWidth: 0, overflow: 'hidden' }}>
-                              <div className="mb-1 text-sm font-medium leading-tight" style={{ color: textColor, wordBreak: 'break-word', overflowWrap: 'break-word', overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
-                                {document.name}
-                              </div>
-                              <div className="space-y-0.5 text-xs" style={{ color: mutedTextColor }}>
-                                <div>{formatBytes(document.size)}</div>
-                                <div>
-                                  {new Date(document.uploadedAt).toLocaleDateString("ru-RU")}
-                                </div>
-                                <div className="text-xs">{formatStrategy(document.strategy)}</div>
-                              </div>
-                            </div>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
-                              onClick={() => onRemoveDocument(document.id)}
-                              disabled={isUploadingDocument || isDocumentsLoading}
-                            >
-                              <Trash2 className="h-4 w-4" style={{ color: mutedTextColor }} />
-                              <span className="sr-only">Удалить</span>
-                            </Button>
-                          </div>
-                        </div>
-                      ))
-                    )}
+                ) : sortedSessions.length === 0 ? (
+                  <div className="rounded-lg border border-dashed px-4 py-8 text-center" style={{ borderColor: borderColor }}>
+                    <MessageSquare className="mx-auto h-8 w-8" style={{ color: mutedTextColor }} />
+                    <p className="mt-2 text-sm" style={{ color: mutedTextColor }}>Нет чатов</p>
+                    <p className="mt-1 text-xs" style={{ color: mutedTextColor }}>Создайте первый чат</p>
                   </div>
-                </ScrollArea>
+                ) : (
+                  sortedSessions.map((session) => (
+                    <button
+                      key={session.id}
+                      onClick={() => {
+                        onSelectSession(session.id);
+                        setIsSidebarOpen(false);
+                      }}
+                      className={cn(
+                        "flex w-full flex-col items-start rounded-lg px-3 py-3 text-left transition-all hover:bg-muted",
+                        session.id === activeSessionId
+                          ? "bg-muted shadow-sm border-l-2"
+                          : "bg-transparent",
+                      )}
+                      style={{
+                        background: session.id === activeSessionId ? (isDarkMode ? '#334155' : '#f0f0eb') : 'transparent',
+                        color: textColor,
+                        borderLeftColor: session.id === activeSessionId ? (isDarkMode ? textColor : '#982525') : 'transparent',
+                        borderLeftWidth: session.id === activeSessionId ? '2px' : '0',
+                        maxWidth: '100%',
+                        overflow: 'hidden'
+                      }}
+                    >
+                      <div className="flex w-full items-start gap-2 min-w-0" style={{ width: '100%' }}>
+                        <MessageSquare className="h-4 w-4 flex-shrink-0 mt-0.5" style={{ color: isDarkMode ? textColor : '#982525' }} />
+                        <span className="flex-1 text-sm font-medium break-words" style={{ wordBreak: 'break-word', overflowWrap: 'break-word', lineHeight: '1.4', minWidth: 0, color: textColor }}>
+                          {session.title || "Новый чат"}
+                        </span>
+                      </div>
+                      <span className="ml-6 mt-1 text-xs text-muted-foreground" style={{ color: mutedTextColor }}>
+                        {new Date(session.createdAt).toLocaleString("ru-RU", {
+                          day: "numeric",
+                          month: "short",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </span>
+                    </button>
+                  ))
+                )}
               </div>
-            </>
-          )}
+            </ScrollArea>
+          </div>
         </aside>
 
         {/* Center Column - Chat Messages (Expanded) */}
@@ -563,6 +420,25 @@ export function CaseWorkspace({
                           <p className="mobile-safe-text whitespace-pre-wrap text-sm font-normal leading-relaxed text-foreground/90" style={{ wordBreak: 'normal', overflowWrap: 'break-word', color: textColor }}>
                             {message.content}
                           </p>
+                          {Array.isArray(message.attachedDocumentIds) && message.attachedDocumentIds.length > 0 && (
+                            <div className="mt-2 flex flex-wrap justify-end gap-1.5">
+                              {message.attachedDocumentIds.map((documentId) => {
+                                const document = message.attachedDocuments?.find((item) => item.id === documentId);
+                                const label = document?.name ?? `Документ ${documentId.slice(0, 8)}`;
+                                return (
+                                  <span
+                                    key={documentId}
+                                    className="inline-flex max-w-[240px] items-center gap-1 rounded-full border px-2 py-0.5 text-[11px]"
+                                    style={{ border: `1px solid ${borderColor}`, background: isDarkMode ? '#253141' : '#fafaf5', color: textColor }}
+                                    title={label}
+                                  >
+                                    <FileText className="h-3 w-3 shrink-0" style={{ color: isDarkMode ? textColor : '#982525' }} />
+                                    <span className="truncate">{label}</span>
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
                         </div>
                       </div>
                     ) : (
@@ -681,6 +557,29 @@ export function CaseWorkspace({
                 onChange={handleFileInputChange}
               />
 
+              {pendingDocuments.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {pendingDocuments.map((document) => (
+                    <span
+                      key={document.id}
+                      className="inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs"
+                      style={{ border: `1px solid ${borderColor}`, background: isDarkMode ? '#253141' : '#fafaf5', color: textColor }}
+                    >
+                      <FileText className="h-3 w-3 shrink-0" style={{ color: isDarkMode ? textColor : '#982525' }} />
+                      <span className="max-w-[240px] truncate" title={document.name}>{document.name}</span>
+                      <button
+                        type="button"
+                        className="-mr-1 rounded-full p-0.5 hover:opacity-70"
+                        onClick={() => onRemovePendingDocument(document.id)}
+                        aria-label={`Убрать ${document.name}`}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+
               <Textarea
                 value={input}
                 onChange={(event) => onInputChange(event.target.value)}
@@ -706,20 +605,20 @@ export function CaseWorkspace({
                   )}
                   {isUploadingDocument ? "Обработка…" : "Прикрепить"}
                 </Button>
-              <Button 
-                type="submit" 
-                disabled={isLoading || isUploadingDocument || isLoadingChats || !input.trim()} 
-                variant="outline"
-                className="gap-2"
-                style={{ border: `1px solid ${borderColor}`, background: isDarkMode ? '#253141' : '#fafaf5', color: textColor }}
-              >
-                {isLoading || isLoadingChats ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Send className="h-4 w-4" style={{ color: isDarkMode ? textColor : '#982525' }} />
-                )}
-                {isLoadingChats ? "Загрузка..." : "Отправить"}
-              </Button>
+                <Button
+                  type="submit"
+                  disabled={isLoading || isUploadingDocument || isLoadingChats || (!input.trim() && pendingDocuments.length === 0)}
+                  variant="outline"
+                  className="gap-2"
+                  style={{ border: `1px solid ${borderColor}`, background: isDarkMode ? '#253141' : '#fafaf5', color: textColor }}
+                >
+                  {isLoading || isLoadingChats ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Send className="h-4 w-4" style={{ color: isDarkMode ? textColor : '#982525' }} />
+                  )}
+                  {isLoadingChats ? "Загрузка..." : "Отправить"}
+                </Button>
               </div>
             </form>
           </div>
@@ -737,27 +636,5 @@ export function CaseWorkspace({
       )}
     </div>
   );
-}
-
-function formatBytes(size: number) {
-  if (!size || size < 0) return "—";
-  if (size < 1024) return `${size} Б`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} КБ`;
-  return `${(size / (1024 * 1024)).toFixed(1)} МБ`;
-}
-
-function formatStrategy(strategy: SessionDocument["strategy"]) {
-  switch (strategy) {
-    case "pdf":
-      return "PDF";
-    case "docx":
-      return "Word";
-    case "vision":
-      return "LLM/vision";
-    case "llm-file":
-      return "LLM/файл";
-    default:
-      return "Текст";
-  }
 }
 

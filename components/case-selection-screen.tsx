@@ -25,7 +25,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Bot, FileText, FolderPlus, Loader2, LogOut, MessageSquare, MoreVertical, Pencil, Trash2 } from "lucide-react";
+import { Bot, FolderPlus, Loader2, LogOut, MessageSquare, MoreVertical, Pencil, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Project, SessionDocument } from "@/lib/types";
 
@@ -102,11 +102,9 @@ export function CaseSelectionScreen({
 
   const getProjectStats = (projectId: string) => {
     const projectSessions = sessions.filter((s) => s.projectId === projectId);
-    const project = projects.find((p) => p.id === projectId);
-    const documentCount = project?.documents.length ?? 0;
     const chatCount = projectSessions.length;
 
-    return { documentCount, chatCount };
+    return { chatCount };
   };
 
   return (
@@ -160,7 +158,7 @@ export function CaseSelectionScreen({
                 </div>
                 <h3 className="mt-6 text-xl font-semibold" style={{ fontFamily: "'Courier New', 'Monaco', monospace", textTransform: 'uppercase' }}>Нет дел</h3>
                 <p className="mt-2 max-w-md text-sm text-muted-foreground" style={{ color: '#666', fontFamily: "'Courier New', 'Monaco', monospace" }}>
-                  Создайте первое дело, чтобы начать загружать документы и общаться с AI-помощником
+                  Создайте первое дело, чтобы начать общаться с AI-помощником
                 </p>
                 <Button onClick={handleOpenDialog} variant="secondary" className="mt-6 gap-2" style={{ background: '#982525', color: '#fff', border: '1px solid #000', fontFamily: "'Courier New', 'Monaco', monospace", fontWeight: 'bold', textTransform: 'uppercase' }}>
                   <FolderPlus className="h-4 w-4" />
@@ -223,17 +221,6 @@ export function CaseSelectionScreen({
                           {project.name}
                         </h3>
                         <div className="space-y-2 text-sm text-muted-foreground flex-1" style={{ color: '#666', fontFamily: "'Courier New', 'Monaco', monospace" }}>
-                          <div className="flex items-center gap-2">
-                            <FileText className="h-4 w-4 shrink-0" style={{ color: '#982525' }} />
-                            <span>
-                              {stats.documentCount}{" "}
-                              {stats.documentCount === 1
-                                ? "документ"
-                                : stats.documentCount < 5
-                                ? "документа"
-                                : "документов"}
-                            </span>
-                          </div>
                           <div className="flex items-center gap-2">
                             <MessageSquare className="h-4 w-4 shrink-0" style={{ color: '#982525' }} />
                             <span>
