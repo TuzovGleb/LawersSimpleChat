@@ -86,12 +86,16 @@ export async function POST(req: NextRequest) {
       }))
     ];
 
-    console.log('Sending request to AI service:', {
-      messages: formattedMessages.map((message) => ({
-        role: message.role,
-        contentLength: typeof message.content === 'string' ? message.content.length : 0,
+    console.log('[AI] Full messages sent to AI:\n', JSON.stringify(
+      formattedMessages.map((msg) => ({
+        role: msg.role,
+        content: typeof msg.content === 'string'
+          ? msg.content.slice(0, 2000) + (msg.content.length > 2000 ? `\n…[+${msg.content.length - 2000} chars]` : '')
+          : msg.content,
       })),
-    });
+      null,
+      2,
+    ));
 
     // Получаем последнее сообщение пользователя для анализа
     const lastUserMessage = messages[messages.length - 1]?.content || '';
