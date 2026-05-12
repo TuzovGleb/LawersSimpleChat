@@ -96,6 +96,8 @@ export function CaseWorkspace({
 }: CaseWorkspaceProps) {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragCounterRef = useRef(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -152,6 +154,34 @@ export function CaseWorkspace({
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
+      dragCounterRef.current = 0;
+      setIsDragging(false);
+      if (e.dataTransfer.files.length > 0) {
+        onAttachDocument(e.dataTransfer.files);
+      }
+    },
+    [onAttachDocument],
+  );
+
+  const handlePageDragEnter = useCallback((e: React.DragEvent) => {
+    if (e.dataTransfer.types.includes("Files")) {
+      dragCounterRef.current += 1;
+      setIsDragging(true);
+    }
+  }, []);
+
+  const handlePageDragLeave = useCallback(() => {
+    dragCounterRef.current -= 1;
+    if (dragCounterRef.current === 0) {
+      setIsDragging(false);
+    }
+  }, []);
+
+  const handlePageDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      dragCounterRef.current = 0;
+      setIsDragging(false);
       if (e.dataTransfer.files.length > 0) {
         onAttachDocument(e.dataTransfer.files);
       }
@@ -176,7 +206,22 @@ export function CaseWorkspace({
   }, [isDarkMode]);
 
   return (
-    <div className="flex h-screen flex-col bg-background" style={{ background: bgColor, fontFamily: 'var(--font-roboto), Roboto, sans-serif', fontWeight: 400, color: textColor }}>
+    <div
+      className="relative flex h-screen flex-col bg-background"
+      style={{ background: bgColor, fontFamily: 'var(--font-roboto), Roboto, sans-serif', fontWeight: 400, color: textColor }}
+      onDragEnter={handlePageDragEnter}
+      onDragLeave={handlePageDragLeave}
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={handlePageDrop}
+    >
+      {isDragging && (
+        <div className="pointer-events-none absolute inset-0 z-50 flex flex-col items-center justify-center gap-3 rounded-none border-4 border-dashed"
+          style={{ borderColor: borderColor, background: isDarkMode ? 'rgba(30,41,59,0.85)' : 'rgba(250,250,245,0.88)' }}
+        >
+          <Paperclip className="h-12 w-12" style={{ color: borderColor }} />
+          <p className="text-lg font-medium" style={{ color: borderColor }}>Отпустите файл для прикрепления</p>
+        </div>
+      )}
       {/* Header */}
       <header className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60" style={{ background: bgColor, borderBottom: `1px solid ${borderColor}` }}>
         <div className="flex h-16 items-center justify-between px-4">
