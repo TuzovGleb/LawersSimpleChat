@@ -145,6 +145,20 @@ export function CaseWorkspace({
     [onAttachDocument],
   );
 
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+  }, []);
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      if (e.dataTransfer.files.length > 0) {
+        onAttachDocument(e.dataTransfer.files);
+      }
+    },
+    [onAttachDocument],
+  );
+
   const bgColor = isDarkMode ? '#1e293b' : '#fafaf5';
   const textColor = isDarkMode ? '#ffffff' : '#000';
   const borderColor = isDarkMode ? '#334155' : '#982525';
@@ -547,7 +561,7 @@ export function CaseWorkspace({
 
           {/* Message Input */}
           <div className="border-t bg-background p-4" style={{ background: bgColor, borderTop: `1px solid ${borderColor}` }}>
-            <form onSubmit={handleSubmit} className="mx-auto flex w-full max-w-4xl flex-col gap-3">
+            <form onSubmit={handleSubmit} onDragOver={handleDragOver} onDrop={handleDrop} className="mx-auto flex w-full max-w-4xl flex-col gap-3">
               <input
                 ref={fileInputRef}
                 type="file"
