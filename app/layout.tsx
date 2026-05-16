@@ -1,18 +1,18 @@
 import type { Metadata } from "next";
-import { Inter, Roboto } from "next/font/google";
+import { Inter, Lora } from "next/font/google";
 import "./globals.css";
 import { metadataStrings } from "./metadata-strings";
 
-const inter = Inter({ 
-  subsets: ["latin"],
+const inter = Inter({
+  subsets: ["latin", "cyrillic"],
+  variable: '--font-sans',
   display: 'swap',
   preload: true,
 });
 
-const roboto = Roboto({ 
-  weight: '400',
+const lora = Lora({
   subsets: ["latin", "cyrillic"],
-  variable: '--font-roboto',
+  variable: '--font-serif',
   display: 'swap',
   preload: true,
 });
@@ -74,8 +74,8 @@ export default function RootLayout({
 }: {
   children: React.ReactNode
 }) {
-  const bodyClassName = `${inter.className} ${roboto.variable}`;
-  
+  const bodyClassName = `${inter.variable} ${lora.variable}`;
+
   return (
     <html lang="ru" suppressHydrationWarning>
       <body className={bodyClassName}>

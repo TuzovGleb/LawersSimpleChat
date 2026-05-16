@@ -2,319 +2,20 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import { ToasterClient } from "@/components/toaster-client";
-import { Loader2 } from "lucide-react";
+import { Loader2, ShieldCheck, Lock, Server } from "lucide-react";
 
-// Ретро стиль клавиатур (винтажный)
-const retroStyles = `
-  @keyframes blink {
-    0%, 50% { border-color: #000; }
-    51%, 100% { border-color: transparent; }
-  }
-  
-  .retro-bg {
-    background: #f5f5f0;
-    background-image: 
-      repeating-linear-gradient(
-        0deg,
-        transparent,
-        transparent 2px,
-        rgba(0, 0, 0, 0.02) 2px,
-        rgba(0, 0, 0, 0.02) 4px
-      );
-    position: relative;
-  }
-  
-  .retro-bg::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: 
-      radial-gradient(circle at 20% 50%, rgba(0, 0, 0, 0.01) 0%, transparent 50%),
-      radial-gradient(circle at 80% 80%, rgba(0, 0, 0, 0.01) 0%, transparent 50%);
-    pointer-events: none;
-  }
-  
-  .retro-card {
-    background: #fafaf5;
-    border: 3px solid #2a2a2a;
-    box-shadow: 
-      0 4px 8px rgba(0, 0, 0, 0.15),
-      0 8px 16px rgba(0, 0, 0, 0.1),
-      inset 0 1px 0 rgba(255, 255, 255, 0.5);
-    position: relative;
-    font-family: 'Courier New', 'Monaco', monospace;
-  }
-  
-  .retro-card::after {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 4px;
-    background: linear-gradient(90deg, 
-      #2a2a2a 0%, 
-      #4a4a4a 25%, 
-      #2a2a2a 50%, 
-      #4a4a4a 75%, 
-      #2a2a2a 100%
-    );
-  }
-  
-  .retro-title {
-    color: #000;
-    font-family: 'Courier New', 'Monaco', monospace;
-    font-weight: bold;
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    position: relative;
-    display: inline-block;
-  }
-  
-  .retro-title::after {
-    content: '_';
-    animation: blink 1s infinite;
-    margin-left: 2px;
-  }
-  
-  .retro-label {
-    color: #000;
-    font-family: 'Courier New', 'Monaco', monospace;
-    font-weight: bold;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
-    font-size: 0.85rem;
-  }
-  
-  .retro-input {
-    background: #ffffff;
-    border: 2px solid #4a4a4a;
-    border-top-color: #2a2a2a;
-    border-left-color: #2a2a2a;
-    border-right-color: #6a6a6a;
-    border-bottom-color: #6a6a6a;
-    color: #000;
-    font-family: 'Courier New', 'Monaco', monospace;
-    box-shadow: 
-      inset 2px 2px 4px rgba(0, 0, 0, 0.1),
-      0 1px 0 rgba(255, 255, 255, 0.8);
-    transition: all 0.2s;
-  }
-  
-  .retro-input:focus {
-    outline: none;
-    border-color: #2a2a2a;
-    background: #fffef5;
-    box-shadow: 
-      inset 2px 2px 4px rgba(0, 0, 0, 0.15),
-      0 0 0 2px rgba(0, 0, 0, 0.1);
-  }
-  
-  .retro-input::placeholder {
-    color: #888;
-    font-style: italic;
-  }
-  
-  .retro-button {
-    background: #982525 !important;
-    border: 3px solid #2a2a2a !important;
-    border-top-color: #4a4a4a !important;
-    border-left-color: #4a4a4a !important;
-    border-right-color: #1a1a1a !important;
-    border-bottom-color: #1a1a1a !important;
-    color: #fff !important;
-    font-family: 'Courier New', 'Monaco', monospace !important;
-    font-weight: bold !important;
-    text-transform: uppercase !important;
-    letter-spacing: 1.5px !important;
-    box-shadow: 
-      0 3px 6px rgba(0, 0, 0, 0.2),
-      inset 0 1px 0 rgba(255, 255, 255, 0.2),
-      inset 0 -1px 0 rgba(0, 0, 0, 0.3) !important;
-    transition: all 0.15s !important;
-    position: relative !important;
-    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5) !important;
-    padding: 0.75rem 1.5rem !important;
-    font-size: 0.875rem !important;
-    width: 100% !important;
-    height: auto !important;
-    min-height: 44px !important;
-    line-height: 1.5 !important;
-  }
-  
-  .retro-button:hover:not(:disabled) {
-    background: #b03030;
-    transform: translateY(-1px);
-    box-shadow: 
-      0 4px 8px rgba(0, 0, 0, 0.25),
-      inset 0 1px 0 rgba(255, 255, 255, 0.3),
-      inset 0 -1px 0 rgba(0, 0, 0, 0.4);
-  }
-  
-  .retro-button:active:not(:disabled) {
-    transform: translateY(0);
-    box-shadow: 
-      inset 0 2px 4px rgba(0, 0, 0, 0.3),
-      inset 0 -1px 0 rgba(255, 255, 255, 0.1);
-  }
-  
-  .retro-button:disabled {
-    background: #6a6a6a;
-    color: #ccc;
-    cursor: not-allowed;
-    opacity: 0.7;
-  }
-  
-  .retro-info-box {
-    background: #f0f0eb;
-    border: 2px solid #4a4a4a;
-    border-top-color: #6a6a6a;
-    border-left-color: #6a6a6a;
-    border-right-color: #2a2a2a;
-    border-bottom-color: #2a2a2a;
-    box-shadow: 
-      inset 2px 2px 4px rgba(0, 0, 0, 0.1),
-      0 2px 4px rgba(0, 0, 0, 0.1);
-    font-family: 'Courier New', 'Monaco', monospace;
-  }
-  
-  .retro-info-text {
-    color: #000;
-    font-weight: 500;
-  }
-  
-  .retro-calendly-button {
-    background: #982525 !important;
-    border: 3px solid #2a2a2a !important;
-    border-top-color: #4a4a4a !important;
-    border-left-color: #4a4a4a !important;
-    border-right-color: #1a1a1a !important;
-    border-bottom-color: #1a1a1a !important;
-    color: #fff !important;
-    font-family: 'Courier New', 'Monaco', monospace !important;
-    font-weight: bold !important;
-    text-transform: uppercase !important;
-    letter-spacing: 1.5px !important;
-    box-shadow: 
-      0 3px 6px rgba(0, 0, 0, 0.2),
-      inset 0 1px 0 rgba(255, 255, 255, 0.2),
-      inset 0 -1px 0 rgba(0, 0, 0, 0.3) !important;
-    transition: all 0.15s !important;
-    position: relative !important;
-    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5) !important;
-    padding: 0.75rem 1.5rem !important;
-    font-size: 0.875rem !important;
-    width: 100% !important;
-    height: auto !important;
-    min-height: 44px !important;
-    line-height: 1.5 !important;
-  }
-  
-  .retro-calendly-button:hover:not(:disabled) {
-    background: #b03030;
-    transform: translateY(-1px);
-    box-shadow: 
-      0 4px 8px rgba(0, 0, 0, 0.25),
-      inset 0 1px 0 rgba(255, 255, 255, 0.3),
-      inset 0 -1px 0 rgba(0, 0, 0, 0.4);
-  }
-  
-  .retro-calendly-button:active:not(:disabled) {
-    transform: translateY(0);
-    box-shadow: 
-      inset 0 2px 4px rgba(0, 0, 0, 0.3),
-      inset 0 -1px 0 rgba(255, 255, 255, 0.1);
-  }
-  
-  .retro-loading {
-    color: #000;
-    font-family: 'Courier New', 'Monaco', monospace;
-    font-weight: bold;
-    letter-spacing: 2px;
-  }
-  
-  .retro-spinner {
-    border-color: #4a4a4a;
-    border-top-color: #000;
-  }
-  
-  .retro-description {
-    color: #333;
-    font-family: 'Courier New', 'Monaco', monospace;
-    font-size: 0.9rem;
-  }
-  
-  .retro-tabs-list {
-    background: #fafaf5 !important;
-    border: 2px solid #2a2a2a !important;
-    padding: 0 !important;
-    gap: 0 !important;
-    font-family: 'Courier New', 'Monaco', monospace !important;
-    display: flex !important;
-    align-items: stretch !important;
-    height: auto !important;
-    min-height: 44px !important;
-    border-radius: 0 !important;
-    box-shadow: none !important;
-  }
-  
-  .retro-tabs-trigger {
-    background: transparent !important;
-    border: none !important;
-    color: #666 !important;
-    font-family: 'Courier New', 'Monaco', monospace !important;
-    font-weight: bold !important;
-    text-transform: uppercase !important;
-    letter-spacing: 0.5px !important;
-    padding: 0.875rem 1rem !important;
-    transition: color 0.15s !important;
-    position: relative !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    flex: 1 !important;
-    box-shadow: none !important;
-    border-radius: 0 !important;
-    height: auto !important;
-    min-height: 44px !important;
-    margin: 0 !important;
-  }
-  
-  .retro-tabs-trigger:hover {
-    color: #333 !important;
-    background: transparent !important;
-  }
-  
-  .retro-tabs-trigger[data-state=active] {
-    background: transparent !important;
-    border: none !important;
-    color: #982525 !important;
-    box-shadow: none !important;
-  }
-  
-  .retro-tabs-trigger:focus-visible {
-    outline: none !important;
-    ring: none !important;
-  }
-  
-  .retro-tabs-content {
-    margin-top: 1.5rem;
-  }
-`;
+const CALENDLY_URL =
+  "https://calendly.com/glebtuzov/30-minute-call-with-tuzov-gleb-opencv?month=2025-12";
 
 export function AuthForm() {
-  // Separate state for login and signup forms
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [signupEmail, setSignupEmail] = useState("");
@@ -325,36 +26,30 @@ export function AuthForm() {
   const router = useRouter();
   const { toast } = useToast();
 
-  // Check if signup is enabled via environment variable
   const isSignupEnabled = process.env.NEXT_PUBLIC_ENABLE_SIGNUP === "true";
-  
-  // Default tab: registration when enabled, authorization when disabled
   const defaultTab = isSignupEnabled ? "registration" : "authorization";
 
-  // Redirect if already authenticated
   useEffect(() => {
     if (!authLoading && user) {
-      router.replace('/workspace');
+      router.replace("/workspace");
     }
   }, [user, authLoading, router]);
 
-  // Ссылка на Calendly для записи на консультацию
-  const CALENDLY_URL = "https://calendly.com/glebtuzov/30-minute-call-with-tuzov-gleb-opencv?month=2025-12";
+  const isLoginFormValid =
+    loginEmail.trim() !== "" &&
+    loginPassword.trim() !== "" &&
+    loginPassword.length >= 6;
 
-  // Check if login form is valid for submission
-  const isLoginFormValid = loginEmail.trim() !== "" && loginPassword.trim() !== "" && loginPassword.length >= 6;
-
-  // Check if signup form is valid for submission
-  const isSignupFormValid = 
-    signupEmail.trim() !== "" && 
-    signupPassword.trim() !== "" && 
-    signupPassword.length >= 6 && 
-    confirmPassword.trim() !== "" && 
+  const isSignupFormValid =
+    signupEmail.trim() !== "" &&
+    signupPassword.trim() !== "" &&
+    signupPassword.length >= 6 &&
+    confirmPassword.trim() !== "" &&
     signupPassword === confirmPassword;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!loginEmail || !loginPassword) {
       toast({
         variant: "destructive",
@@ -377,7 +72,7 @@ export function AuthForm() {
 
     try {
       const { error } = await signIn(loginEmail, loginPassword);
-      
+
       if (error) {
         throw error;
       }
@@ -394,7 +89,8 @@ export function AuthForm() {
       toast({
         variant: "destructive",
         title: "Ошибка входа",
-        description: error.message || "Проверьте введенные данные и попробуйте снова",
+        description:
+          error.message || "Проверьте введенные данные и попробуйте снова",
       });
     } finally {
       setLoading(false);
@@ -402,12 +98,12 @@ export function AuthForm() {
   };
 
   const handleCalendlyClick = () => {
-    window.open(CALENDLY_URL, '_blank');
+    window.open(CALENDLY_URL, "_blank");
   };
 
   const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!signupEmail || !signupPassword || !confirmPassword) {
       toast({
         variant: "destructive",
@@ -439,24 +135,23 @@ export function AuthForm() {
 
     try {
       const { data, error } = await signUp(signupEmail, signupPassword);
-      
+
       if (error) {
         throw error;
       }
 
       if (data?.user) {
-        // If session is null, email confirmation is required
         if (!data.session) {
           toast({
             title: "Проверьте почту",
-            description: "На вашу почту отправлено письмо для подтверждения аккаунта.",
+            description:
+              "На вашу почту отправлено письмо для подтверждения аккаунта.",
           });
           return;
         }
 
-        // Email confirmation disabled — sign in immediately
         const { error: signInError } = await signIn(signupEmail, signupPassword);
-        
+
         if (signInError) {
           throw signInError;
         }
@@ -474,249 +169,387 @@ export function AuthForm() {
       toast({
         variant: "destructive",
         title: "Ошибка регистрации",
-        description: error.message || "Проверьте введенные данные и попробуйте снова",
+        description:
+          error.message || "Проверьте введенные данные и попробуйте снова",
       });
     } finally {
       setLoading(false);
     }
   };
 
-  // Show loading while checking auth
   if (authLoading || user) {
     return (
-      <>
-        <style>{retroStyles}</style>
-        <div className="retro-bg flex min-h-screen items-center justify-center">
-          <div className="text-center">
-            <div className="retro-spinner inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-r-transparent" />
-            <p className="retro-loading mt-4">ЗАГРУЗКА...</p>
-          </div>
+      <div
+        className="flex min-h-screen items-center justify-center"
+        style={{ background: "var(--bg)" }}
+      >
+        <div className="text-center">
+          <div
+            className="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid"
+            style={{
+              borderColor: "var(--brand-accent)",
+              borderRightColor: "transparent",
+            }}
+          />
+          <p className="mt-4" style={{ color: "var(--text-secondary)" }}>
+            Загрузка…
+          </p>
         </div>
-      </>
+      </div>
     );
   }
 
   return (
-    <>
-      <style>{retroStyles}</style>
-      <div className="retro-bg flex min-h-screen items-center justify-center p-4">
-        <div className="w-full max-w-md space-y-4">
-          <Card className="retro-card">
-            <CardHeader className="space-y-1 pt-6">
-              <CardTitle className="retro-title text-2xl font-bold">
-                {isSignupEnabled ? "АВТОРИЗАЦИЯ И РЕГИСТРАЦИЯ" : "ВХОД В СИСТЕМУ"}
-              </CardTitle>
-              <CardDescription className="retro-description text-sm">
-                {isSignupEnabled ? "Выберите действие" : "Введите email и пароль для входа"}
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="pt-4">
-              {isSignupEnabled ? (
-                <Tabs defaultValue={defaultTab} className="w-full">
-                  <TabsList className="retro-tabs-list w-full">
-                    <TabsTrigger value="authorization" className="retro-tabs-trigger">
-                      АВТОРИЗАЦИЯ
-                    </TabsTrigger>
-                    <TabsTrigger value="registration" className="retro-tabs-trigger">
-                      РЕГИСТРАЦИЯ
-                    </TabsTrigger>
-                  </TabsList>
-                  
-                  <TabsContent value="registration" className="retro-tabs-content">
-                    <form onSubmit={handleSignUp} autoComplete="off">
-                      <div className="space-y-4">
-                        <div className="space-y-2">
-                          <Label htmlFor="signup-email" className="retro-label">
-                            EMAIL:
-                          </Label>
-                          <Input
-                            id="signup-email"
-                            name="email"
-                            type="email"
-                            placeholder="name@example.com"
-                            value={signupEmail}
-                            onChange={(e) => setSignupEmail(e.target.value)}
-                            disabled={loading}
-                            required
-                            autoComplete="email"
-                            className="retro-input"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="signup-password" className="retro-label">
-                            ПАРОЛЬ:
-                          </Label>
-                          <Input
-                            id="signup-password"
-                            name="new-password"
-                            type="password"
-                            placeholder="••••••••"
-                            value={signupPassword}
-                            onChange={(e) => setSignupPassword(e.target.value)}
-                            disabled={loading}
-                            required
-                            minLength={6}
-                            autoComplete="new-password"
-                            className="retro-input"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="signup-confirm-password" className="retro-label">
-                            ПОДТВЕРДИТЕ ПАРОЛЬ:
-                          </Label>
-                          <Input
-                            id="signup-confirm-password"
-                            name="confirm-password"
-                            type="password"
-                            placeholder="••••••••"
-                            value={confirmPassword}
-                            onChange={(e) => setConfirmPassword(e.target.value)}
-                            disabled={loading}
-                            required
-                            minLength={6}
-                            autoComplete="new-password"
-                            className="retro-input"
-                          />
-                        </div>
-                        <Button
-                          type="submit"
-                          className="retro-button w-full"
-                          disabled={loading || !isSignupFormValid}
-                        >
-                          {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                          ЗАРЕГИСТРИРОВАТЬСЯ
-                        </Button>
-                      </div>
-                    </form>
-                  </TabsContent>
-                  
-                  <TabsContent value="authorization" className="retro-tabs-content">
-                    <form onSubmit={handleSubmit} autoComplete="off">
-                      <div className="space-y-4">
-                        <div className="space-y-2">
-                          <Label htmlFor="login-email" className="retro-label">
-                            EMAIL:
-                          </Label>
-                          <Input
-                            id="login-email"
-                            name="email"
-                            type="email"
-                            placeholder="name@example.com"
-                            value={loginEmail}
-                            onChange={(e) => setLoginEmail(e.target.value)}
-                            disabled={loading}
-                            required
-                            autoComplete="email"
-                            className="retro-input"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="login-password" className="retro-label">
-                            ПАРОЛЬ:
-                          </Label>
-                          <Input
-                            id="login-password"
-                            name="password"
-                            type="password"
-                            placeholder="••••••••"
-                            value={loginPassword}
-                            onChange={(e) => setLoginPassword(e.target.value)}
-                            disabled={loading}
-                            required
-                            minLength={6}
-                            autoComplete="current-password"
-                            className="retro-input"
-                          />
-                        </div>
-                        <Button
-                          type="submit"
-                          className="retro-button w-full"
-                          disabled={loading || !isLoginFormValid}
-                        >
-                          {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                          ВОЙТИ
-                        </Button>
-                      </div>
-                    </form>
-                  </TabsContent>
-                </Tabs>
-              ) : (
-                <form onSubmit={handleSubmit} autoComplete="off">
-                  <div className="space-y-4">
-                <div className="space-y-2">
-                      <Label htmlFor="login-email" className="retro-label">
-                    EMAIL:
-                  </Label>
-                  <Input
-                        id="login-email"
+    <div className="auth-shell">
+      <aside className="auth-aside">
+        <Link href="/" className="logo" style={{ color: "#fff" }}>
+          Джихелпер<span className="dot" style={{ color: "var(--brand-accent-bg)" }}>.</span>
+        </Link>
+        <div className="aside-body">
+          <h2
+            style={{
+              color: "#fff",
+              fontFamily: "var(--font-serif-family)",
+              fontWeight: 500,
+              fontSize: 30,
+              lineHeight: 1.2,
+              margin: "0 0 24px",
+              maxWidth: 420,
+              letterSpacing: "-.012em",
+            }}
+          >
+            AI-помощник для российских юристов
+          </h2>
+          <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 14 }}>
+            <li style={{ display: "grid", gridTemplateColumns: "22px 1fr", gap: 12, fontSize: 15.5, color: "rgba(250,250,247,.85)", lineHeight: 1.45 }}>
+              <Server size={20} style={{ color: "var(--secondary-accent)", marginTop: 1 }} />
+              <span>Данные хранятся в России. Соответствие 152-ФЗ.</span>
+            </li>
+            <li style={{ display: "grid", gridTemplateColumns: "22px 1fr", gap: 12, fontSize: 15.5, color: "rgba(250,250,247,.85)", lineHeight: 1.45 }}>
+              <ShieldCheck size={20} style={{ color: "var(--secondary-accent)", marginTop: 1 }} />
+              <span>Содержимое дел не используется для обучения моделей.</span>
+            </li>
+            <li style={{ display: "grid", gridTemplateColumns: "22px 1fr", gap: 12, fontSize: 15.5, color: "rgba(250,250,247,.85)", lineHeight: 1.45 }}>
+              <Lock size={20} style={{ color: "var(--secondary-accent)", marginTop: 1 }} />
+              <span>Конфиденциальность — технически и юридически.</span>
+            </li>
+          </ul>
+        </div>
+      </aside>
+
+      <main className="auth-main">
+        <div className="auth-form-wrap">
+          {isSignupEnabled ? (
+            <>
+              <h1>{defaultTab === "registration" ? "Создайте аккаунт" : "Войти в Джихелпер"}</h1>
+              <p className="lede">Введите email и пароль</p>
+
+              <Tabs defaultValue={defaultTab} className="w-full">
+                <TabsList className="grid grid-cols-2 w-full" style={{ background: "var(--bg-soft)", borderRadius: 8, padding: 4, height: "auto" }}>
+                  <TabsTrigger value="authorization" style={{ borderRadius: 6 }}>
+                    Авторизация
+                  </TabsTrigger>
+                  <TabsTrigger value="registration" style={{ borderRadius: 6 }}>
+                    Регистрация
+                  </TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="registration" className="mt-6">
+                  <form onSubmit={handleSignUp} autoComplete="off" className="space-y-4">
+                    <FormField label="Email" id="signup-email">
+                      <Input
+                        id="signup-email"
                         name="email"
-                    type="email"
-                    placeholder="name@example.com"
-                        value={loginEmail}
-                        onChange={(e) => setLoginEmail(e.target.value)}
-                    disabled={loading}
-                    required
+                        type="email"
+                        placeholder="name@example.com"
+                        value={signupEmail}
+                        onChange={(e) => setSignupEmail(e.target.value)}
+                        disabled={loading}
+                        required
                         autoComplete="email"
-                    className="retro-input"
+                      />
+                    </FormField>
+                    <FormField label="Пароль" id="signup-password">
+                      <Input
+                        id="signup-password"
+                        name="new-password"
+                        type="password"
+                        placeholder="Минимум 6 символов"
+                        value={signupPassword}
+                        onChange={(e) => setSignupPassword(e.target.value)}
+                        disabled={loading}
+                        required
+                        minLength={6}
+                        autoComplete="new-password"
+                      />
+                    </FormField>
+                    <FormField label="Подтвердите пароль" id="signup-confirm-password">
+                      <Input
+                        id="signup-confirm-password"
+                        name="confirm-password"
+                        type="password"
+                        placeholder="••••••••"
+                        value={confirmPassword}
+                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        disabled={loading}
+                        required
+                        minLength={6}
+                        autoComplete="new-password"
+                      />
+                    </FormField>
+                    <Button
+                      type="submit"
+                      className="btn btn-primary w-full"
+                      disabled={loading || !isSignupFormValid}
+                    >
+                      {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                      Зарегистрироваться
+                    </Button>
+                  </form>
+                </TabsContent>
+
+                <TabsContent value="authorization" className="mt-6">
+                  <LoginForm
+                    email={loginEmail}
+                    password={loginPassword}
+                    setEmail={setLoginEmail}
+                    setPassword={setLoginPassword}
+                    loading={loading}
+                    isValid={isLoginFormValid}
+                    onSubmit={handleSubmit}
                   />
-                </div>
-                <div className="space-y-2">
-                      <Label htmlFor="login-password" className="retro-label">
-                    ПАРОЛЬ:
-                  </Label>
-                  <Input
-                        id="login-password"
-                        name="password"
-                    type="password"
-                    placeholder="••••••••"
-                        value={loginPassword}
-                        onChange={(e) => setLoginPassword(e.target.value)}
-                    disabled={loading}
-                    required
-                    minLength={6}
-                        autoComplete="current-password"
-                    className="retro-input"
-                  />
-                </div>
-                <Button
-                  type="submit"
-                  className="retro-button w-full"
-                  disabled={loading || !isLoginFormValid}
+                </TabsContent>
+              </Tabs>
+            </>
+          ) : (
+            <>
+              <h1>Войти в Джихелпер</h1>
+              <p className="lede">Введите email и пароль</p>
+
+              <LoginForm
+                email={loginEmail}
+                password={loginPassword}
+                setEmail={setLoginEmail}
+                setPassword={setLoginPassword}
+                loading={loading}
+                isValid={isLoginFormValid}
+                onSubmit={handleSubmit}
+              />
+
+              <div
+                className="mt-6 rounded-lg p-5"
+                style={{
+                  background: "var(--bg-soft)",
+                  border: "1px solid var(--border-soft)",
+                }}
+              >
+                <p
+                  className="text-sm text-center mb-3"
+                  style={{ color: "var(--text-secondary)" }}
                 >
-                  {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                  ВОЙТИ
-                </Button>
-                  </div>
-            </form>
-              )}
-            </CardContent>
-          </Card>
-          
-          {/* Calendly section - shown only when signup is disabled */}
-          {!isSignupEnabled && (
-            <div className="retro-info-box p-6 w-full">
-              <div className="space-y-3">
-                <p className="retro-info-text text-sm text-center">
                   Регистрация доступна только после звонка
                 </p>
                 <button
                   type="button"
                   onClick={handleCalendlyClick}
-                  className="retro-calendly-button w-full"
-                  style={{
-                    borderRadius: '0.5rem',
-                    cursor: 'pointer',
-                  }}
+                  className="btn btn-outline-accent w-full btn-sm"
                 >
-                  ЗАПИСАТЬСЯ НА ЗВОНОК
+                  Записаться на звонок
                 </button>
               </div>
-            </div>
+            </>
           )}
         </div>
-      </div>
+
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 18,
+            fontSize: 13,
+            color: "var(--text-muted)",
+            marginTop: 32,
+            paddingTop: 24,
+            borderTop: "1px solid var(--border-strong)",
+          }}
+        >
+          <Link href="/" style={{ color: "var(--text-muted)" }}>На главную</Link>
+        </div>
+      </main>
+
       <ToasterClient />
-    </>
+
+      <style jsx>{`
+        .auth-shell {
+          min-height: 100vh;
+          display: grid;
+          grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+          background: var(--bg);
+        }
+        .auth-aside {
+          background: var(--bg-dark);
+          color: var(--text-on-dark);
+          padding: 48px 56px;
+          display: flex;
+          flex-direction: column;
+          position: relative;
+          overflow: hidden;
+        }
+        .auth-aside::after {
+          content: "";
+          position: absolute;
+          inset: 0;
+          background:
+            radial-gradient(800px 360px at 80% 10%, rgba(168, 118, 62, 0.1), transparent 60%),
+            radial-gradient(700px 300px at 10% 90%, rgba(122, 46, 46, 0.18), transparent 65%);
+          pointer-events: none;
+        }
+        .auth-aside > * {
+          position: relative;
+          z-index: 1;
+        }
+        .auth-aside .logo {
+          font-family: var(--font-serif-family);
+          font-weight: 600;
+          font-size: 24px;
+          color: #fff;
+          letter-spacing: -0.01em;
+          display: inline-flex;
+          align-items: baseline;
+          margin-bottom: auto;
+        }
+        .aside-body {
+          margin-top: auto;
+        }
+        .auth-main {
+          display: flex;
+          flex-direction: column;
+          padding: 28px 56px 40px;
+          background: var(--bg);
+          min-height: 100vh;
+        }
+        .auth-form-wrap {
+          width: 100%;
+          max-width: 420px;
+          margin: auto;
+          padding: 32px 0;
+        }
+        .auth-form-wrap h1 {
+          font-family: var(--font-serif-family);
+          font-size: 32px;
+          font-weight: 500;
+          letter-spacing: -0.012em;
+          margin: 0 0 8px;
+          color: var(--text-primary);
+        }
+        .auth-form-wrap .lede {
+          color: var(--text-secondary);
+          font-size: 15.5px;
+          margin: 0 0 28px;
+          line-height: 1.5;
+        }
+        @media (max-width: 900px) {
+          .auth-shell {
+            grid-template-columns: minmax(0, 1fr);
+          }
+          .auth-aside {
+            padding: 28px 22px 26px;
+            min-height: auto;
+          }
+          .auth-aside .logo {
+            margin-bottom: 20px;
+            font-size: 22px;
+          }
+          .auth-main {
+            padding: 20px 18px 28px;
+            min-height: auto;
+          }
+          .auth-form-wrap {
+            padding: 8px 0;
+            max-width: none;
+          }
+          .auth-form-wrap h1 {
+            font-size: 26px;
+          }
+        }
+      `}</style>
+    </div>
   );
 }
 
+function FormField({
+  label,
+  id,
+  children,
+}: {
+  label: string;
+  id: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={id} style={{ fontSize: 13.5, fontWeight: 600, color: "#2A313D" }}>
+        {label}
+      </Label>
+      {children}
+    </div>
+  );
+}
+
+function LoginForm({
+  email,
+  password,
+  setEmail,
+  setPassword,
+  loading,
+  isValid,
+  onSubmit,
+}: {
+  email: string;
+  password: string;
+  setEmail: (v: string) => void;
+  setPassword: (v: string) => void;
+  loading: boolean;
+  isValid: boolean;
+  onSubmit: (e: React.FormEvent) => void;
+}) {
+  return (
+    <form onSubmit={onSubmit} autoComplete="off" className="space-y-4">
+      <FormField label="Email" id="login-email">
+        <Input
+          id="login-email"
+          name="email"
+          type="email"
+          placeholder="name@example.com"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          disabled={loading}
+          required
+          autoComplete="email"
+        />
+      </FormField>
+      <FormField label="Пароль" id="login-password">
+        <Input
+          id="login-password"
+          name="password"
+          type="password"
+          placeholder="••••••••"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          disabled={loading}
+          required
+          minLength={6}
+          autoComplete="current-password"
+        />
+      </FormField>
+      <Button
+        type="submit"
+        className="btn btn-primary w-full"
+        disabled={loading || !isValid}
+      >
+        {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+        Войти
+      </Button>
+    </form>
+  );
+}
