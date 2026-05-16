@@ -467,7 +467,7 @@ export function CaseWorkspace({
         <main className="flex flex-1 flex-col" style={{ background: "#FBFAF6", minWidth: 0 }}>
           <div className="flex-1 overflow-hidden">
             <ScrollArea className="h-full">
-              <div className="chat-container mx-auto flex w-full max-w-3xl flex-col gap-4 px-5 py-8">
+              <div className="chat-container mx-auto flex w-full flex-col gap-4 px-8 py-8" style={{ maxWidth: 860 }}>
                 {isLoadingChats && !activeSession ? (
                   <div className="mt-10 text-center" style={{ color: "var(--text-secondary)" }}>
                     <Loader2 className="mx-auto h-10 w-10 animate-spin" />
@@ -789,8 +789,8 @@ export function CaseWorkspace({
               onSubmit={handleSubmit}
               onDragOver={handleDragOver}
               onDrop={handleDrop}
-              className="mx-auto flex w-full max-w-3xl flex-col gap-2"
-              style={{ padding: "14px 20px 18px" }}
+              className="mx-auto flex w-full flex-col gap-2"
+              style={{ maxWidth: 860, padding: "14px 32px 18px" }}
             >
               <input
                 ref={fileInputRef}
