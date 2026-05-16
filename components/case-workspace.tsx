@@ -21,8 +21,6 @@ import {
   Plus,
   Send,
   X,
-  Zap,
-  Brain,
 } from "lucide-react";
 
 type LocalChatSession = {
@@ -294,6 +292,8 @@ export function CaseWorkspace({
             background: "var(--bg)",
             borderRight: "1px solid var(--border-strong)",
             minHeight: 0,
+            overflow: "hidden",
+            flexShrink: 0,
           }}
         >
           <div
@@ -321,8 +321,8 @@ export function CaseWorkspace({
           </div>
 
           <div className="flex-1 overflow-hidden">
-            <ScrollArea className="h-full">
-              <div className="space-y-1 p-2">
+            <ScrollArea className="h-full w-full">
+              <div className="space-y-1 p-2" style={{ width: "100%" }}>
                 {isLoadingChats ? (
                   <div
                     className="rounded-lg border border-dashed px-4 py-8 text-center"
@@ -362,7 +362,7 @@ export function CaseWorkspace({
                           onSelectSession(session.id);
                           setIsSidebarOpen(false);
                         }}
-                        className="flex w-full items-start gap-2.5 rounded-lg px-3 py-2.5 text-left transition-colors"
+                        className="flex w-full min-w-0 items-start gap-2.5 rounded-lg px-3 py-2.5 text-left transition-colors overflow-hidden"
                         style={{
                           background: isActive ? "var(--brand-accent-bg)" : "transparent",
                           color: "var(--text-primary)",
@@ -786,7 +786,7 @@ export function CaseWorkspace({
                 className="composer-row"
                 style={{
                   display: "flex",
-                  alignItems: "flex-end",
+                  alignItems: "center",
                   gap: 10,
                   background: "#fff",
                   border: "1px solid var(--border-strong)",
@@ -800,7 +800,7 @@ export function CaseWorkspace({
                   onChange={(event) => onInputChange(event.target.value)}
                   onKeyDown={handleInputKeyDown}
                   placeholder="Опишите ситуацию, вопрос или запрос…"
-                  className="flex-1 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
+                  className="flex-1 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 focus:outline-none outline-none min-h-0"
                   style={{
                     minHeight: 24,
                     maxHeight: 160,
@@ -932,7 +932,7 @@ function ModeToggle({
         style={{ ...baseBtnStyle, ...(isFast ? activeStyle : {}) }}
         title="Быстрая модель"
       >
-        <Zap className="h-3.5 w-3.5" />
+        <span>⚡</span>
         Быстрая
       </button>
       <button
@@ -943,7 +943,7 @@ function ModeToggle({
         style={{ ...baseBtnStyle, ...(isDeep ? activeStyle : {}) }}
         title="Думающая модель"
       >
-        <Brain className="h-3.5 w-3.5" />
+        <span>🧠</span>
         Думающая
       </button>
     </div>
