@@ -285,17 +285,19 @@ export function CaseWorkspace({
         {/* Sidebar */}
         <aside
           className={cn(
-            "fixed inset-y-0 left-0 z-40 flex w-80 flex-col transition-transform duration-300 md:static md:translate-x-0",
+            "fixed inset-y-0 left-0 z-40 flex flex-col transition-transform duration-300 md:static md:translate-x-0",
             isSidebarOpen ? "translate-x-0" : "-translate-x-full",
           )}
           style={{
+            width: 280,
+            flexShrink: 0,
             background: "var(--bg)",
             borderRight: "1px solid var(--border-strong)",
             minHeight: 0,
             overflow: "hidden",
-            flexShrink: 0,
           }}
         >
+          {/* Mobile close header */}
           <div
             className="flex items-center justify-between border-b p-4 md:hidden"
             style={{ borderBottomColor: "var(--border-strong)" }}
@@ -309,106 +311,155 @@ export function CaseWorkspace({
             </Button>
           </div>
 
+          {/* New chat button */}
           <div style={{ padding: 12, borderBottom: "1px solid var(--border-soft)" }}>
-            <Button
+            <button
+              type="button"
               onClick={onNewChat}
-              className="btn btn-outline-accent w-full"
-              style={{ padding: "9px 12px", fontSize: 13.5 }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 6,
+                width: "100%",
+                padding: "9px 12px",
+                borderRadius: 8,
+                border: "1px solid var(--brand-accent)",
+                color: "var(--brand-accent)",
+                background: "transparent",
+                fontWeight: 500,
+                fontSize: 13.5,
+                cursor: "pointer",
+                transition: "background .15s",
+                fontFamily: "inherit",
+              }}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLElement).style.background = "var(--brand-accent-bg)";
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLElement).style.background = "transparent";
+              }}
             >
-              <Plus className="h-4 w-4 mr-1.5" />
+              <Plus className="h-4 w-4" />
               Новый чат
-            </Button>
+            </button>
           </div>
 
-          <div className="flex-1 overflow-hidden">
-            <ScrollArea className="h-full w-full">
-              <div className="space-y-1 p-2" style={{ width: "100%" }}>
-                {isLoadingChats ? (
-                  <div
-                    className="rounded-lg border border-dashed px-4 py-8 text-center"
-                    style={{ borderColor: "var(--border-strong)" }}
-                  >
-                    <Loader2
-                      className="mx-auto h-8 w-8 animate-spin"
-                      style={{ color: "var(--text-secondary)" }}
-                    />
-                    <p className="mt-2 text-sm" style={{ color: "var(--text-secondary)" }}>
-                      Загрузка чатов...
-                    </p>
-                  </div>
-                ) : sortedSessions.length === 0 ? (
-                  <div
-                    className="rounded-lg border border-dashed px-4 py-8 text-center"
-                    style={{ borderColor: "var(--border-strong)" }}
-                  >
-                    <MessageSquare
-                      className="mx-auto h-8 w-8"
-                      style={{ color: "var(--text-secondary)" }}
-                    />
-                    <p className="mt-2 text-sm" style={{ color: "var(--text-secondary)" }}>
-                      Нет чатов
-                    </p>
-                    <p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
-                      Создайте первый чат
-                    </p>
-                  </div>
-                ) : (
-                  sortedSessions.map((session) => {
-                    const isActive = session.id === activeSessionId;
-                    return (
-                      <button
-                        key={session.id}
-                        onClick={() => {
-                          onSelectSession(session.id);
-                          setIsSidebarOpen(false);
-                        }}
-                        className="flex w-full min-w-0 items-start gap-2.5 rounded-lg px-3 py-2.5 text-left transition-colors overflow-hidden"
+          {/* Chat list — plain overflow div, NOT ScrollArea (avoids horizontal bleed) */}
+          <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
+            <div style={{ padding: 8 }}>
+              {isLoadingChats ? (
+                <div
+                  className="rounded-lg border border-dashed px-4 py-8 text-center"
+                  style={{ borderColor: "var(--border-strong)" }}
+                >
+                  <Loader2
+                    className="mx-auto h-8 w-8 animate-spin"
+                    style={{ color: "var(--text-secondary)" }}
+                  />
+                  <p className="mt-2 text-sm" style={{ color: "var(--text-secondary)" }}>
+                    Загрузка чатов...
+                  </p>
+                </div>
+              ) : sortedSessions.length === 0 ? (
+                <div
+                  className="rounded-lg border border-dashed px-4 py-8 text-center"
+                  style={{ borderColor: "var(--border-strong)" }}
+                >
+                  <MessageSquare
+                    className="mx-auto h-8 w-8"
+                    style={{ color: "var(--text-secondary)" }}
+                  />
+                  <p className="mt-2 text-sm" style={{ color: "var(--text-secondary)" }}>
+                    Нет чатов
+                  </p>
+                  <p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
+                    Создайте первый чат
+                  </p>
+                </div>
+              ) : (
+                sortedSessions.map((session) => {
+                  const isActive = session.id === activeSessionId;
+                  return (
+                    <button
+                      key={session.id}
+                      type="button"
+                      onClick={() => {
+                        onSelectSession(session.id);
+                        setIsSidebarOpen(false);
+                      }}
+                      style={{
+                        display: "flex",
+                        alignItems: "flex-start",
+                        gap: 10,
+                        width: "100%",
+                        padding: "10px",
+                        borderRadius: 8,
+                        border: 0,
+                        marginBottom: 2,
+                        background: isActive ? "var(--brand-accent-bg)" : "transparent",
+                        cursor: "pointer",
+                        textAlign: "left",
+                        fontFamily: "inherit",
+                        transition: "background .15s",
+                        boxSizing: "border-box",
+                        minWidth: 0,
+                        overflow: "hidden",
+                      }}
+                      onMouseEnter={(e) => {
+                        if (!isActive) (e.currentTarget as HTMLElement).style.background = "#F1EFE7";
+                      }}
+                      onMouseLeave={(e) => {
+                        if (!isActive) (e.currentTarget as HTMLElement).style.background = "transparent";
+                      }}
+                    >
+                      <MessageSquare
                         style={{
-                          background: isActive ? "var(--brand-accent-bg)" : "transparent",
-                          color: "var(--text-primary)",
+                          width: 18,
+                          height: 18,
+                          flexShrink: 0,
+                          marginTop: 2,
+                          color: isActive ? "var(--brand-accent)" : "var(--text-secondary)",
                         }}
-                        onMouseEnter={(e) => {
-                          if (!isActive) {
-                            (e.currentTarget as HTMLElement).style.background = "#F1EFE7";
-                          }
-                        }}
-                        onMouseLeave={(e) => {
-                          if (!isActive) {
-                            (e.currentTarget as HTMLElement).style.background = "transparent";
-                          }
+                      />
+                      {/* body: min-width:0 + flex:1 — ключ для truncate */}
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div
+                          style={{
+                            fontSize: 13.5,
+                            fontWeight: 500,
+                            color: "var(--text-primary)",
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}
+                        >
+                          {session.title || "Новый чат"}
+                        </div>
+                      </div>
+                      {/* timestamp: flex-shrink:0 — остаётся справа */}
+                      <span
+                        style={{
+                          fontSize: 11.5,
+                          color: "var(--text-muted)",
+                          flexShrink: 0,
+                          marginLeft: 6,
+                          marginTop: 2,
+                          whiteSpace: "nowrap",
                         }}
                       >
-                        <MessageSquare
-                          className="h-4 w-4 flex-shrink-0 mt-0.5"
-                          style={{
-                            color: isActive ? "var(--brand-accent)" : "var(--text-secondary)",
-                          }}
-                        />
-                        <div className="min-w-0 flex-1">
-                          <div
-                            className="text-sm font-medium truncate"
-                            style={{ color: "var(--text-primary)" }}
-                          >
-                            {session.title || "Новый чат"}
-                          </div>
-                          <div
-                            className="text-xs mt-0.5"
-                            style={{ color: "var(--text-muted)" }}
-                          >
-                            {new Date(session.createdAt).toLocaleString("ru-RU", {
-                              day: "numeric",
-                              month: "short",
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })}
-                          </div>
-                        </div>
-                      </button>
-                    );
-                  })
-                )}
-              </div>
-            </ScrollArea>
+                        {new Date(session.createdAt).toLocaleString("ru-RU", {
+                          day: "numeric",
+                          month: "short",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
           </div>
         </aside>
 
