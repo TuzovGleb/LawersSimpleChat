@@ -137,22 +137,6 @@ export function CaseWorkspace({
     [onAttachDocument],
   );
 
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-  }, []);
-
-  const handleDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      dragCounterRef.current = 0;
-      setIsDragging(false);
-      if (e.dataTransfer.files.length > 0) {
-        onAttachDocument(e.dataTransfer.files);
-      }
-    },
-    [onAttachDocument],
-  );
-
   const handlePageDragEnter = useCallback((e: React.DragEvent) => {
     if (e.dataTransfer.types.includes("Files")) {
       dragCounterRef.current += 1;
@@ -787,8 +771,6 @@ export function CaseWorkspace({
           >
             <form
               onSubmit={handleSubmit}
-              onDragOver={handleDragOver}
-              onDrop={handleDrop}
               className="mx-auto flex w-full flex-col gap-2"
               style={{ maxWidth: 860, padding: "14px 32px 18px" }}
             >
