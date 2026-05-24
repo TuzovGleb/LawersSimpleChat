@@ -105,6 +105,37 @@ export function CaseWorkspace({
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [activeSession?.messages]);
 
+  const resetDragState = useCallback(() => {
+    dragCounterRef.current = 0;
+    setIsDragging(false);
+  }, []);
+
+  useEffect(() => {
+    const handleWindowDragEnd = () => {
+      resetDragState();
+    };
+
+    const handleWindowKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        resetDragState();
+      }
+    };
+
+    const handleWindowMouseUp = () => {
+      resetDragState();
+    };
+
+    window.addEventListener("dragend", handleWindowDragEnd);
+    window.addEventListener("keydown", handleWindowKeyDown);
+    window.addEventListener("mouseup", handleWindowMouseUp);
+
+    return () => {
+      window.removeEventListener("dragend", handleWindowDragEnd);
+      window.removeEventListener("keydown", handleWindowKeyDown);
+      window.removeEventListener("mouseup", handleWindowMouseUp);
+    };
+  }, [resetDragState]);
+
   const handleSubmit = useCallback(
     (event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault();
@@ -144,23 +175,27 @@ export function CaseWorkspace({
     }
   }, []);
 
-  const handlePageDragLeave = useCallback(() => {
-    dragCounterRef.current -= 1;
-    if (dragCounterRef.current === 0) {
-      setIsDragging(false);
+  const handlePageDragLeave = useCallback((e: React.DragEvent) => {
+    if (e.relatedTarget === null) {
+      resetDragState();
+      return;
     }
-  }, []);
+
+    dragCounterRef.current -= 1;
+    if (dragCounterRef.current <= 0) {
+      resetDragState();
+    }
+  }, [resetDragState]);
 
   const handlePageDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
-      dragCounterRef.current = 0;
-      setIsDragging(false);
+      resetDragState();
       if (e.dataTransfer.files.length > 0) {
         onAttachDocument(e.dataTransfer.files);
       }
     },
-    [onAttachDocument],
+    [onAttachDocument, resetDragState],
   );
 
   return (
