@@ -526,12 +526,14 @@ export function CaseWorkspace({
                           className="message-content rounded-2xl px-4 py-3"
                           style={{ background: "#F0F0EE" }}
                         >
-                          <p
-                            className="mobile-safe-text whitespace-pre-wrap text-sm leading-relaxed"
-                            style={{ wordBreak: "normal", overflowWrap: "break-word", color: "var(--text-primary)" }}
-                          >
-                            {message.content}
-                          </p>
+                          {message.content.trim() ? (
+                            <p
+                              className="mobile-safe-text whitespace-pre-wrap text-sm leading-relaxed"
+                              style={{ wordBreak: "normal", overflowWrap: "break-word", color: "var(--text-primary)" }}
+                            >
+                              {message.content}
+                            </p>
+                          ) : null}
                           {Array.isArray(message.attachedDocumentIds) &&
                             message.attachedDocumentIds.length > 0 && (
                               <div className="mt-2 flex flex-wrap justify-end gap-1.5">

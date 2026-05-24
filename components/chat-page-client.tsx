@@ -902,7 +902,7 @@ export function ChatPageClient() {
     const attachedDocumentIds = attachedDocuments.map((document) => document.id);
     const userMessage: ChatMessage = {
       role: "user",
-      content: trimmedMessage || "Проанализируй прикрепленные документы.",
+      content: trimmedMessage,
       ...(attachedDocumentIds.length > 0
         ? { attachedDocumentIds, attachedDocuments }
         : {}),

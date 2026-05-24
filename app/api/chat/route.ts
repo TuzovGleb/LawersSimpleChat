@@ -383,5 +383,10 @@ function formatMessageContentWithAttachments(
     return message.content;
   }
 
-  return `${message.content}\n\n[Прикрепленные документы к этому сообщению]\n\n${prepared.join('\n\n---\n\n')}`;
+  const attachmentsBlock = `[Прикрепленные документы к этому сообщению]\n\n${prepared.join('\n\n---\n\n')}`;
+  if (!message.content.trim()) {
+    return attachmentsBlock;
+  }
+
+  return `${message.content}\n\n${attachmentsBlock}`;
 }
