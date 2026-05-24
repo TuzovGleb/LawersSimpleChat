@@ -3,6 +3,7 @@
 // Поддерживает OpenRouter (приоритет) и OpenAI (fallback)
 // 
 import { createOpenRouterClient, isOpenRouterAvailable } from './openrouter-client';
+import { OPENROUTER_CLAUDE_SONNET_LATEST } from './model-config';
 
 // Функция для получения расширения файла без использования модуля 'path'
 function getFileExtension(filename: string): string {
@@ -39,8 +40,16 @@ async function getAIClient() {
   return null;
 }
 
-const MAX_DOCUMENT_TEXT_LENGTH = 18000;
 const MIN_TEXT_LENGTH_FOR_SUCCESS = 80;
+const DOCUMENT_EXTRACTION_MODEL_OPENAI = 'gpt-4o-mini';
+const DOCUMENT_EXTRACTION_MODEL_OPENROUTER = OPENROUTER_CLAUDE_SONNET_LATEST;
+const DOCUMENT_EXTRACTION_MAX_TOKENS = 16384;
+
+function getDocumentExtractionModel(): string {
+  return isOpenRouterAvailable()
+    ? DOCUMENT_EXTRACTION_MODEL_OPENROUTER
+    : DOCUMENT_EXTRACTION_MODEL_OPENAI;
+}
 
 export type ExtractedDocument = {
   text: string;
@@ -157,15 +166,12 @@ async function extractWithVision(buffer: Buffer, mimeType: string, filename: str
   
   try {
     const base64 = buffer.toString('base64');
-    // Используем модель для OpenRouter или OpenAI в зависимости от клиента
-    const model = isOpenRouterAvailable() 
-      ? (process.env.OPENAI_VISION_MODEL ?? 'openai/gpt-4o-mini')
-      : (process.env.OPENAI_VISION_MODEL ?? 'gpt-4o-mini');
-    
+    const model = getDocumentExtractionModel();
+
     const completion = await openai.chat.completions.create({
       model,
       temperature: 0,
-      max_tokens: 2000,
+      max_tokens: DOCUMENT_EXTRACTION_MAX_TOKENS,
       messages: [
         {
           role: 'system',
@@ -262,8 +268,8 @@ async function extractWithFileAttachment(buffer: Buffer, filename: string) {
         }
       }
       
-      const model = process.env.OPENAI_EXTRACTION_MODEL ?? 'openai/gpt-4o-mini';
-      
+      const model = getDocumentExtractionModel();
+
       const completion = await openai.chat.completions.create({
         model,
         messages: [
@@ -277,6 +283,7 @@ async function extractWithFileAttachment(buffer: Buffer, filename: string) {
           },
         ],
         temperature: 0,
+        max_tokens: DOCUMENT_EXTRACTION_MAX_TOKENS,
       });
       
       const text = completion.choices[0]?.message?.content ?? '';
@@ -319,7 +326,7 @@ async function extractWithFileAttachment(buffer: Buffer, filename: string) {
       }
       
       const completion = await openai.chat.completions.create({
-        model: process.env.OPENAI_EXTRACTION_MODEL ?? 'gpt-4o-mini',
+        model: getDocumentExtractionModel(),
         messages: [
           {
             role: 'system',
@@ -331,6 +338,7 @@ async function extractWithFileAttachment(buffer: Buffer, filename: string) {
           },
         ],
         temperature: 0,
+        max_tokens: DOCUMENT_EXTRACTION_MAX_TOKENS,
       });
       
       const text = completion.choices[0]?.message?.content ?? '';
@@ -399,12 +407,10 @@ function extractContentFromCompletion(content: unknown): string {
 
 function normalizeResult(rawText: string, strategy: ExtractedDocument['strategy']): ExtractedDocument {
   const cleaned = rawText.replace(/\u0000/g, '').trim();
-  const truncated = cleaned.length > MAX_DOCUMENT_TEXT_LENGTH;
-  const text = truncated ? cleaned.slice(0, MAX_DOCUMENT_TEXT_LENGTH) : cleaned;
   return {
-    text,
+    text: cleaned,
     rawTextLength: cleaned.length,
-    truncated,
+    truncated: false,
     strategy,
   };
 }

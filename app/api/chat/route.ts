@@ -304,7 +304,6 @@ export async function POST(req: NextRequest) {
 }
 
 const MAX_CONTEXT_DOCUMENTS = 20;
-const MAX_CHARACTERS_PER_DOCUMENT = 50000;
 
 function getAttachedDocumentIds(message: ChatMessage | undefined) {
   if (!message || !Array.isArray(message.attachedDocumentIds)) {
@@ -371,13 +370,7 @@ function formatMessageContentWithAttachments(
   const prepared = attachmentIds
     .map((id) => documentsById.get(id))
     .filter((doc): doc is ChatRequestDocument => Boolean(doc))
-    .map((doc) => {
-      const text = doc.text.length > MAX_CHARACTERS_PER_DOCUMENT
-        ? `${doc.text.slice(0, MAX_CHARACTERS_PER_DOCUMENT)}\n\n[Текст документа усечён]`
-        : doc.text;
-
-      return `Документ: ${doc.name}\n\n${text}`;
-    });
+    .map((doc) => `Документ: ${doc.name}\n\n${doc.text}`);
 
   if (prepared.length === 0) {
     return message.content;

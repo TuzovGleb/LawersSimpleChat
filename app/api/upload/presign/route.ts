@@ -21,8 +21,6 @@ const ALLOWED_MIME_TYPES = new Set([
   'image/heic',
 ]);
 
-const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
-
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -47,13 +45,6 @@ export async function POST(req: NextRequest) {
     if (!ALLOWED_MIME_TYPES.has(mimeType)) {
       return NextResponse.json(
         { error: `Тип файла "${mimeType}" не поддерживается.` },
-        { status: 400 },
-      );
-    }
-
-    if (size > MAX_FILE_SIZE) {
-      return NextResponse.json(
-        { error: `Файл слишком большой. Максимальный размер: ${MAX_FILE_SIZE / 1024 / 1024} МБ.` },
         { status: 400 },
       );
     }

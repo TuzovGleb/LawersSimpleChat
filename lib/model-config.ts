@@ -115,18 +115,24 @@ export function getFallbackModels(primaryModel: ModelName): ModelName[] {
 }
 
 /**
+ * OpenRouter alias — always resolves to the newest Claude Sonnet in the family.
+ * @see https://openrouter.ai/docs/guides/routing/routers/latest-resolution
+ */
+export const OPENROUTER_CLAUDE_SONNET_LATEST = '~anthropic/claude-sonnet-latest';
+
+/**
  * Конфигурация моделей для OpenRouter
  * OpenRouter использует формат provider/model-name
  */
 export const OPENROUTER_MODEL_CONFIGS: Record<SelectedModel, ModelConfig> = {
   'openai': {
-    name: 'anthropic/claude-sonnet-4.5',
+    name: OPENROUTER_CLAUDE_SONNET_LATEST,
     maxTokens: 16000,
     contextWindow: 200000,
     temperature: 0.7,
     supportsSystemMessages: true,
     priority: 1,
-    description: 'Claude Sonnet 4.5 - быстрая и качественная модель с поиском в интернете',
+    description: 'Claude Sonnet (latest) — быстрая и качественная модель с поиском в интернете',
     enableWebSearch: true,
     webSearchMaxResults: 5,
   },
