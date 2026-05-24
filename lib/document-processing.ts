@@ -3,7 +3,7 @@
 // Поддерживает OpenRouter (приоритет) и OpenAI (fallback)
 // 
 import { createOpenRouterClient, isOpenRouterAvailable } from './openrouter-client';
-import { OPENROUTER_CLAUDE_SONNET_LATEST } from './model-config';
+import { OPENROUTER_DOCUMENT_EXTRACTION_MODEL } from './model-config';
 
 // Функция для получения расширения файла без использования модуля 'path'
 function getFileExtension(filename: string): string {
@@ -42,7 +42,7 @@ async function getAIClient() {
 
 const MIN_TEXT_LENGTH_FOR_SUCCESS = 80;
 const DOCUMENT_EXTRACTION_MODEL_OPENAI = 'gpt-4o-mini';
-const DOCUMENT_EXTRACTION_MODEL_OPENROUTER = OPENROUTER_CLAUDE_SONNET_LATEST;
+const DOCUMENT_EXTRACTION_MODEL_OPENROUTER = OPENROUTER_DOCUMENT_EXTRACTION_MODEL;
 const DOCUMENT_EXTRACTION_MAX_TOKENS = 16384;
 
 function getDocumentExtractionModel(): string {

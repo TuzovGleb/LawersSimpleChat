@@ -120,6 +120,9 @@ export function getFallbackModels(primaryModel: ModelName): ModelName[] {
  */
 export const OPENROUTER_CLAUDE_SONNET_LATEST = '~anthropic/claude-sonnet-latest';
 
+/** OpenRouter model for document text extraction (vision / LLM fallback). */
+export const OPENROUTER_DOCUMENT_EXTRACTION_MODEL = 'google/gemini-3.5-flash';
+
 /**
  * Конфигурация моделей для OpenRouter
  * OpenRouter использует формат provider/model-name
