@@ -111,9 +111,9 @@ export function CaseWorkspace({
   }, []);
 
   useEffect(() => {
-    const handleWindowDragEnd = () => {
-      resetDragState();
-    };
+    if (!isDragging) {
+      return;
+    }
 
     const handleWindowKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -121,20 +121,24 @@ export function CaseWorkspace({
       }
     };
 
-    const handleWindowMouseUp = () => {
+    const handleWindowDragEnd = () => {
       resetDragState();
     };
 
-    window.addEventListener("dragend", handleWindowDragEnd);
+    const handleWindowDrop = () => {
+      resetDragState();
+    };
+
     window.addEventListener("keydown", handleWindowKeyDown);
-    window.addEventListener("mouseup", handleWindowMouseUp);
+    window.addEventListener("dragend", handleWindowDragEnd);
+    window.addEventListener("drop", handleWindowDrop);
 
     return () => {
-      window.removeEventListener("dragend", handleWindowDragEnd);
       window.removeEventListener("keydown", handleWindowKeyDown);
-      window.removeEventListener("mouseup", handleWindowMouseUp);
+      window.removeEventListener("dragend", handleWindowDragEnd);
+      window.removeEventListener("drop", handleWindowDrop);
     };
-  }, [resetDragState]);
+  }, [isDragging, resetDragState]);
 
   const handleSubmit = useCallback(
     (event: React.FormEvent<HTMLFormElement>) => {
@@ -175,12 +179,7 @@ export function CaseWorkspace({
     }
   }, []);
 
-  const handlePageDragLeave = useCallback((e: React.DragEvent) => {
-    if (e.relatedTarget === null) {
-      resetDragState();
-      return;
-    }
-
+  const handlePageDragLeave = useCallback(() => {
     dragCounterRef.current -= 1;
     if (dragCounterRef.current <= 0) {
       resetDragState();
