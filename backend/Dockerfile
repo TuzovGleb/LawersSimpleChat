@@ -14,6 +14,8 @@ RUN uv sync
 COPY ./app ./app
 
 ENV LOGS_PATH=/var/log/app
-EXPOSE 8001
+# Yandex Serverless Containers inject PORT (default 8080); fall back to 8001 locally.
+ENV PORT=8080
+EXPOSE 8080
 
-CMD ["uv", "run", "uvicorn", "app.server.main:app", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["sh", "-c", "uv run uvicorn app.server.main:app --host 0.0.0.0 --port ${PORT:-8001}"]
