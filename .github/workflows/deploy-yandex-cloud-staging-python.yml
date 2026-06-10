@@ -118,9 +118,13 @@ jobs:
           ENV_VARS="${ENV_VARS},SITE_URL=${SITE_URL}"
           ENV_VARS="${ENV_VARS},LOGS_PATH=/tmp/app-logs"
 
-          # LangSmith — опционально
+          # LangSmith — опционально. Устанавливаем оба варианта имён переменных,
+          # т.к. разные версии langchain/langsmith смотрят на разные.
           if [ -n "${LANGSMITH_API_KEY}" ]; then
-            ENV_VARS="${ENV_VARS},LANGSMITH_TRACING=true,LANGSMITH_API_KEY=${LANGSMITH_API_KEY},LANGSMITH_PROJECT=lawers-chat-staging"
+            ENV_VARS="${ENV_VARS},LANGSMITH_TRACING=true,LANGCHAIN_TRACING_V2=true"
+            ENV_VARS="${ENV_VARS},LANGSMITH_API_KEY=${LANGSMITH_API_KEY},LANGCHAIN_API_KEY=${LANGSMITH_API_KEY}"
+            ENV_VARS="${ENV_VARS},LANGSMITH_PROJECT=lawers-chat-staging,LANGCHAIN_PROJECT=lawers-chat-staging"
+            ENV_VARS="${ENV_VARS},LANGSMITH_ENDPOINT=https://api.smith.langchain.com"
           fi
 
           yc serverless container revision deploy \
