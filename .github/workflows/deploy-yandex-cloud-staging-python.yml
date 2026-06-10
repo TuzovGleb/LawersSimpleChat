@@ -14,11 +14,7 @@ on:
         description: 'Ветка для деплоя'
         required: true
         default: 'feature/python-langgraph-backend'
-        type: choice
-        options:
-          - feature/python-langgraph-backend
-          - staging
-          - main
+        type: string
 
 jobs:
   deploy:

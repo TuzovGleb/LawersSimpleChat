@@ -9,10 +9,7 @@ on:
         description: 'Ветка для деплоя'
         required: true
         default: 'staging'
-        type: choice
-        options:
-          - staging
-          - main
+        type: string
 
 jobs:
   deploy:

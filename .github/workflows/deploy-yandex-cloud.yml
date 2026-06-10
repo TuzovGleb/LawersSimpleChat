@@ -4,15 +4,6 @@ on:
   push:
     branches: [ main, master ]
   workflow_dispatch:
-    inputs:
-      branch:
-        description: 'Ветка для деплоя'
-        required: true
-        default: 'main'
-        type: choice
-        options:
-          - main
-          - master
 
 jobs:
   deploy:
@@ -22,8 +13,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-        with:
-          ref: ${{ github.event.inputs.branch || github.ref }}
       
       - name: Setup Node.js
         uses: actions/setup-node@v3
