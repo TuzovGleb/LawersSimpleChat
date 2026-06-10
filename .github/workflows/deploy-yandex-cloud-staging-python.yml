@@ -133,8 +133,11 @@ jobs:
             --concurrency 10 \
             --environment "${ENV_VARS}"
 
-          # Фронт ходит по HTTPS с общим секретом — публичный invoke
-          yc serverless container allow-unauthenticated-invoke jhelper-backend-staging
+          # Публичный invoke нужно включить один раз вручную:
+          #   yc serverless container allow-unauthenticated-invoke jhelper-backend-staging
+          # Или через консоль: Serverless Containers → jhelper-backend-staging → Публичный доступ.
+          # Требует роли serverless.containers.admin у сервисного аккаунта.
+          # Настройка сохраняется для всех последующих ревизий, в CI не нужна.
 
       - name: Resolve backend URL
         id: backend
