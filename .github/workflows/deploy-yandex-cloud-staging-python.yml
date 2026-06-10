@@ -9,6 +9,16 @@ name: Deploy to Yandex Cloud (Staging, Python backend)
 # Для возврата на старую архитектуру просто запустите обычный staging-воркфлоу.
 on:
   workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Ветка для деплоя'
+        required: true
+        default: 'feature/python-langgraph-backend'
+        type: choice
+        options:
+          - feature/python-langgraph-backend
+          - staging
+          - main
 
 jobs:
   deploy:
@@ -18,6 +28,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.inputs.branch }}
 
       - name: Install Yandex Cloud CLI
         run: |

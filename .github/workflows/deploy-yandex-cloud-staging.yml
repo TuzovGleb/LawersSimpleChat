@@ -3,9 +3,16 @@ name: Deploy to Yandex Cloud (Staging)
 on:
   push:
     branches: [ staging ]
-  # Ветка для деплоя выбирается нативным дроп-дауном "Use workflow from"
-  # в диалоге Run workflow (checkout берёт выбранный ref по умолчанию).
   workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Ветка для деплоя'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - main
 
 jobs:
   deploy:
@@ -15,6 +22,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.inputs.branch || github.ref }}
       
       - name: Setup Node.js
         uses: actions/setup-node@v3
