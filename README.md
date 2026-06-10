@@ -126,7 +126,8 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 - `DELETE /api/projects/[projectId]/documents/[documentId]` — Remove document
 - `GET /api/projects/[projectId]/chats` — List chats within project
 - `POST /api/projects/[projectId]/chats` — Create empty chat session
-- `POST /api/chat` — Main chat endpoint with project-aware context
+- `GET /api/chat/[sessionId]/messages` — List messages in a chat session
+- `POST /api/chat/[sessionId]/messages` — Send a message (SSE stream; session id is in the URL)
 
 ## Migration & Backfill
 

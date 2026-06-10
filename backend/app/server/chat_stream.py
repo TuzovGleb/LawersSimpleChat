@@ -10,7 +10,6 @@ import asyncio
 import json
 import logging
 import time
-import uuid
 from typing import AsyncIterator
 
 from fastapi import Request
@@ -27,24 +26,65 @@ def _sse(payload: dict) -> bytes:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
 
 
-async def _run_graph(request: Request, payload: ChatRequest, session_id: str, project_id: str | None):
+async def _assemble_history(
+    repo: SupabaseRepo | None,
+    payload: ChatRequest,
+    session_id: str,
+    is_new_session: bool,
+) -> tuple[list[dict], str]:
+    """Build the conversation history server-side.
+
+    The backend owns history: for an existing session it is loaded from the DB
+    and only the new user message is taken from the request. Client-provided
+    history is used only for new sessions or as a fallback when the DB is
+    unavailable. Returns (history, source) where source is for logging.
+    """
+    client_messages = [m.model_dump() for m in payload.messages]
+    if not repo or is_new_session:
+        return client_messages, "client"
+
+    stored = await repo.load_history(session_id)
+    if stored is None:
+        return client_messages, "client-fallback"
+
+    last_user = next((m for m in reversed(client_messages) if m.get("role") == "user"), None)
+    history = stored + ([last_user] if last_user else [])
+
+    if len(stored) != len(client_messages) - 1:
+        logger.warning(
+            "Server history differs from client history",
+            extra={
+                "session_id": session_id,
+                "stored_messages": len(stored),
+                "client_messages": len(client_messages),
+            },
+        )
+    return history, "server"
+
+
+async def _run_graph(
+    request: Request,
+    payload: ChatRequest,
+    session_id: str,
+    project_id: str | None,
+    history: list[dict],
+):
     graph = request.app.state.chat_graph
     repo: SupabaseRepo | None = request.app.state.repo
 
-    messages = [m.model_dump() for m in payload.messages]
     documents_by_id: dict[str, dict] = {}
     if repo:
-        documents_by_id = await repo.load_attached_documents(project_id, messages)
+        documents_by_id = await repo.load_attached_documents(project_id, history)
 
     state = {
-        "history": messages,
+        "history": history,
         "documents_by_id": documents_by_id,
         "selected_model": payload.selectedModel,
     }
     config = {
         "configurable": {"thread_id": session_id},
         "run_name": "chat",
-        "tags": ["chat", payload.selectedModel or "default"],
+        "tags": ["chat", payload.selectedModel or "default", session_id],
         "metadata": {
             "session_id": session_id,
             "user_id": payload.userId,
@@ -55,21 +95,33 @@ async def _run_graph(request: Request, payload: ChatRequest, session_id: str, pr
     return await graph.ainvoke(state, config=config)
 
 
-async def stream_chat(request: Request, payload: ChatRequest) -> AsyncIterator[bytes]:
+async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> AsyncIterator[bytes]:
     repo: SupabaseRepo | None = request.app.state.repo
 
-    is_new_session = not payload.sessionId
-    session_id = payload.sessionId or str(uuid.uuid4())
+    session_id = chat_id
     started = time.time()
+
+    is_new_session = not await repo.session_exists(session_id) if repo else True
 
     project_id = payload.projectId
     if not project_id and repo:
-        project_id = await repo.resolve_project_id(payload.sessionId)
+        project_id = await repo.resolve_project_id(session_id)
+
+    history, history_source = await _assemble_history(repo, payload, session_id, is_new_session)
+    logger.info(
+        "History assembled",
+        extra={
+            "session_id": session_id,
+            "history_source": history_source,
+            "history_len": len(history),
+            "is_new_session": is_new_session,
+        },
+    )
 
     # Initial heartbeat so the client sees data immediately.
     yield b": heartbeat\n\n"
 
-    task = asyncio.ensure_future(_run_graph(request, payload, session_id, project_id))
+    task = asyncio.ensure_future(_run_graph(request, payload, session_id, project_id, history))
     try:
         while True:
             try:

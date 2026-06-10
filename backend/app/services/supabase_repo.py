@@ -38,6 +38,100 @@ class SupabaseRepo:
         client = await acreate_client(url, service_role_key)
         return cls(client)
 
+    async def session_exists(self, session_id: str) -> bool:
+        try:
+            res = (
+                await self._client.table("chat_sessions")
+                .select("id")
+                .eq("id", session_id)
+                .maybe_single()
+                .execute()
+            )
+            return bool(res and res.data)
+        except Exception:
+            logger.exception("Failed to check chat session", extra={"session_id": session_id})
+            return False
+
+    async def get_messages(self, session_id: str) -> list[dict]:
+        try:
+            res = (
+                await self._client.table("chat_messages")
+                .select("*")
+                .eq("session_id", session_id)
+                .order("created_at")
+                .execute()
+            )
+            messages = res.data or []
+            attached_ids: dict[str, None] = {}
+            for message in messages:
+                for doc_id in message.get("attached_document_ids") or []:
+                    if isinstance(doc_id, str) and doc_id.strip():
+                        attached_ids[doc_id] = None
+
+            documents_by_id: dict[str, dict] = {}
+            if attached_ids:
+                project_id = await self.resolve_project_id(session_id)
+                if project_id:
+                    documents_by_id = await self.load_attached_documents(
+                        project_id,
+                        [{"attachedDocumentIds": list(attached_ids)}],
+                    )
+
+            return [
+                {
+                    **message,
+                    "attachedDocumentIds": [
+                        doc_id
+                        for doc_id in (message.get("attached_document_ids") or [])
+                        if isinstance(doc_id, str)
+                    ],
+                    "attachedDocuments": [
+                        documents_by_id[doc_id]
+                        for doc_id in (message.get("attached_document_ids") or [])
+                        if isinstance(doc_id, str) and doc_id in documents_by_id
+                    ],
+                }
+                for message in messages
+            ]
+        except Exception:
+            logger.exception("Failed to load chat messages", extra={"session_id": session_id})
+            return []
+
+    async def load_history(self, session_id: str) -> list[dict] | None:
+        """Ordered role/content/attachments history for LLM context assembly.
+
+        Returns None on failure (not []) so the caller can distinguish "empty
+        session" from "DB unavailable" and fall back to client-provided history.
+        """
+        try:
+            res = (
+                await self._client.table("chat_messages")
+                .select("role, content, attached_document_ids")
+                .eq("session_id", session_id)
+                .order("created_at")
+                .execute()
+            )
+        except Exception:
+            logger.exception("Failed to load history", extra={"session_id": session_id})
+            return None
+
+        history: list[dict] = []
+        for row in res.data or []:
+            if row.get("role") not in ("user", "assistant"):
+                continue
+            history.append(
+                {
+                    "role": row["role"],
+                    "content": row.get("content") or "",
+                    "attachedDocumentIds": [
+                        doc_id
+                        for doc_id in (row.get("attached_document_ids") or [])
+                        if isinstance(doc_id, str)
+                    ],
+                }
+            )
+        return history
+
     async def resolve_project_id(self, session_id: str | None) -> str | None:
         if not session_id:
             return None

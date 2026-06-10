@@ -4,22 +4,30 @@ FastAPI + LangGraph chat backend for the legal assistant. It owns the chat
 generation pipeline (system prompt, conversation context, attached-document
 injection, OpenRouter call with web search), persists conversations to Supabase,
 and emits LangSmith traces for prod diagnosis. The Next.js app talks to it
-through a thin authenticated proxy at `app/api/chat`.
+through a thin authenticated proxy at `app/api/chat/[sessionId]/messages`.
 
 ## Architecture
 
 ```
-Browser ──> Next.js /api/chat (proxy: validates Supabase session)
+Browser ──> Next.js /api/chat/{sessionId}/messages (proxy: validates Supabase session)
               │  forwards body + X-Backend-Secret
               ▼
-        FastAPI /chat  ──>  LangGraph: build_context ──> generate (OpenRouter + web search)
+        FastAPI /chats/{chat_id}/messages  ──>  LangGraph: build_context ──> generate
               │                                   │
-              │ persists turn                     └─ traced in LangSmith (grouped by session)
+              │ persists turn                     └─ LangSmith trace tagged with session id
               ▼
         Supabase (chat_sessions, chat_messages, project_documents)
 ```
 
-The `/chat` endpoint reproduces the exact SSE contract the frontend already
+REST endpoints on the Python backend:
+
+- `GET /chats/{chat_id}/messages` — list messages for a session
+- `POST /chats/{chat_id}/messages` — send a message (SSE stream)
+
+The `chat_id` is always in the URL so a session id can be shared for LangSmith
+lookup (filter traces by tag = session uuid).
+
+The POST endpoint reproduces the exact SSE contract the frontend already
 parses: `:heartbeat` keep-alives followed by a single
 `data: {message, sessionId, projectId, metadata}` event.
 

@@ -33,10 +33,12 @@ const DEFAULT_PROJECT_NAME = "Мои дела";
 
 function createEmptySession(projectId: string): LocalChatSession {
   const now = new Date().toISOString();
+  const chatId = uuidv4();
   return {
-    id: uuidv4(),
+    id: chatId,
     title: "Новый чат",
     messages: [],
+    backendSessionId: chatId,
     documents: [],
     createdAt: now,
     projectId,
@@ -895,7 +897,7 @@ export function ChatPageClient() {
     if (!trimmedMessage && pendingMessageDocuments.length === 0) return;
 
     const sessionLocalId = activeSession.id;
-    const backendSessionId = activeSession.backendSessionId;
+    const chatId = activeSession.backendSessionId ?? activeSession.id;
     const hasUserMessages = activeSession.messages.some((message) => message.role === "user");
     const isFirstUserMessage = !hasUserMessages;
     const attachedDocuments = pendingMessageDocuments.map(toMessageDocument);
@@ -920,10 +922,18 @@ export function ChatPageClient() {
     setPendingRequest({
       sessionLocalId,
       messagesForRequest,
-      backendSessionId,
+      backendSessionId: chatId,
       isFirstUserMessage,
       trimmedMessage: userMessage.content,
     });
+
+    if (!activeSession.backendSessionId) {
+      setSessions((prev) =>
+        prev.map((session) =>
+          session.id === sessionLocalId ? { ...session, backendSessionId: chatId } : session,
+        ),
+      );
+    }
 
     setSessions((prev) =>
       prev.map((session) => {
@@ -940,7 +950,7 @@ export function ChatPageClient() {
       // Используем увеличенный таймаут (35 минут) для долгих thinking-запросов
       // Сервер настроен на 30 минут, добавляем запас
       // Теперь используем streaming для получения ответа с heartbeat
-      const resolvedUrl = resolveApiUrl(`/api/chat${utmQuery}`);
+      const resolvedUrl = resolveApiUrl(`/api/chat/${encodeURIComponent(chatId)}/messages${utmQuery}`);
       
       // Создаем AbortController для возможности отмены запроса
       const abortController = new AbortController();
@@ -964,10 +974,8 @@ export function ChatPageClient() {
         },
         body: JSON.stringify({
           messages: messagesForRequest,
-          sessionId: backendSessionId,
           projectId: selectedProjectId,
-          userId: user.id,
-          selectedModel, // Передаем выбранную модель для OpenRouter
+          selectedModel,
         }),
         signal: AbortSignal.timeout(2100000), // 35 минут таймаут
       });
@@ -1062,7 +1070,7 @@ export function ChatPageClient() {
                     if (session.id !== sessionLocalId) return session;
                     return {
                       ...session,
-                      backendSessionId: data.sessionId ?? session.backendSessionId,
+                      backendSessionId: data.sessionId ?? session.backendSessionId ?? chatId,
                       messages: [...session.messages, assistantMessage],
                       projectId: data.projectId ?? session.projectId ?? selectedProjectId,
                     };

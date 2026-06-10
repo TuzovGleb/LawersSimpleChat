@@ -3,7 +3,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 import logging
 import os
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -84,9 +84,17 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
-@app.post("/chat", dependencies=[Depends(verify_backend_secret)])
-async def chat(request: Request, payload: ChatRequest):
-    return StreamingResponse(stream_chat(request, payload), headers=SSE_HEADERS)
+@app.get("/chats/{chat_id}/messages", dependencies=[Depends(verify_backend_secret)])
+async def get_chat_messages(request: Request, chat_id: str) -> dict:
+    repo: SupabaseRepo | None = request.app.state.repo
+    if not repo:
+        raise HTTPException(status_code=503, detail="Persistence not configured")
+    return {"messages": await repo.get_messages(chat_id)}
+
+
+@app.post("/chats/{chat_id}/messages", dependencies=[Depends(verify_backend_secret)])
+async def post_chat_message(request: Request, chat_id: str, payload: ChatRequest):
+    return StreamingResponse(stream_chat(request, chat_id, payload), headers=SSE_HEADERS)
 
 
 def get_app() -> FastAPI:
