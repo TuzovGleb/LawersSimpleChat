@@ -45,12 +45,6 @@ def build_chat_llm(provider: ProviderConfig, model: ModelConfig) -> ChatOpenAI:
     if provider.app_title:
         default_headers["X-Title"] = provider.app_title
 
-    model_kwargs: dict = {}
-    if model.web_search.enabled:
-        model_kwargs["plugins"] = [
-            {"id": "web", "max_results": model.web_search.max_results}
-        ]
-
     kwargs: dict = {
         "model": model.name,
         "api_key": provider.api_key,
@@ -66,8 +60,13 @@ def build_chat_llm(provider: ProviderConfig, model: ModelConfig) -> ChatOpenAI:
         kwargs["reasoning_effort"] = model.reasoning_effort
     if default_headers:
         kwargs["default_headers"] = default_headers
-    if model_kwargs:
-        kwargs["model_kwargs"] = model_kwargs
+    if model.web_search.enabled:
+        # OpenRouter-specific params are not part of the OpenAI API surface, so
+        # they must go through extra_body (model_kwargs would be passed as
+        # top-level kwargs to the SDK and rejected).
+        kwargs["extra_body"] = {
+            "plugins": [{"id": "web", "max_results": model.web_search.max_results}]
+        }
 
     return ChatOpenAI(**kwargs)
 
