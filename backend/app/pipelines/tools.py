@@ -52,14 +52,14 @@ async def search_court_practice(
 
 @tool
 async def get_court_decision(decision_id: str) -> str:
-    """Fetch the full text of a court decision by uid returned from search_court_practice."""
+    """Fetch the full text of a court decision by id returned from search_court_practice."""
     searcher = _require_searcher()
     if not decision_id or not decision_id.strip():
-        return "Не указан идентификатор решения (uid)."
+        return "Не указан идентификатор решения (id)."
 
     document = await searcher.get_decision(decision_id.strip())
     if not document:
-        return f"Решение с uid={decision_id} не найдено."
+        return f"Решение с id={decision_id} не найдено."
     return format_decision_document(document)
 
 

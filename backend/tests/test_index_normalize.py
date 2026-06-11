@@ -1,10 +1,17 @@
-from app.search.index import normalize_case, parse_russian_date
+from app.search.index import generate_decision_id, normalize_case, parse_russian_date
 
 
 def test_parse_russian_date():
     assert parse_russian_date("16.02.2026") == "2026-02-16"
     assert parse_russian_date("2026-04-13") == "2026-04-13"
     assert parse_russian_date("") is None
+
+
+def test_generate_decision_id_is_stable():
+    first = generate_decision_id("52RS0001", "2-2728/2026")
+    second = generate_decision_id("52RS0001", "2-2728/2026")
+    assert first == second
+    assert len(first) == 32
 
 
 def test_normalize_case_builds_search_document():
@@ -28,12 +35,27 @@ def test_normalize_case_builds_search_document():
     document = normalize_case(case, page_meta)
 
     assert document is not None
-    assert document["_id"] == "52RS0001-02-2026-000770-38"
+    assert document["_id"] == generate_decision_id("52RS0001", "2-2728/2026")
+    assert document["court_uid"] == "52RS0001-02-2026-000770-38"
     assert document["court_name"] == "Автозаводский районный суд"
     assert document["category"] == "Трудовые споры > Зарплата"
     assert document["participants_names"] == "Истец"
     assert document["decision_date"] == "2026-04-13"
 
 
+def test_normalize_case_works_without_court_uid():
+    case = {
+        "caseNumber": "2-999/2026",
+        "actText": "Решение без УИД",
+    }
+    page_meta = {"vnkod": "52RS0001"}
+
+    document = normalize_case(case, page_meta)
+
+    assert document is not None
+    assert document["court_uid"] is None
+    assert document["case_number"] == "2-999/2026"
+
+
 def test_normalize_case_skips_missing_act_text():
-    assert normalize_case({"uid": "x"}, {}) is None
+    assert normalize_case({"caseNumber": "2-1/2026"}, {}) is None

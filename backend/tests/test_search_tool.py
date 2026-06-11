@@ -25,9 +25,9 @@ def test_format_search_results_empty():
 def test_format_search_results_includes_metadata():
     results = [
         RankedDocument(
-            doc_id="uid-1",
+            doc_id="dec-1",
             source={
-                "uid": "uid-1",
+                "decision_id": "dec-1",
                 "case_number": "2-100/2026",
                 "court_name": "Автозаводский районный суд",
                 "decision_date": "2026-04-13",
@@ -40,14 +40,14 @@ def test_format_search_results_includes_metadata():
         )
     ]
     formatted = format_search_results(results)
-    assert "uid-1" in formatted
+    assert "dec-1" in formatted
     assert "2-100/2026" in formatted
     assert "фрагмент решения" in formatted
 
 
 def test_format_decision_document_truncates_long_text():
     doc = {
-        "uid": "uid-2",
+        "decision_id": "dec-2",
         "case_number": "2-200/2026",
         "court_name": "Суд",
         "judge": "Судья",
@@ -68,9 +68,9 @@ async def test_search_court_practice_tool(mock_searcher, monkeypatch):
     async def fake_search(*args, **kwargs):
         return [
             RankedDocument(
-                doc_id="uid-3",
+                doc_id="dec-3",
                 source={
-                    "uid": "uid-3",
+                    "decision_id": "dec-3",
                     "case_number": "2-300/2026",
                     "court_name": "Суд",
                     "decision_date": "2026-02-01",
@@ -86,7 +86,7 @@ async def test_search_court_practice_tool(mock_searcher, monkeypatch):
     result = await search_court_practice.ainvoke(
         {"queries": ["неустойка", "просрочка поставки"], "date_from": None, "date_to": None, "result_type": None}
     )
-    assert "uid-3" in result
+    assert "dec-3" in result
     assert "2-300/2026" in result
 
 
@@ -94,7 +94,7 @@ async def test_search_court_practice_tool(mock_searcher, monkeypatch):
 async def test_get_court_decision_tool(mock_searcher, monkeypatch):
     async def fake_get(decision_id: str):
         return {
-            "uid": decision_id,
+            "decision_id": decision_id,
             "case_number": "2-400/2026",
             "court_name": "Суд",
             "judge": "Иванов",
@@ -107,6 +107,6 @@ async def test_get_court_decision_tool(mock_searcher, monkeypatch):
         }
 
     monkeypatch.setattr(mock_searcher, "get_decision", fake_get)
-    result = await get_court_decision.ainvoke({"decision_id": "uid-4"})
-    assert "uid-4" in result
+    result = await get_court_decision.ainvoke({"decision_id": "dec-4"})
+    assert "dec-4" in result
     assert "Текст акта" in result

@@ -91,7 +91,7 @@ class CourtPracticeSearcher:
         ranked: list[RankedDocument] = []
         for hit in hits:
             source = hit.get("_source") or {}
-            doc_id = source.get("uid") or hit.get("_id")
+            doc_id = source.get("decision_id") or hit.get("_id")
             if not doc_id:
                 continue
             highlights = (hit.get("highlight") or {}).get("act_text") or []
@@ -183,7 +183,7 @@ def format_search_results(results: list[RankedDocument]) -> str:
         blocks.append(
             "\n".join(
                 [
-                    f"{index}. uid: {source.get('uid', doc.doc_id)}",
+                    f"{index}. id: {source.get('decision_id', doc.doc_id)}",
                     f"   Дело: {source.get('case_number', '—')}",
                     f"   Суд: {source.get('court_name', '—')}",
                     f"   Дата решения: {source.get('decision_date', '—')}",
@@ -205,7 +205,7 @@ def format_decision_document(doc: dict) -> str:
 
     header = "\n".join(
         [
-            f"uid: {doc.get('uid', '—')}",
+            f"id: {doc.get('decision_id', '—')}",
             f"Дело: {doc.get('case_number', '—')}",
             f"Суд: {doc.get('court_name', '—')}",
             f"Судья: {doc.get('judge', '—')}",

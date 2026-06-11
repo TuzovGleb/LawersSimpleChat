@@ -1,5 +1,6 @@
 """OpenSearch index mapping and document normalization."""
 from datetime import datetime
+import hashlib
 import logging
 
 from opensearchpy import OpenSearch
@@ -7,7 +8,7 @@ from opensearchpy.helpers import bulk
 
 logger = logging.getLogger(__name__)
 
-INDEX_VERSION = "court_decisions_v1"
+INDEX_VERSION = "court_decisions_v2"
 INDEX_ALIAS = "court_decisions"
 
 INDEX_BODY = {
@@ -30,7 +31,8 @@ INDEX_BODY = {
     },
     "mappings": {
         "properties": {
-            "uid": {"type": "keyword"},
+            "decision_id": {"type": "keyword"},
+            "court_uid": {"type": "keyword"},
             "case_number": {"type": "keyword"},
             "case_number_text": {"type": "text", "analyzer": "russian"},
             "act_title": {"type": "text", "analyzer": "russian"},
@@ -65,10 +67,27 @@ def parse_russian_date(value: str | None) -> str | None:
     return None
 
 
+def generate_decision_id(vnkod: str, case_number: str) -> str:
+    """Stable document id from court code + case number (works without court UID)."""
+    normalized_vnkod = (vnkod or "").strip()
+    normalized_case_number = (case_number or "").strip()
+    if not normalized_case_number:
+        return ""
+    payload = f"{normalized_vnkod}|{normalized_case_number}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+
 def normalize_case(case: dict, page_meta: dict) -> dict | None:
-    uid = case.get("uid")
+    case_number = case.get("caseNumber")
     act_text = case.get("actText")
-    if not uid or not isinstance(act_text, str) or not act_text.strip():
+    if not case_number or not isinstance(case_number, str) or not case_number.strip():
+        return None
+    if not isinstance(act_text, str) or not act_text.strip():
+        return None
+
+    vnkod = page_meta.get("vnkod") or case.get("vnkod") or ""
+    decision_id = generate_decision_id(vnkod, case_number)
+    if not decision_id:
         return None
 
     participants = case.get("participants") or []
@@ -80,11 +99,18 @@ def normalize_case(case: dict, page_meta: dict) -> dict | None:
     category = case.get("category") or []
     category_text = " > ".join(c for c in category if isinstance(c, str) and c.strip())
 
+    court_uid = case.get("uid")
+    if isinstance(court_uid, str):
+        court_uid = court_uid.strip() or None
+    else:
+        court_uid = None
+
     return {
-        "_id": uid,
-        "uid": uid,
-        "case_number": case.get("caseNumber") or "",
-        "case_number_text": case.get("caseNumber") or "",
+        "_id": decision_id,
+        "decision_id": decision_id,
+        "court_uid": court_uid,
+        "case_number": case_number.strip(),
+        "case_number_text": case_number.strip(),
         "act_title": case.get("actTitle") or "",
         "act_text": act_text,
         "category": category_text,
@@ -102,13 +128,27 @@ def normalize_case(case: dict, page_meta: dict) -> dict | None:
 
 
 def ensure_index(client: OpenSearch, *, index_name: str = INDEX_VERSION, alias: str = INDEX_ALIAS) -> None:
-    if client.indices.exists(index=index_name):
-        logger.info("Index already exists", extra={"index": index_name})
-        return
+    if not client.indices.exists(index=index_name):
+        client.indices.create(index=index_name, body=INDEX_BODY)
+        logger.info("Created index", extra={"index": index_name})
 
-    client.indices.create(index=index_name, body=INDEX_BODY)
-    client.indices.put_alias(index=index_name, name=alias)
-    logger.info("Created index and alias", extra={"index": index_name, "alias": alias})
+    if client.indices.exists_alias(name=alias):
+        bound_indices = list(client.indices.get_alias(name=alias).keys())
+    else:
+        bound_indices = []
+
+    actions = [
+        {"remove": {"index": bound_index, "alias": alias}}
+        for bound_index in bound_indices
+        if bound_index != index_name
+    ]
+    if index_name not in bound_indices:
+        actions.append({"add": {"index": index_name, "alias": alias}})
+
+    if actions:
+        client.indices.update_aliases(body={"actions": actions})
+
+    logger.info("Index alias ready", extra={"index": index_name, "alias": alias})
 
 
 def bulk_index_documents(
