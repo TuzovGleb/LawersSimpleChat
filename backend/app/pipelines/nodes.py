@@ -4,12 +4,14 @@ import time
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
+from app.pipelines.tools import COURT_PRACTICE_TOOLS
 from app.rag_core.llm import ChatModelRegistry
 from app.rag_core.prompt import get_system_prompt
 
 logger = logging.getLogger(__name__)
 
 MAX_CONTEXT_DOCUMENTS = 20
+MAX_TOOL_ROUNDS = 4
 
 
 def _format_with_attachments(message: dict, documents_by_id: dict[str, dict]) -> str:
@@ -60,10 +62,16 @@ def build_context(state: dict) -> dict:
             "selected_model": state.get("selected_model"),
         },
     )
-    return {"messages": messages}
+    return {"messages": messages, "tool_rounds": 0}
 
 
-def _extract_metadata(model_used: str, response: AIMessage, response_time_ms: int) -> dict:
+def _extract_metadata(
+    model_used: str,
+    response: AIMessage,
+    response_time_ms: int,
+    *,
+    tool_rounds: int = 0,
+) -> dict:
     usage = getattr(response, "usage_metadata", None) or {}
     finish_reason = (response.response_metadata or {}).get("finish_reason", "stop")
     return {
@@ -74,33 +82,60 @@ def _extract_metadata(model_used: str, response: AIMessage, response_time_ms: in
         "finishReason": finish_reason or "stop",
         "responseTimeMs": response_time_ms,
         "provider": "openrouter",
+        "toolCallsCount": tool_rounds,
     }
 
 
+def route_after_generate(state: dict) -> str:
+    messages = state.get("messages") or []
+    if not messages:
+        return "end"
+
+    last_message = messages[-1]
+    tool_calls = getattr(last_message, "tool_calls", None)
+    if tool_calls:
+        rounds = state.get("tool_rounds", 0)
+        if rounds >= MAX_TOOL_ROUNDS:
+            logger.warning("Tool round limit reached", extra={"tool_rounds": rounds})
+            return "end"
+        return "tools"
+    return "end"
+
+
+async def increment_tool_rounds(state: dict) -> dict:
+    return {"tool_rounds": state.get("tool_rounds", 0) + 1}
+
+
 async def generate(state: dict, *, registry: ChatModelRegistry) -> dict:
-    """Call the selected OpenRouter model and capture response metadata."""
+    """Call the selected OpenRouter model with court-practice tools."""
     model_used, llm = registry.resolve(state.get("selected_model"))
+    tool_rounds = state.get("tool_rounds", 0)
+    llm_to_invoke = llm if tool_rounds >= MAX_TOOL_ROUNDS else llm.bind_tools(COURT_PRACTICE_TOOLS)
     started = time.time()
 
-    response = await llm.ainvoke(state["messages"])
-
+    response = await llm_to_invoke.ainvoke(state["messages"])
     response_time_ms = int((time.time() - started) * 1000)
-    content = response.content if isinstance(response.content, str) else str(response.content)
-    metadata = _extract_metadata(model_used, response, response_time_ms)
 
+    tool_calls = getattr(response, "tool_calls", None) or []
+    content = response.content if isinstance(response.content, str) else str(response.content or "")
+
+    if not tool_calls and (not content or not content.strip()):
+        raise RuntimeError("Empty response from model")
+
+    metadata = _extract_metadata(model_used, response, response_time_ms, tool_rounds=tool_rounds)
     logger.info(
         "Generation complete",
         extra={
             "model_used": model_used,
             "response_chars": len(content),
+            "tool_calls": len(tool_calls),
             "total_tokens": metadata["totalTokens"],
             "finish_reason": metadata["finishReason"],
             "response_time_ms": response_time_ms,
         },
     )
 
-    if not content or not content.strip():
-        raise RuntimeError("Empty response from model")
-
-    full_thread = list(state["messages"]) + [response]
-    return {"response": content, "metadata": metadata, "messages": full_thread}
+    result: dict = {"messages": [response], "metadata": metadata}
+    if not tool_calls:
+        result["response"] = content
+    return result

@@ -10,3 +10,9 @@ app:
   # CORS origins allowed to call the backend directly (comma separated).
   # When all traffic goes through the Next.js proxy this can stay empty.
   cors_origins: ${env.get('BACKEND_CORS_ORIGINS', '')}
+
+  # OpenSearch for court practice full-text search.
+  opensearch:
+    url: ${env.get('OPENSEARCH_URL', 'http://localhost:9200')}
+    index_alias: ${env.get('OPENSEARCH_INDEX_ALIAS', 'court_decisions')}
+    top_k: ${env.get('OPENSEARCH_TOP_K', '8')}

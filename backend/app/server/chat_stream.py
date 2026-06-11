@@ -13,6 +13,7 @@ import time
 from typing import AsyncIterator
 
 from fastapi import Request
+from langchain_core.messages import AIMessage
 
 from app.server.schema import ChatRequest
 from app.services.supabase_repo import SupabaseRepo, unique_document_ids
@@ -135,7 +136,27 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
         return
 
     assistant_message = result.get("response", "")
-    metadata = result.get("metadata", {})
+    if not assistant_message:
+        for message in reversed(result.get("messages") or []):
+            if isinstance(message, AIMessage):
+                content = message.content
+                if isinstance(content, str) and content.strip():
+                    assistant_message = content
+                    break
+                if isinstance(content, list):
+                    text_parts = [
+                        part.get("text", "")
+                        for part in content
+                        if isinstance(part, dict) and part.get("type") == "text"
+                    ]
+                    joined = "".join(text_parts).strip()
+                    if joined:
+                        assistant_message = joined
+                        break
+
+    metadata = result.get("metadata", {}) or {}
+    if "toolCallsCount" not in metadata:
+        metadata["toolCallsCount"] = result.get("tool_rounds", 0)
 
     last_user = next((m for m in reversed(payload.messages) if m.role == "user"), None)
     last_user_content = last_user.content if last_user else ""

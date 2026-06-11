@@ -8,9 +8,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from app.config import CONFIG
+from app.pipelines.tools import set_court_practice_searcher
 from app.pipelines.workflows import build_chat_graph
 from app.rag_core.llm import get_chat_registry
 from app.rag_core.persistence import CheckpointerConfig, build_checkpointer
+from app.search import CourtPracticeSearcher, OpenSearchConfig, build_opensearch_client
 from app.server.chat_stream import stream_chat
 from app.server.schema import ChatRequest
 from app.server.security import verify_backend_secret
@@ -50,6 +52,18 @@ async def lifespan(app: FastAPI):
             CheckpointerConfig.model_validate(chat_params["persistence"]), stack
         )
         app.state.chat_graph = build_chat_graph(registry, checkpointer)
+
+        opensearch_cfg = config["app"].get("opensearch") or {}
+        if opensearch_cfg.get("url"):
+            os_config = OpenSearchConfig.model_validate(opensearch_cfg)
+            os_client = build_opensearch_client(os_config)
+            app.state.court_practice_searcher = CourtPracticeSearcher(os_client, os_config)
+            set_court_practice_searcher(app.state.court_practice_searcher)
+            logger.info("Court practice search enabled", extra={"opensearch_url": os_config.url})
+        else:
+            app.state.court_practice_searcher = None
+            set_court_practice_searcher(None)
+            logger.warning("OpenSearch not configured; court practice tools disabled")
 
         supabase_cfg = config["app"].get("supabase") or {}
         if supabase_cfg.get("url") and supabase_cfg.get("service_role_key"):

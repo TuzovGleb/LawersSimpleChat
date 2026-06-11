@@ -1,0 +1,63 @@
+name: Index court practice (Staging OpenSearch)
+
+on:
+  workflow_dispatch:
+    inputs:
+      opensearch_url:
+        description: 'OpenSearch URL (e.g. http://1.2.3.4:9200)'
+        required: true
+        type: string
+      s3_object_key:
+        description: 'Object key in S3_BUCKET_NAME (default: court-practice/avtozavodsky-cases-2020-2026.zip)'
+        required: false
+        default: court-practice/avtozavodsky-cases-2020-2026.zip
+        type: string
+
+jobs:
+  index:
+    runs-on: ubuntu-latest
+    environment: Staging ENV
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          uv sync
+
+      - name: Download sample zip from Object Storage
+        env:
+          S3_BUCKET_NAME: ${{ vars.S3_BUCKET_NAME }}
+          S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+          S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+        run: |
+          if [ -z "$S3_BUCKET_NAME" ] || [ -z "$S3_ACCESS_KEY_ID" ] || [ -z "$S3_SECRET_ACCESS_KEY" ]; then
+            echo "Error: S3_BUCKET_NAME (var) and S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY (secrets) are required"
+            exit 1
+          fi
+          pip install --quiet awscli
+          aws configure set default.s3.signature_version s3v4
+          export AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY_ID"
+          export AWS_SECRET_ACCESS_KEY="$S3_SECRET_ACCESS_KEY"
+          aws --endpoint-url=https://storage.yandexcloud.net s3 cp \
+            "s3://${S3_BUCKET_NAME}/${{ github.event.inputs.s3_object_key }}" \
+            /tmp/court-practice.zip
+
+      - name: Index documents
+        working-directory: backend
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          uv run python scripts/index_court_practice.py \
+            --source /tmp/court-practice.zip \
+            --opensearch-url "${{ github.event.inputs.opensearch_url }}" \
+            --batch-size 500
+
+      - name: Verify document count
+        run: |
+          curl -fsS "${{ github.event.inputs.opensearch_url }}/court_decisions/_count"

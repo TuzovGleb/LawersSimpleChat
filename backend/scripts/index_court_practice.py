@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""Bulk-index court practice JSON pages into OpenSearch."""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys
+import zipfile
+from pathlib import Path
+
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_DIR))
+
+from app.search.client import OpenSearchConfig, build_opensearch_client
+from app.search.index import INDEX_VERSION, bulk_index_documents, ensure_index, normalize_case
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
+
+
+def iter_cases_from_zip(zip_path: Path):
+    with zipfile.ZipFile(zip_path) as archive:
+        page_names = sorted(
+            name for name in archive.namelist() if name.endswith(".json") and "page-" in name
+        )
+        logger.info("Found %s page files in archive", len(page_names))
+        for name in page_names:
+            with archive.open(name) as handle:
+                page = json.load(handle)
+            page_meta = {
+                "courtName": page.get("courtName"),
+                "vnkod": page.get("vnkod"),
+            }
+            for case in page.get("cases") or []:
+                document = normalize_case(case, page_meta)
+                if document:
+                    yield document
+
+
+def iter_cases_from_directory(directory: Path):
+    page_paths = sorted(directory.rglob("page-*.json"))
+    logger.info("Found %s page files in directory", len(page_paths))
+    for path in page_paths:
+        with path.open(encoding="utf-8") as handle:
+            page = json.load(handle)
+        page_meta = {
+            "courtName": page.get("courtName"),
+            "vnkod": page.get("vnkod"),
+        }
+        for case in page.get("cases") or []:
+            document = normalize_case(case, page_meta)
+            if document:
+                yield document
+
+
+def load_existing_ids(client, index_name: str) -> set[str]:
+    if not client.indices.exists(index=index_name):
+        return set()
+    ids: set[str] = set()
+    response = client.search(
+        index=index_name,
+        body={"query": {"match_all": {}}, "_source": False, "size": 10000},
+        scroll="2m",
+    )
+    scroll_id = response.get("_scroll_id")
+    hits = response.get("hits", {}).get("hits", [])
+    while hits:
+        ids.update(hit["_id"] for hit in hits)
+        if not scroll_id:
+            break
+        response = client.scroll(scroll_id=scroll_id, scroll="2m")
+        scroll_id = response.get("_scroll_id")
+        hits = response.get("hits", {}).get("hits", [])
+    if scroll_id:
+        client.clear_scroll(scroll_id=scroll_id)
+    return ids
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Index court practice sample into OpenSearch")
+    parser.add_argument("--source", required=True, help="Path to zip archive or directory with page-*.json")
+    parser.add_argument("--opensearch-url", default="http://localhost:9200")
+    parser.add_argument("--index-name", default=INDEX_VERSION)
+    parser.add_argument("--batch-size", type=int, default=500)
+    parser.add_argument("--skip-existing", action="store_true", help="Skip documents already present in the index")
+    args = parser.parse_args()
+
+    source_path = Path(args.source)
+    if not source_path.exists():
+        logger.error("Source path does not exist: %s", source_path)
+        return 1
+
+    config = OpenSearchConfig(url=args.opensearch_url)
+    client = build_opensearch_client(config)
+    ensure_index(client, index_name=args.index_name)
+
+    existing_ids: set[str] = set()
+    if args.skip_existing:
+        logger.info("Loading existing document ids...")
+        existing_ids = load_existing_ids(client, args.index_name)
+        logger.info("Found %s existing documents", len(existing_ids))
+
+    if source_path.is_dir():
+        case_iter = iter_cases_from_directory(source_path)
+    else:
+        case_iter = iter_cases_from_zip(source_path)
+
+    batch: list[dict] = []
+    indexed = 0
+    skipped = 0
+    errors = 0
+
+    for document in case_iter:
+        if document["_id"] in existing_ids:
+            skipped += 1
+            continue
+        batch.append(document)
+        if len(batch) < args.batch_size:
+            continue
+        success, failed = bulk_index_documents(client, batch, index_name=args.index_name)
+        indexed += success
+        errors += len(failed)
+        logger.info("Indexed batch: success=%s failed=%s total=%s", success, len(failed), indexed)
+        batch.clear()
+
+    if batch:
+        success, failed = bulk_index_documents(client, batch, index_name=args.index_name)
+        indexed += success
+        errors += len(failed)
+        logger.info("Indexed final batch: success=%s failed=%s", success, len(failed))
+
+    logger.info("Done. indexed=%s skipped=%s errors=%s", indexed, skipped, errors)
+    return 0 if errors == 0 else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

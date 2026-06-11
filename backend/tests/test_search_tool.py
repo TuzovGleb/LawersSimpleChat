@@ -1,0 +1,112 @@
+from unittest.mock import MagicMock
+
+import pytest
+
+from app.pipelines.tools import get_court_decision, search_court_practice, set_court_practice_searcher
+from app.search.client import OpenSearchConfig
+from app.search.rrf import RankedDocument
+from app.search.search import CourtPracticeSearcher, format_decision_document, format_search_results
+
+
+@pytest.fixture
+def mock_searcher():
+    client = MagicMock()
+    config = OpenSearchConfig()
+    searcher = CourtPracticeSearcher(client, config)
+    set_court_practice_searcher(searcher)
+    yield searcher
+    set_court_practice_searcher(None)
+
+
+def test_format_search_results_empty():
+    assert "не найдена" in format_search_results([])
+
+
+def test_format_search_results_includes_metadata():
+    results = [
+        RankedDocument(
+            doc_id="uid-1",
+            source={
+                "uid": "uid-1",
+                "case_number": "2-100/2026",
+                "court_name": "Автозаводский районный суд",
+                "decision_date": "2026-04-13",
+                "decision_result": "Иск удовлетворен",
+                "result_type": "granted",
+                "category": "Трудовые споры",
+                "act_text": "Полный текст решения",
+            },
+            highlights=["фрагмент решения"],
+        )
+    ]
+    formatted = format_search_results(results)
+    assert "uid-1" in formatted
+    assert "2-100/2026" in formatted
+    assert "фрагмент решения" in formatted
+
+
+def test_format_decision_document_truncates_long_text():
+    doc = {
+        "uid": "uid-2",
+        "case_number": "2-200/2026",
+        "court_name": "Суд",
+        "judge": "Судья",
+        "decision_date": "2026-01-01",
+        "decision_result": "Отказ",
+        "result_type": "denied",
+        "category": "Споры",
+        "participants_names": "Истец, Ответчик",
+        "act_text": "x" * 40_000,
+    }
+    formatted = format_decision_document(doc)
+    assert "обрезан" in formatted
+    assert len(formatted) < 40_000
+
+
+@pytest.mark.asyncio
+async def test_search_court_practice_tool(mock_searcher, monkeypatch):
+    async def fake_search(*args, **kwargs):
+        return [
+            RankedDocument(
+                doc_id="uid-3",
+                source={
+                    "uid": "uid-3",
+                    "case_number": "2-300/2026",
+                    "court_name": "Суд",
+                    "decision_date": "2026-02-01",
+                    "decision_result": "Удовлетворен",
+                    "result_type": "granted",
+                    "category": "Категория",
+                },
+                highlights=["snippet"],
+            )
+        ]
+
+    monkeypatch.setattr(mock_searcher, "search", fake_search)
+    result = await search_court_practice.ainvoke(
+        {"queries": ["неустойка", "просрочка поставки"], "date_from": None, "date_to": None, "result_type": None}
+    )
+    assert "uid-3" in result
+    assert "2-300/2026" in result
+
+
+@pytest.mark.asyncio
+async def test_get_court_decision_tool(mock_searcher, monkeypatch):
+    async def fake_get(decision_id: str):
+        return {
+            "uid": decision_id,
+            "case_number": "2-400/2026",
+            "court_name": "Суд",
+            "judge": "Иванов",
+            "decision_date": "2026-03-01",
+            "decision_result": "Частично",
+            "result_type": "partial",
+            "category": "Категория",
+            "participants_names": "A, B",
+            "act_text": "Текст акта",
+        }
+
+    monkeypatch.setattr(mock_searcher, "get_decision", fake_get)
+    result = await get_court_decision.ainvoke({"decision_id": "uid-4"})
+    assert "uid-4" in result
+    assert "Текст акта" in result
