@@ -67,8 +67,8 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.redirect(url)
   }
 
-  // Redirect unauthenticated users from workspace to home
-  if (!user && pathname === '/workspace') {
+  // Redirect unauthenticated users from workspace and chat pages to home
+  if (!user && (pathname === '/workspace' || pathname === '/chat' || pathname.startsWith('/chat/'))) {
     const url = request.nextUrl.clone()
     url.pathname = '/'
     return NextResponse.redirect(url)

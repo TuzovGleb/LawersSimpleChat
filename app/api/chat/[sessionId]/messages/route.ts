@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
-import { getSupabase } from '@/lib/supabase';
+import { getAuthorizedChatSession } from '@/lib/chat-access';
 import type { UTMData } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -40,7 +40,18 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const supabase = await getSupabase();
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const session = await getAuthorizedChatSession(supabase, sessionId, user.id);
+    if (!session) {
+      return NextResponse.json({ error: 'Чат не найден или нет доступа.' }, { status: 404 });
+    }
 
     const { data, error } = await supabase
       .from('chat_messages')
@@ -64,21 +75,11 @@ export async function GET(req: NextRequest) {
 
     let documentsById = new Map<string, { id: string; name: string; mimeType: string; size: number }>();
     if (attachedIds.length > 0) {
-      const { data: sessionRow, error: sessionError } = await supabase
-        .from('chat_sessions')
-        .select('project_id')
-        .eq('id', sessionId)
-        .maybeSingle();
-
-      if (sessionError) {
-        console.error('[chat-messages][GET] Session lookup error:', sessionError);
-      }
-
-      if (sessionRow?.project_id) {
+      if (session.project_id) {
         const { data: documentsData, error: documentsError } = await supabase
           .from('project_documents')
           .select('id, name, mime_type, size')
-          .eq('project_id', sessionRow.project_id)
+          .eq('project_id', session.project_id)
           .in('id', attachedIds);
 
         if (documentsError) {
