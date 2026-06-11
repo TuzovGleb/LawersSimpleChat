@@ -64,9 +64,19 @@ class CourtPracticeSearcher:
                         "fields": SEARCH_FIELDS,
                         "type": "best_fields",
                         "operator": "or",
+                        # Up to 2 terms — all required; longer queries tolerate 25% missing.
+                        "minimum_should_match": "2<75%",
                     }
                 }
-            ]
+            ],
+            # Score-only boost: exact legal phrasing in the act text is a strong signal.
+            "should": [
+                {
+                    "match_phrase": {
+                        "act_text": {"query": query, "slop": 2, "boost": 2.0}
+                    }
+                }
+            ],
         }
         if filters:
             bool_query["filter"] = filters

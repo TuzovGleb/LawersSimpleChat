@@ -83,11 +83,16 @@ jobs:
         id: opensearch
         env:
           YC_SERVICE_ACCOUNT_ID: ${{ secrets.YC_SERVICE_ACCOUNT_ID }}
+          YC_SUBNET_ID: ${{ secrets.YC_SUBNET_ID }}
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           VM_NAME="lawers-opensearch-staging"
-          SUBNET_ID="e9b24l7nm7c2fgcsrlpu"
           COMPOSE_FILE="backend/docker-compose.yml"
+
+          if [ -z "$YC_SUBNET_ID" ]; then
+            echo "Error: YC_SUBNET_ID secret is required (subnet for the OpenSearch COI VM)"
+            exit 1
+          fi
 
           if yc compute instance get --name "$VM_NAME" >/dev/null 2>&1; then
             echo "Updating existing OpenSearch VM..."
@@ -100,7 +105,7 @@ jobs:
               --cores 2 \
               --memory 4 \
               --create-boot-disk size=50,type=network-ssd \
-              --network-interface "subnet-id=${SUBNET_ID},nat-ip-version=ipv4" \
+              --network-interface "subnet-id=${YC_SUBNET_ID},nat-ip-version=ipv4" \
               --service-account-id "$YC_SERVICE_ACCOUNT_ID" \
               --docker-compose-file "$COMPOSE_FILE"
           fi

@@ -2,7 +2,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.pipelines.tools import get_court_decision, search_court_practice, set_court_practice_searcher
+from app.pipelines.tools import build_court_practice_tools
 from app.search.client import OpenSearchConfig
 from app.search.rrf import RankedDocument
 from app.search.search import CourtPracticeSearcher, format_decision_document, format_search_results
@@ -12,10 +12,16 @@ from app.search.search import CourtPracticeSearcher, format_decision_document, f
 def mock_searcher():
     client = MagicMock()
     config = OpenSearchConfig()
-    searcher = CourtPracticeSearcher(client, config)
-    set_court_practice_searcher(searcher)
-    yield searcher
-    set_court_practice_searcher(None)
+    return CourtPracticeSearcher(client, config)
+
+
+def test_build_query_body_requires_terms_and_boosts_phrases(mock_searcher):
+    body = mock_searcher._build_query_body("снижение неустойки ст 333 ГК")
+    bool_query = body["query"]["bool"]
+    assert bool_query["must"][0]["multi_match"]["minimum_should_match"] == "2<75%"
+    phrase = bool_query["should"][0]["match_phrase"]["act_text"]
+    assert phrase["boost"] == 2.0
+    assert phrase["slop"] == 2
 
 
 def test_format_search_results_empty():
@@ -83,6 +89,7 @@ async def test_search_court_practice_tool(mock_searcher, monkeypatch):
         ]
 
     monkeypatch.setattr(mock_searcher, "search", fake_search)
+    search_court_practice, _ = build_court_practice_tools(mock_searcher)
     result = await search_court_practice.ainvoke(
         {"queries": ["неустойка", "просрочка поставки"], "date_from": None, "date_to": None, "result_type": None}
     )
@@ -107,6 +114,7 @@ async def test_get_court_decision_tool(mock_searcher, monkeypatch):
         }
 
     monkeypatch.setattr(mock_searcher, "get_decision", fake_get)
+    _, get_court_decision = build_court_practice_tools(mock_searcher)
     result = await get_court_decision.ainvoke({"decision_id": "dec-4"})
     assert "dec-4" in result
     assert "Текст акта" in result

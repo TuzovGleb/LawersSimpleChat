@@ -3,8 +3,8 @@ import logging
 import time
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.tools import BaseTool
 
-from app.pipelines.tools import COURT_PRACTICE_TOOLS
 from app.rag_core.llm import ChatModelRegistry
 from app.rag_core.prompt import get_system_prompt
 
@@ -106,11 +106,11 @@ async def increment_tool_rounds(state: dict) -> dict:
     return {"tool_rounds": state.get("tool_rounds", 0) + 1}
 
 
-async def generate(state: dict, *, registry: ChatModelRegistry) -> dict:
-    """Call the selected OpenRouter model with court-practice tools."""
+async def generate(state: dict, *, registry: ChatModelRegistry, tools: list[BaseTool] | None = None) -> dict:
+    """Call the selected OpenRouter model, with tools bound while rounds remain."""
     model_used, llm = registry.resolve(state.get("selected_model"))
     tool_rounds = state.get("tool_rounds", 0)
-    llm_to_invoke = llm if tool_rounds >= MAX_TOOL_ROUNDS else llm.bind_tools(COURT_PRACTICE_TOOLS)
+    llm_to_invoke = llm.bind_tools(tools) if tools and tool_rounds < MAX_TOOL_ROUNDS else llm
     started = time.time()
 
     response = await llm_to_invoke.ainvoke(state["messages"])

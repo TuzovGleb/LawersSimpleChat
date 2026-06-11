@@ -20,11 +20,11 @@ INDEX_BODY = {
                 "russian": {
                     "type": "custom",
                     "tokenizer": "standard",
-                    "filter": ["lowercase", "russian_morphology", "russian_stop"],
+                    "filter": ["lowercase", "russian_stemmer", "russian_stop"],
                 }
             },
             "filter": {
-                "russian_morphology": {"type": "stemmer", "language": "russian"},
+                "russian_stemmer": {"type": "stemmer", "language": "russian"},
                 "russian_stop": {"type": "stop", "stopwords": "_russian_"},
             },
         },
