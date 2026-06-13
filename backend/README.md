@@ -38,8 +38,9 @@ parses: `:heartbeat` keep-alives followed by a single
 | `app/config.py`, `app/config/*.yaml` | metayaml config + logging bootstrap |
 | `app/rag_core/prompt.py` | legal system prompt (synced with `lib/prompts.ts`) |
 | `app/rag_core/llm.py` | OpenRouter model registry + web-search plugin |
-| `app/rag_core/persistence.py` | LangGraph checkpointer (memory/postgres) |
 | `app/pipelines/` | graph state, nodes (`build_context`, `generate`), workflow |
+| `app/pipelines/tools/` | generic tool framework + court-practice plugin |
+| `app/pipelines/messages.py` | persist/replay chat rows (incl. tool calls) |
 | `app/services/supabase_repo.py` | Supabase reads/writes (service role) |
 | `app/server/` | FastAPI app, SSE streaming, shared-secret auth |
 
@@ -66,5 +67,6 @@ docker run --env-file .env -p 8001:8001 lawers-chat-backend
 
 The graph is intentionally minimal. Insert a `retrieve` node between
 `build_context` and `generate` in `app/pipelines/workflows.py` and feed retrieved
-context into the state — the rest of the pipeline, persistence, and tracing stay
-unchanged.
+context into the state — the rest of the pipeline and tracing stay unchanged.
+History is owned by Supabase and rebuilt every turn in `build_context`; there is
+no LangGraph checkpointer.

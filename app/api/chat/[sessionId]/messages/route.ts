@@ -57,6 +57,7 @@ export async function GET(req: NextRequest) {
       .from('chat_messages')
       .select('*')
       .eq('session_id', sessionId)
+      .order('seq', { ascending: true })
       .order('created_at', { ascending: true });
 
     if (error) {
@@ -64,7 +65,12 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Не удалось загрузить сообщения.' }, { status: 500 });
     }
 
-    const messages = data ?? [];
+    // Show only user-facing rows. The chat log also stores tool rows and
+    // intermediate assistant messages (those carrying tool_calls) for the LLM
+    // context; those are not rendered in the UI.
+    const messages = (data ?? []).filter(
+      (m: any) => m.role === 'user' || (m.role === 'assistant' && !m.tool_calls),
+    );
     const attachedIds = Array.from(
       new Set(
         messages.flatMap((message: any) =>

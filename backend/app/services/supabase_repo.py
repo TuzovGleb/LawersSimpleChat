@@ -5,6 +5,8 @@ same Supabase project the Next.js app uses. Mirrors the persistence logic that
 previously lived in app/api/chat/route.ts. Persistence failures are logged and
 swallowed so a DB hiccup never blocks the assistant's reply.
 """
+import asyncio
+from collections import defaultdict
 from datetime import datetime, timezone
 import logging
 
@@ -32,6 +34,10 @@ def unique_document_ids(message: dict | None) -> list[str]:
 class SupabaseRepo:
     def __init__(self, client: AsyncClient):
         self._client = client
+        # Serialize the read-then-insert seq assignment per session so two
+        # concurrent turns (double-submit / retry) can't collide on seq.
+        # Process-local: assumes a single backend instance.
+        self._save_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     @classmethod
     async def create(cls, url: str, service_role_key: str) -> "SupabaseRepo":
@@ -58,10 +64,18 @@ class SupabaseRepo:
                 await self._client.table("chat_messages")
                 .select("*")
                 .eq("session_id", session_id)
+                .order("seq")
                 .order("created_at")
                 .execute()
             )
-            messages = res.data or []
+            # Show only user-facing rows: tool rows and intermediate assistant
+            # messages (those carrying tool_calls) are context-only.
+            messages = [
+                row
+                for row in (res.data or [])
+                if row.get("role") == "user"
+                or (row.get("role") == "assistant" and not row.get("tool_calls"))
+            ]
             attached_ids: dict[str, None] = {}
             for message in messages:
                 for doc_id in message.get("attached_document_ids") or []:
@@ -98,16 +112,22 @@ class SupabaseRepo:
             return []
 
     async def load_history(self, session_id: str) -> list[dict] | None:
-        """Ordered role/content/attachments history for LLM context assembly.
+        """Ordered history (user/assistant/tool) for LLM context assembly.
 
-        Returns None on failure (not []) so the caller can distinguish "empty
-        session" from "DB unavailable" and fall back to client-provided history.
+        Tool rows and assistant tool-call metadata are included so the agent
+        loop can be rebuilt faithfully. Returns None on failure (not []) so the
+        caller can distinguish "empty session" from "DB unavailable" and fall
+        back to client-provided history.
         """
         try:
             res = (
                 await self._client.table("chat_messages")
-                .select("role, content, attached_document_ids")
+                .select(
+                    "role, content, attached_document_ids, tool_calls, "
+                    "tool_call_id, tool_name, tool_state"
+                )
                 .eq("session_id", session_id)
+                .order("seq")
                 .order("created_at")
                 .execute()
             )
@@ -117,19 +137,36 @@ class SupabaseRepo:
 
         history: list[dict] = []
         for row in res.data or []:
-            if row.get("role") not in ("user", "assistant"):
-                continue
-            history.append(
-                {
-                    "role": row["role"],
-                    "content": row.get("content") or "",
-                    "attachedDocumentIds": [
-                        doc_id
-                        for doc_id in (row.get("attached_document_ids") or [])
-                        if isinstance(doc_id, str)
-                    ],
-                }
-            )
+            role = row.get("role")
+            if role == "tool":
+                history.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": row.get("tool_call_id") or "",
+                        "tool_name": row.get("tool_name") or "",
+                        "tool_state": row.get("tool_state") or {},
+                    }
+                )
+            elif role == "assistant":
+                history.append(
+                    {
+                        "role": "assistant",
+                        "content": row.get("content") or "",
+                        "tool_calls": row.get("tool_calls") or None,
+                    }
+                )
+            elif role == "user":
+                history.append(
+                    {
+                        "role": "user",
+                        "content": row.get("content") or "",
+                        "attachedDocumentIds": [
+                            doc_id
+                            for doc_id in (row.get("attached_document_ids") or [])
+                            if isinstance(doc_id, str)
+                        ],
+                    }
+                )
         return history
 
     async def resolve_project_id(self, session_id: str | None) -> str | None:
@@ -208,31 +245,50 @@ class SupabaseRepo:
             logger.exception("Failed to create chat session", extra={"session_id": session_id})
             return False
 
-    async def save_turn(
-        self,
-        session_id: str,
-        user_content: str,
-        assistant_content: str,
-        attached_document_ids: list[str],
-    ) -> None:
+    async def _next_seq(self, session_id: str) -> int:
+        """Next per-session sequence number (rows ordered globally by seq)."""
         try:
-            await self._client.table("chat_messages").insert(
-                [
-                    {
-                        "session_id": session_id,
-                        "role": "user",
-                        "content": user_content,
-                        "attached_document_ids": attached_document_ids,
-                        "created_at": _now_iso(),
-                    },
-                    {
-                        "session_id": session_id,
-                        "role": "assistant",
-                        "content": assistant_content,
-                        "attached_document_ids": [],
-                        "created_at": _now_iso(),
-                    },
-                ]
-            ).execute()
+            res = (
+                await self._client.table("chat_messages")
+                .select("seq")
+                .eq("session_id", session_id)
+                .order("seq", desc=True)
+                .limit(1)
+                .execute()
+            )
+            if res.data and res.data[0].get("seq") is not None:
+                return int(res.data[0]["seq"]) + 1
+        except Exception:
+            logger.exception("Failed to read max seq", extra={"session_id": session_id})
+        return 0
+
+    async def save_messages(self, session_id: str, rows: list[dict]) -> None:
+        """Persist a turn's rows (user + generated assistant/tool messages).
+
+        Each row is a normalized dict produced by the pipeline; this method only
+        maps it to DB columns and assigns monotonic ``seq`` values.
+        """
+        if not rows:
+            return
+        try:
+            async with self._save_locks[session_id]:
+                start = await self._next_seq(session_id)
+                records = []
+                for offset, row in enumerate(rows):
+                    records.append(
+                        {
+                            "session_id": session_id,
+                            "role": row["role"],
+                            "content": row.get("content") or "",
+                            "attached_document_ids": row.get("attached_document_ids") or [],
+                            "tool_calls": row.get("tool_calls"),
+                            "tool_call_id": row.get("tool_call_id"),
+                            "tool_name": row.get("tool_name"),
+                            "tool_state": row.get("tool_state"),
+                            "seq": start + offset,
+                            "created_at": _now_iso(),
+                        }
+                    )
+                await self._client.table("chat_messages").insert(records).execute()
         except Exception:
             logger.exception("Failed to save chat messages", extra={"session_id": session_id})

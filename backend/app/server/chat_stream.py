@@ -15,6 +15,7 @@ from typing import AsyncIterator
 from fastapi import Request
 from langchain_core.messages import AIMessage
 
+from app.pipelines.messages import messages_to_rows, split_generated
 from app.server.schema import ChatRequest
 from app.services.supabase_repo import SupabaseRepo, unique_document_ids
 
@@ -51,12 +52,20 @@ async def _assemble_history(
     last_user = next((m for m in reversed(client_messages) if m.get("role") == "user"), None)
     history = stored + ([last_user] if last_user else [])
 
-    if len(stored) != len(client_messages) - 1:
+    # Compare only user-facing rows; tool rows and intermediate assistant
+    # messages exist server-side but the client never sees them.
+    stored_display = sum(
+        1
+        for row in stored
+        if row.get("role") == "user"
+        or (row.get("role") == "assistant" and not row.get("tool_calls"))
+    )
+    if stored_display != len(client_messages) - 1:
         logger.warning(
             "Server history differs from client history",
             extra={
                 "session_id": session_id,
-                "stored_messages": len(stored),
+                "stored_display_messages": stored_display,
                 "client_messages": len(client_messages),
             },
         )
@@ -173,12 +182,17 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
             if not created:
                 session_id = None  # surfaced to client as null, matches prior behaviour
         if session_id:
-            await repo.save_turn(
-                session_id=session_id,
-                user_content=last_user_content,
-                assistant_content=assistant_message,
-                attached_document_ids=unique_document_ids(last_user.model_dump() if last_user else None),
-            )
+            handlers = getattr(request.app.state, "tool_handlers", {}) or {}
+            generated = split_generated(result.get("messages") or [])
+            user_row = {
+                "role": "user",
+                "content": last_user_content,
+                "attached_document_ids": unique_document_ids(
+                    last_user.model_dump() if last_user else None
+                ),
+            }
+            rows = [user_row] + await messages_to_rows(generated, handlers)
+            await repo.save_messages(session_id, rows)
 
     logger.info(
         "Chat response sent",

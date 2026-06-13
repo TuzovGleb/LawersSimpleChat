@@ -40,9 +40,3 @@ chat:
         web_search:
           enabled: true
           max_results: 5
-
-    # LangGraph checkpointer (conversation state per thread_id == session_id).
-    # Default is in-memory. Set type: postgres + conn_string for durable state.
-    persistence:
-      type: ${env.get('CHECKPOINTER_TYPE', 'memory')}
-      conn_string: ${env.get('CHECKPOINTER_DB_URL', '')}

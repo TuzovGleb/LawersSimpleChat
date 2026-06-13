@@ -1,5 +1,5 @@
 """FastAPI application for the legal chat backend."""
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
 import logging
 import os
 
@@ -8,11 +8,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from app.config import CONFIG
-from app.pipelines.tools import build_court_practice_tools
+from app.pipelines.tools import handlers_of, load_tool_specs
 from app.pipelines.workflows import build_chat_graph
 from app.rag_core.llm import get_chat_registry
-from app.rag_core.persistence import CheckpointerConfig, build_checkpointer
-from app.search import CourtPracticeSearcher, OpenSearchConfig, build_opensearch_client
 from app.server.chat_stream import stream_chat
 from app.server.schema import ChatRequest
 from app.server.security import verify_backend_secret
@@ -47,37 +45,22 @@ async def lifespan(app: FastAPI):
     chat_params = config["chat"]["params"]
     registry = get_chat_registry(chat_params)
 
-    async with AsyncExitStack() as stack:
-        checkpointer = await build_checkpointer(
-            CheckpointerConfig.model_validate(chat_params["persistence"]), stack
+    tool_specs = load_tool_specs(config["app"])
+    app.state.tool_handlers = handlers_of(tool_specs)
+    app.state.chat_graph = build_chat_graph(registry, tool_specs)
+
+    supabase_cfg = config["app"].get("supabase") or {}
+    if supabase_cfg.get("url") and supabase_cfg.get("service_role_key"):
+        app.state.repo = await SupabaseRepo.create(
+            supabase_cfg["url"], supabase_cfg["service_role_key"]
         )
+        logger.info("Supabase persistence enabled")
+    else:
+        app.state.repo = None
+        logger.warning("Supabase not configured; chat history will not be persisted")
 
-        court_practice_tools = []
-        opensearch_cfg = config["app"].get("opensearch") or {}
-        if opensearch_cfg.get("url"):
-            os_config = OpenSearchConfig.model_validate(opensearch_cfg)
-            os_client = build_opensearch_client(os_config)
-            app.state.court_practice_searcher = CourtPracticeSearcher(os_client, os_config)
-            court_practice_tools = build_court_practice_tools(app.state.court_practice_searcher)
-            logger.info("Court practice search enabled", extra={"opensearch_url": os_config.url})
-        else:
-            app.state.court_practice_searcher = None
-            logger.warning("OpenSearch not configured; court practice tools disabled")
-
-        app.state.chat_graph = build_chat_graph(registry, checkpointer, court_practice_tools)
-
-        supabase_cfg = config["app"].get("supabase") or {}
-        if supabase_cfg.get("url") and supabase_cfg.get("service_role_key"):
-            app.state.repo = await SupabaseRepo.create(
-                supabase_cfg["url"], supabase_cfg["service_role_key"]
-            )
-            logger.info("Supabase persistence enabled")
-        else:
-            app.state.repo = None
-            logger.warning("Supabase not configured; chat history will not be persisted")
-
-        logger.info("Chat backend ready")
-        yield
+    logger.info("Chat backend ready")
+    yield
 
 
 app = FastAPI(title="LawersSimpleChat Backend", lifespan=lifespan)

@@ -2,57 +2,24 @@
 import logging
 import time
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool
 
+from app.pipelines.messages import rows_to_messages, text_of
+from app.pipelines.tools.base import ToolResultHandler
 from app.rag_core.llm import ChatModelRegistry
-from app.rag_core.prompt import get_system_prompt
 
 logger = logging.getLogger(__name__)
 
-MAX_CONTEXT_DOCUMENTS = 20
 MAX_TOOL_ROUNDS = 4
 
 
-def _format_with_attachments(message: dict, documents_by_id: dict[str, dict]) -> str:
-    content = message.get("content") or ""
-    if message.get("role") != "user":
-        return content
-
-    attachment_ids = [
-        doc_id
-        for doc_id in (message.get("attachedDocumentIds") or [])
-        if isinstance(doc_id, str) and doc_id.strip()
-    ][:MAX_CONTEXT_DOCUMENTS]
-
-    prepared = []
-    for doc_id in attachment_ids:
-        doc = documents_by_id.get(doc_id)
-        if doc and doc.get("text"):
-            name = doc.get("name") or "Документ"
-            prepared.append(f"Документ: {name}\n\n{doc['text']}")
-
-    if not prepared:
-        return content
-
-    attachments_block = "[Прикрепленные документы к этому сообщению]\n\n" + "\n\n---\n\n".join(prepared)
-    if not content.strip():
-        return attachments_block
-    return f"{content}\n\n{attachments_block}"
-
-
-def build_context(state: dict) -> dict:
-    """Assemble [system, ...history] with per-message document injection."""
+async def build_context(state: dict, *, handlers: dict[str, ToolResultHandler] | None = None) -> dict:
+    """Rebuild the model's message list from history (tool rows rehydrated)."""
     history = state.get("history") or []
     documents_by_id = state.get("documents_by_id") or {}
 
-    messages: list = [SystemMessage(content=get_system_prompt())]
-    for message in history:
-        content = _format_with_attachments(message, documents_by_id)
-        if message.get("role") == "assistant":
-            messages.append(AIMessage(content=content))
-        else:
-            messages.append(HumanMessage(content=content))
+    messages = await rows_to_messages(history, documents_by_id, handlers or {})
 
     logger.info(
         "Context assembled",
@@ -117,7 +84,7 @@ async def generate(state: dict, *, registry: ChatModelRegistry, tools: list[Base
     response_time_ms = int((time.time() - started) * 1000)
 
     tool_calls = getattr(response, "tool_calls", None) or []
-    content = response.content if isinstance(response.content, str) else str(response.content or "")
+    content = text_of(response.content)
 
     if not tool_calls and (not content or not content.strip()):
         raise RuntimeError("Empty response from model")

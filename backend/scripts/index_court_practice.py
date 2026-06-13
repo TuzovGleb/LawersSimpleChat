@@ -19,39 +19,34 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 
+def iter_cases_from_page(page: dict):
+    page_meta = {
+        "courtName": page.get("courtName"),
+        "vnkod": page.get("vnkod"),
+    }
+    for case in page.get("cases") or []:
+        document = normalize_case(case, page_meta)
+        if document:
+            yield document
+
+
 def iter_cases_from_zip(zip_path: Path):
     with zipfile.ZipFile(zip_path) as archive:
-        page_names = sorted(
-            name for name in archive.namelist() if name.endswith(".json") and "page-" in name
-        )
-        logger.info("Found %s page files in archive", len(page_names))
-        for name in page_names:
+        json_names = sorted(name for name in archive.namelist() if name.endswith(".json") and not name.endswith("/"))
+        logger.info("Found %s JSON files in archive", len(json_names))
+        for name in json_names:
             with archive.open(name) as handle:
                 page = json.load(handle)
-            page_meta = {
-                "courtName": page.get("courtName"),
-                "vnkod": page.get("vnkod"),
-            }
-            for case in page.get("cases") or []:
-                document = normalize_case(case, page_meta)
-                if document:
-                    yield document
+            yield from iter_cases_from_page(page)
 
 
 def iter_cases_from_directory(directory: Path):
-    page_paths = sorted(directory.rglob("page-*.json"))
-    logger.info("Found %s page files in directory", len(page_paths))
-    for path in page_paths:
+    json_paths = sorted(path for path in directory.rglob("*.json") if path.is_file())
+    logger.info("Found %s JSON files under %s", len(json_paths), directory)
+    for path in json_paths:
         with path.open(encoding="utf-8") as handle:
             page = json.load(handle)
-        page_meta = {
-            "courtName": page.get("courtName"),
-            "vnkod": page.get("vnkod"),
-        }
-        for case in page.get("cases") or []:
-            document = normalize_case(case, page_meta)
-            if document:
-                yield document
+        yield from iter_cases_from_page(page)
 
 
 def load_existing_ids(client, index_name: str) -> set[str]:
@@ -79,7 +74,11 @@ def load_existing_ids(client, index_name: str) -> set[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Index court practice sample into OpenSearch")
-    parser.add_argument("--source", required=True, help="Path to zip archive or directory with page-*.json")
+    parser.add_argument(
+        "--source",
+        required=True,
+        help="Path to zip archive or directory (all *.json files are scanned recursively)",
+    )
     parser.add_argument("--opensearch-url", default="http://localhost:9200")
     parser.add_argument("--index-name", default=INDEX_VERSION)
     parser.add_argument("--batch-size", type=int, default=500)
