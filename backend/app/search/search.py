@@ -66,7 +66,17 @@ class CourtPracticeSearcher:
                         "operator": "or",
                     }
                 }
-            ]
+            ],
+            # Score-only boost: an exact legal phrasing in the act text ranks
+            # higher. In `should` with no minimum_should_match, so it only
+            # reorders results and never filters them out.
+            "should": [
+                {
+                    "match_phrase": {
+                        "act_text": {"query": query, "slop": 2, "boost": 2.0}
+                    }
+                }
+            ],
         }
         if filters:
             bool_query["filter"] = filters

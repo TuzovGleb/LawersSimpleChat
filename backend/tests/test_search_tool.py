@@ -15,14 +15,17 @@ def mock_searcher():
     return CourtPracticeSearcher(client, config)
 
 
-def test_build_query_body_uses_permissive_or_match(mock_searcher):
+def test_build_query_body_or_match_with_phrase_boost(mock_searcher):
     body = mock_searcher._build_query_body("снижение неустойки ст 333 ГК")
     bool_query = body["query"]["bool"]
     multi_match = bool_query["must"][0]["multi_match"]
     assert multi_match["operator"] == "or"
-    # No hard minimum_should_match: a strict floor tanked recall on this corpus.
+    # No hard minimum_should_match: a strict per-field floor risks recall.
     assert "minimum_should_match" not in multi_match
-    assert "should" not in bool_query
+    # Score-only phrase boost lives in `should` and never filters.
+    phrase = bool_query["should"][0]["match_phrase"]["act_text"]
+    assert phrase["boost"] == 2.0
+    assert phrase["slop"] == 2
 
 
 def test_format_search_results_empty():
