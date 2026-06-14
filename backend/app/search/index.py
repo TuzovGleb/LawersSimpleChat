@@ -3,8 +3,10 @@ from datetime import datetime
 import hashlib
 import logging
 
+from typing import Iterable, Iterator
+
 from opensearchpy import OpenSearch
-from opensearchpy.helpers import bulk
+from opensearchpy.helpers import bulk, parallel_bulk
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +153,10 @@ def ensure_index(client: OpenSearch, *, index_name: str = INDEX_VERSION, alias: 
     logger.info("Index alias ready", extra={"index": index_name, "alias": alias})
 
 
+def _to_action(doc: dict, index_name: str) -> dict:
+    return {"_index": index_name, "_id": doc["_id"], "_source": {k: v for k, v in doc.items() if k != "_id"}}
+
+
 def bulk_index_documents(
     client: OpenSearch,
     documents: list[dict],
@@ -160,5 +166,38 @@ def bulk_index_documents(
     if not documents:
         return 0, []
 
-    actions = [{"_index": index_name, "_id": doc["_id"], "_source": {k: v for k, v in doc.items() if k != "_id"}} for doc in documents]
+    actions = [_to_action(doc, index_name) for doc in documents]
     return bulk(client, actions, raise_on_error=False, request_timeout=120)
+
+
+def parallel_index_documents(
+    client: OpenSearch,
+    documents: Iterable[dict],
+    *,
+    index_name: str = INDEX_VERSION,
+    chunk_size: int = 500,
+    thread_count: int = 4,
+    queue_size: int = 4,
+) -> Iterator[tuple[bool, dict]]:
+    """Stream documents through concurrent bulk requests.
+
+    Yields (ok, info) per document as results arrive, so the caller can track
+    progress and collect failures. Memory stays bounded (~queue_size*chunk_size
+    actions in flight), so the source can be a lazy generator over 100k+ docs.
+    """
+    actions = (_to_action(doc, index_name) for doc in documents)
+    yield from parallel_bulk(
+        client,
+        actions,
+        chunk_size=chunk_size,
+        thread_count=thread_count,
+        queue_size=queue_size,
+        raise_on_error=False,
+        raise_on_exception=False,
+        request_timeout=120,
+    )
+
+
+def set_index_refresh(client: OpenSearch, *, index_name: str = INDEX_VERSION, interval: str | None) -> None:
+    """Tune refresh_interval for bulk load. Pass interval='-1' to disable, '1s' to restore."""
+    client.indices.put_settings(index=index_name, body={"index": {"refresh_interval": interval}})

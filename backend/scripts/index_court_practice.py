@@ -13,7 +13,14 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR))
 
 from app.search.client import OpenSearchConfig, build_opensearch_client
-from app.search.index import INDEX_VERSION, bulk_index_documents, ensure_index, normalize_case
+from app.search.index import (
+    INDEX_VERSION,
+    bulk_index_documents,
+    ensure_index,
+    normalize_case,
+    parallel_index_documents,
+    set_index_refresh,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -81,8 +88,19 @@ def main() -> int:
     )
     parser.add_argument("--opensearch-url", default="http://localhost:9200")
     parser.add_argument("--index-name", default=INDEX_VERSION)
-    parser.add_argument("--batch-size", type=int, default=500)
+    parser.add_argument("--batch-size", type=int, default=500, help="Documents per bulk request")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Concurrent bulk requests. >1 streams via parallel_bulk; 2-4 suits a small VM.",
+    )
     parser.add_argument("--skip-existing", action="store_true", help="Skip documents already present in the index")
+    parser.add_argument(
+        "--no-refresh-tune",
+        action="store_true",
+        help="Do not disable refresh during load (refresh is normally turned off, then restored)",
+    )
     args = parser.parse_args()
 
     source_path = Path(args.source)
@@ -105,29 +123,62 @@ def main() -> int:
     else:
         case_iter = iter_cases_from_zip(source_path)
 
-    batch: list[dict] = []
     indexed = 0
     skipped = 0
     errors = 0
 
-    for document in case_iter:
-        if document["_id"] in existing_ids:
-            skipped += 1
-            continue
-        batch.append(document)
-        if len(batch) < args.batch_size:
-            continue
-        success, failed = bulk_index_documents(client, batch, index_name=args.index_name)
-        indexed += success
-        errors += len(failed)
-        logger.info("Indexed batch: success=%s failed=%s total=%s", success, len(failed), indexed)
-        batch.clear()
+    def documents():
+        nonlocal skipped
+        for document in case_iter:
+            if document["_id"] in existing_ids:
+                skipped += 1
+                continue
+            yield document
 
-    if batch:
-        success, failed = bulk_index_documents(client, batch, index_name=args.index_name)
-        indexed += success
-        errors += len(failed)
-        logger.info("Indexed final batch: success=%s failed=%s", success, len(failed))
+    tune_refresh = not args.no_refresh_tune
+    if tune_refresh:
+        logger.info("Disabling refresh for bulk load")
+        set_index_refresh(client, index_name=args.index_name, interval="-1")
+
+    try:
+        if args.workers > 1:
+            logger.info("Parallel load: workers=%s chunk_size=%s", args.workers, args.batch_size)
+            for ok, info in parallel_index_documents(
+                client,
+                documents(),
+                index_name=args.index_name,
+                chunk_size=args.batch_size,
+                thread_count=args.workers,
+            ):
+                if ok:
+                    indexed += 1
+                else:
+                    errors += 1
+                    if errors <= 5:
+                        logger.warning("Index failure: %s", info)
+                if (indexed + errors) % 5000 == 0:
+                    logger.info("Progress: indexed=%s errors=%s", indexed, errors)
+        else:
+            batch: list[dict] = []
+            for document in documents():
+                batch.append(document)
+                if len(batch) < args.batch_size:
+                    continue
+                success, failed = bulk_index_documents(client, batch, index_name=args.index_name)
+                indexed += success
+                errors += len(failed)
+                logger.info("Indexed batch: success=%s failed=%s total=%s", success, len(failed), indexed)
+                batch.clear()
+            if batch:
+                success, failed = bulk_index_documents(client, batch, index_name=args.index_name)
+                indexed += success
+                errors += len(failed)
+                logger.info("Indexed final batch: success=%s failed=%s", success, len(failed))
+    finally:
+        if tune_refresh:
+            logger.info("Restoring refresh interval")
+            set_index_refresh(client, index_name=args.index_name, interval="1s")
+            client.indices.refresh(index=args.index_name)
 
     logger.info("Done. indexed=%s skipped=%s errors=%s", indexed, skipped, errors)
     return 0 if errors == 0 else 2
