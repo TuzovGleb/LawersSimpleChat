@@ -1,0 +1,179 @@
+name: Deploy OpenSearch (Staging)
+
+# Provisions the staging OpenSearch COI VM. Run this ONCE to create the VM.
+# The regular backend deploy no longer touches OpenSearch, so the index now
+# survives backend deploys. By default this workflow leaves an existing VM
+# untouched (its data volume is preserved). Recreating the VM — or running
+# with update_container — can still affect storage, so re-index afterwards.
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch (source of backend/docker-compose.yml)'
+        required: true
+        default: 'feature/python-langgraph-backend-search'
+        type: string
+      update_container:
+        description: 'Update the container on an existing VM (normally NOT needed; preserves the data volume)'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  deploy-opensearch:
+    runs-on: ubuntu-latest
+    environment: Staging ENV
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.inputs.branch }}
+
+      - name: Install Yandex Cloud CLI
+        run: |
+          mkdir -p $HOME/.local/bin
+          curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s
+          if [ -f "$HOME/.local/bin/yc" ]; then
+            chmod +x $HOME/.local/bin/yc
+            echo "$HOME/.local/bin" >> $GITHUB_PATH
+          else
+            YC_PATH=$(find $HOME -name yc -type f -executable 2>/dev/null | head -1)
+            if [ -n "$YC_PATH" ]; then
+              echo "$(dirname $YC_PATH)" >> $GITHUB_PATH
+            else
+              echo "Error: yc not found after installation"
+              exit 1
+            fi
+          fi
+
+      - name: Setup Yandex Cloud CLI with JSON key
+        env:
+          YC_SA_JSON: ${{ secrets.YC_SA_JSON }}
+          YC_CLOUD_ID: ${{ secrets.YC_CLOUD_ID }}
+          YC_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+
+          if [ -z "$YC_SA_JSON" ]; then
+            echo "Error: YC_SA_JSON secret is empty or not set"
+            exit 1
+          fi
+
+          printf '%s' "$YC_SA_JSON" | sed 's/[[:space:]]*$//' > /tmp/sa-key.json
+          chmod 600 /tmp/sa-key.json
+
+          if ! python3 -m json.tool /tmp/sa-key.json > /dev/null 2>&1; then
+            echo "Error: Invalid JSON format in YC_SA_JSON"
+            exit 1
+          fi
+
+          yc config profile create deploy-profile || true
+          yc config set service-account-key /tmp/sa-key.json
+          yc config set cloud-id "$YC_CLOUD_ID"
+          yc config set folder-id "$YC_FOLDER_ID"
+
+      - name: Provision OpenSearch COI VM
+        id: opensearch
+        env:
+          YC_SERVICE_ACCOUNT_ID: ${{ secrets.YC_SERVICE_ACCOUNT_ID }}
+          YC_SUBNET_ID: ${{ secrets.YC_SUBNET_ID }}
+          UPDATE_CONTAINER: ${{ github.event.inputs.update_container }}
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          VM_NAME="lawers-opensearch-staging"
+          COMPOSE_FILE="backend/docker-compose.yml"
+
+          if [ -z "$YC_SUBNET_ID" ]; then
+            echo "Error: YC_SUBNET_ID secret is required (subnet for the OpenSearch COI VM)"
+            exit 1
+          fi
+
+          if yc compute instance get --name "$VM_NAME" >/dev/null 2>&1; then
+            if [ "$UPDATE_CONTAINER" = "true" ]; then
+              echo "Updating existing OpenSearch VM container (data volume preserved)..."
+              yc compute instance update-container --name "$VM_NAME" --docker-compose-file "$COMPOSE_FILE"
+            else
+              echo "OpenSearch VM already exists; leaving it untouched (set update_container=true to update)."
+            fi
+          else
+            echo "Creating OpenSearch COI VM..."
+            yc compute instance create-with-container \
+              --name "$VM_NAME" \
+              --zone ru-central1-a \
+              --cores 2 \
+              --memory 4 \
+              --create-boot-disk size=50,type=network-ssd \
+              --network-interface "subnet-id=${YC_SUBNET_ID},nat-ip-version=ipv4" \
+              --service-account-id "$YC_SERVICE_ACCOUNT_ID" \
+              --docker-compose-file "$COMPOSE_FILE"
+          fi
+
+          PUBLIC_IP=$(yc compute instance get --name "$VM_NAME" --format json | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          for iface in data.get('network_interfaces', []):
+              nat = iface.get('primary_v4_address', {}).get('one_to_one_nat') or {}
+              if nat.get('address'):
+                  print(nat['address'])
+                  raise SystemExit(0)
+          print('')
+          ")
+
+          if [ -z "$PUBLIC_IP" ]; then
+            echo "Error: could not resolve public IP for $VM_NAME"
+            exit 1
+          fi
+
+          echo "OpenSearch public IP: $PUBLIC_IP"
+          echo "public_ip=$PUBLIC_IP" >> "$GITHUB_OUTPUT"
+          echo "url=http://${PUBLIC_IP}:9200" >> "$GITHUB_OUTPUT"
+
+      - name: Open security group port 9200 (staging)
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          VM_NAME="lawers-opensearch-staging"
+          SG_IDS=$(yc compute instance get --name "$VM_NAME" --format json | python3 -c "
+          import sys, json
+          ids = set()
+          for iface in json.load(sys.stdin).get('network_interfaces', []):
+              ids.update(iface.get('security_group_ids', []))
+          print(' '.join(ids))
+          ")
+
+          for SG_ID in $SG_IDS; do
+            echo "Allowing TCP 9200 on security group $SG_ID"
+            yc vpc security-group update-rules --id "$SG_ID" \
+              --add-rule "direction=ingress,port=9200,protocol=tcp,v4-cidr-blocks=0.0.0.0/0,description=opensearch-staging" \
+              || echo "Warning: could not update $SG_ID (rule may already exist)"
+          done
+
+      - name: Wait for OpenSearch
+        run: |
+          URL="${{ steps.opensearch.outputs.url }}"
+          for i in $(seq 1 36); do
+            if curl -fsS --max-time 10 "${URL}/_cluster/health"; then
+              echo "" && echo "OpenSearch is healthy at $URL"
+              exit 0
+            fi
+            echo "Attempt $i/36 - waiting for OpenSearch..."
+            sleep 10
+          done
+          echo "Error: OpenSearch did not become healthy at $URL"
+          exit 1
+
+      - name: Summary
+        run: |
+          {
+            echo "## OpenSearch ready"
+            echo ""
+            echo "- **URL:** ${{ steps.opensearch.outputs.url }}"
+            echo ""
+            echo "If the VM was just (re)created, the index is empty — re-index:"
+            echo '```bash'
+            echo "cd backend && uv run python scripts/index_court_practice.py \\"
+            echo "  --source /path/to/court-data \\"
+            echo "  --opensearch-url ${{ steps.opensearch.outputs.url }} \\"
+            echo "  --batch-size 500"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -137,11 +137,17 @@ class CourtPracticeSearcher:
 
         response = self._client.msearch(body=msearch_body)
         responses = response.get("responses") or []
-        result_lists = [
-            self._hits_to_ranked(resp.get("hits", {}).get("hits", []))
-            for resp in responses
-            if not resp.get("error")
-        ]
+        result_lists = []
+        for query, resp in zip(cleaned_queries, responses):
+            error = resp.get("error")
+            if error:
+                # Surface what OpenSearch rejected instead of silently dropping it.
+                logger.warning(
+                    "msearch sub-query failed",
+                    extra={"index": self._config.index_alias, "query": query, "os_error": error},
+                )
+                continue
+            result_lists.append(self._hits_to_ranked(resp.get("hits", {}).get("hits", [])))
         return reciprocal_rank_fusion(result_lists, top_k=self._config.top_k)
 
     async def search(

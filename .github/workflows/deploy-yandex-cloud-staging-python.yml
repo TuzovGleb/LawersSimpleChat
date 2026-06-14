@@ -77,37 +77,22 @@ jobs:
           IAM_TOKEN=$(yc iam create-token)
           echo "$IAM_TOKEN" | docker login --username iam --password-stdin cr.yandex
 
-      # ---------- 1. OpenSearch (COI VM, public IP) ----------
+      # ---------- 1. Resolve OpenSearch (provisioned by a separate workflow) ----------
 
-      - name: Deploy OpenSearch COI VM
+      - name: Resolve OpenSearch URL (read-only — never provisions)
         id: opensearch
-        env:
-          YC_SERVICE_ACCOUNT_ID: ${{ secrets.YC_SERVICE_ACCOUNT_ID }}
-          YC_SUBNET_ID: ${{ secrets.YC_SUBNET_ID }}
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           VM_NAME="lawers-opensearch-staging"
-          COMPOSE_FILE="backend/docker-compose.yml"
 
-          if [ -z "$YC_SUBNET_ID" ]; then
-            echo "Error: YC_SUBNET_ID secret is required (subnet for the OpenSearch COI VM)"
+          # The backend deploy must NOT create or update the OpenSearch VM:
+          # re-provisioning can wipe its data volume (the indexed court
+          # decisions). Provisioning lives in the separate
+          # "Deploy OpenSearch (Staging)" workflow; here we only read the IP.
+          if ! yc compute instance get --name "$VM_NAME" >/dev/null 2>&1; then
+            echo "Error: OpenSearch VM '$VM_NAME' not found."
+            echo "Run the 'Deploy OpenSearch (Staging)' workflow once to provision it, then re-run this deploy."
             exit 1
-          fi
-
-          if yc compute instance get --name "$VM_NAME" >/dev/null 2>&1; then
-            echo "Updating existing OpenSearch VM..."
-            yc compute instance update-container --name "$VM_NAME" --docker-compose-file "$COMPOSE_FILE"
-          else
-            echo "Creating OpenSearch COI VM..."
-            yc compute instance create-with-container \
-              --name "$VM_NAME" \
-              --zone ru-central1-a \
-              --cores 2 \
-              --memory 4 \
-              --create-boot-disk size=50,type=network-ssd \
-              --network-interface "subnet-id=${YC_SUBNET_ID},nat-ip-version=ipv4" \
-              --service-account-id "$YC_SERVICE_ACCOUNT_ID" \
-              --docker-compose-file "$COMPOSE_FILE"
           fi
 
           PUBLIC_IP=$(yc compute instance get --name "$VM_NAME" --format json | python3 -c "
@@ -129,25 +114,6 @@ jobs:
           echo "OpenSearch public IP: $PUBLIC_IP"
           echo "public_ip=$PUBLIC_IP" >> "$GITHUB_OUTPUT"
           echo "url=http://${PUBLIC_IP}:9200" >> "$GITHUB_OUTPUT"
-
-      - name: Open security group port 9200 (staging)
-        run: |
-          export PATH="$HOME/.local/bin:$PATH"
-          VM_NAME="lawers-opensearch-staging"
-          SG_IDS=$(yc compute instance get --name "$VM_NAME" --format json | python3 -c "
-          import sys, json
-          ids = set()
-          for iface in json.load(sys.stdin).get('network_interfaces', []):
-              ids.update(iface.get('security_group_ids', []))
-          print(' '.join(ids))
-          ")
-
-          for SG_ID in $SG_IDS; do
-            echo "Allowing TCP 9200 on security group $SG_ID"
-            yc vpc security-group update-rules --id "$SG_ID" \
-              --add-rule "direction=ingress,port=9200,protocol=tcp,v4-cidr-blocks=0.0.0.0/0,description=opensearch-staging" \
-              || echo "Warning: could not update $SG_ID (rule may already exist)"
-          done
 
       - name: Wait for OpenSearch
         run: |
