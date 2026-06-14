@@ -15,13 +15,14 @@ def mock_searcher():
     return CourtPracticeSearcher(client, config)
 
 
-def test_build_query_body_requires_terms_and_boosts_phrases(mock_searcher):
+def test_build_query_body_uses_permissive_or_match(mock_searcher):
     body = mock_searcher._build_query_body("снижение неустойки ст 333 ГК")
     bool_query = body["query"]["bool"]
-    assert bool_query["must"][0]["multi_match"]["minimum_should_match"] == "2<75%"
-    phrase = bool_query["should"][0]["match_phrase"]["act_text"]
-    assert phrase["boost"] == 2.0
-    assert phrase["slop"] == 2
+    multi_match = bool_query["must"][0]["multi_match"]
+    assert multi_match["operator"] == "or"
+    # No hard minimum_should_match: a strict floor tanked recall on this corpus.
+    assert "minimum_should_match" not in multi_match
+    assert "should" not in bool_query
 
 
 def test_format_search_results_empty():
