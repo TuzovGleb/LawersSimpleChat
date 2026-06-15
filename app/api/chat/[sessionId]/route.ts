@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { getAuthorizedChatSession } from '@/lib/chat-access';
+import { logger, requestIdFrom } from '@/lib/server-logger';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -15,6 +16,7 @@ function getSessionIdFromRequest(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
+  const requestId = requestIdFrom(req);
   const sessionId = getSessionIdFromRequest(req);
   if (!sessionId) {
     return NextResponse.json({ error: 'sessionId is required' }, { status: 400 });
@@ -36,7 +38,12 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ chat: session });
   } catch (error) {
-    console.error('[chat][GET] Unexpected error:', error);
+    logger.error('Unexpected error', {
+      request_id: requestId,
+      event: 'chat_get_unexpected_error',
+      err: error,
+      chat_id: sessionId,
+    });
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

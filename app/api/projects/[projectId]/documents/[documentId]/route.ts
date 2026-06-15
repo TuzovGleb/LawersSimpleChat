@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabase } from '@/lib/supabase';
 import { deleteFileFromS3 } from '@/lib/s3-client';
+import { logger, requestIdFrom } from '@/lib/server-logger';
 
 export const runtime = 'nodejs';
 
@@ -16,6 +17,7 @@ function getProjectAndDocumentIds(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
+  const requestId = requestIdFrom(req);
   const { projectId, documentId } = getProjectAndDocumentIds(req);
   if (!projectId || !documentId) {
     return NextResponse.json({ error: 'projectId и documentId обязательны.' }, { status: 400 });
@@ -57,7 +59,13 @@ export async function DELETE(req: NextRequest) {
       .eq('project_id', projectId);
 
     if (error) {
-      console.error('[project-document][DELETE] Supabase error:', error);
+      logger.error('Supabase error', {
+        request_id: requestId,
+        event: 'project_document_delete_supabase_error',
+        err: error,
+        project_id: projectId,
+        documentId,
+      });
       return NextResponse.json({ error: 'Не удалось удалить документ.' }, { status: 500 });
     }
 
@@ -65,9 +73,13 @@ export async function DELETE(req: NextRequest) {
       try {
         await deleteFileFromS3(docData.object_key);
       } catch (s3Error) {
-        console.warn('[project-document][DELETE] Failed to delete file from S3:', {
+        logger.warn('Failed to delete file from S3', {
+          request_id: requestId,
+          event: 'project_document_delete_s3_error',
+          err: s3Error,
+          project_id: projectId,
+          documentId,
           objectKey: docData.object_key,
-          error: s3Error instanceof Error ? s3Error.message : s3Error,
         });
       }
     }
@@ -81,7 +93,13 @@ export async function DELETE(req: NextRequest) {
 
     return NextResponse.json({ success: true });
   } catch (error) {
-    console.error('[project-document][DELETE] Unexpected error:', error);
+    logger.error('Unexpected error', {
+      request_id: requestId,
+      event: 'project_document_delete_unexpected_error',
+      err: error,
+      project_id: projectId,
+      documentId,
+    });
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

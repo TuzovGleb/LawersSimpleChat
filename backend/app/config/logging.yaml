@@ -18,43 +18,44 @@ logging:
         line: lineno
         thread_name: threadName
 
+  filters:
+    request_context:
+      (): app.utils.RequestContextFilter
+
   handlers:
+    # Single sink: one-line JSON to stdout. Serverless Containers auto-ship
+    # stdout to Cloud Logging and lift message/level into native fields, leaving
+    # surface/chat_id/request_id queryable as json_payload.<field>. The previous
+    # RotatingFileHandler wrote to an ephemeral /tmp path that never reached
+    # Cloud Logging and was lost on container restart — removed.
     console:
       level: INFO
       class: logging.StreamHandler
-      formatter: simple
-      stream: ext://sys.stdout
-
-    file:
-      level: DEBUG
-      class: logging.handlers.RotatingFileHandler
       formatter: json
-      filename: ${logs_path}/chat.log
-      maxBytes: 10485760 # 10MB
-      backupCount: 5
-      encoding: utf-8
+      filters: [request_context]
+      stream: ext://sys.stdout
 
   loggers:
     httpx:
       level: WARNING
-      handlers: [console, file]
+      handlers: [console]
       propagate: false
 
     httpcore:
       level: WARNING
-      handlers: [file]
+      handlers: [console]
       propagate: false
 
     openai._base_client:
       level: WARNING
-      handlers: [file]
+      handlers: [console]
       propagate: false
 
     app:
       level: DEBUG
-      handlers: [console, file]
+      handlers: [console]
       propagate: false
 
   root:
     level: INFO
-    handlers: [console, file]
+    handlers: [console]

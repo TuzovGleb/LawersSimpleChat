@@ -15,6 +15,7 @@ from app.server.chat_stream import stream_chat
 from app.server.schema import ChatRequest
 from app.server.security import verify_backend_secret
 from app.services.supabase_repo import SupabaseRepo
+from app.utils import RequestContextMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="LawersSimpleChat Backend", lifespan=lifespan)
 app.state.config = CONFIG
+
+# Bind chat_id/request_id for every request so all log lines carry them (added
+# last => outermost => runs first, before CORS and the endpoints).
+app.add_middleware(RequestContextMiddleware)
 
 _cors_origins = (CONFIG["app"].get("cors_origins") or "").strip()
 if _cors_origins:

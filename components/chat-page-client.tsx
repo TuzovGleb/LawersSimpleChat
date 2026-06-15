@@ -11,6 +11,7 @@ import { useExportMessage } from "@/hooks/use-export-message";
 import { useAuth } from "@/hooks/use-auth";
 import { ToasterClient } from "@/components/toaster-client";
 import { fetchWithRetry, safeJsonResponse, resolveApiUrl } from "@/lib/utils";
+import { setCurrentChatId } from "@/lib/client-error-logger";
 
 type LocalChatSession = {
   id: string;
@@ -622,6 +623,12 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
       ) ?? null,
     [activeSessionId, selectedProjectId, sessions],
   );
+
+  // Tag uncaught browser errors with the active chat id so client-side errors
+  // correlate with backend/BFF logs (see lib/client-error-logger.ts).
+  useEffect(() => {
+    setCurrentChatId(activeSession?.backendSessionId ?? activeSessionId);
+  }, [activeSession, activeSessionId]);
 
 
   const isLoadingMessages =

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { getAuthorizedChatSession } from '@/lib/chat-access';
 import type { UTMData } from '@/lib/types';
+import { logger, requestIdFrom } from '@/lib/server-logger';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -34,6 +35,7 @@ function extractUtm(url: URL): UTMData {
 
 export async function GET(req: NextRequest) {
   const sessionId = getSessionIdFromRequest(req);
+  const requestId = requestIdFrom(req);
 
   if (!sessionId) {
     return NextResponse.json({ error: 'sessionId is required' }, { status: 400 });
@@ -61,7 +63,7 @@ export async function GET(req: NextRequest) {
       .order('created_at', { ascending: true });
 
     if (error) {
-      console.error('[chat-messages][GET] Supabase error:', error);
+      logger.error('Failed to load chat messages', { chat_id: sessionId, request_id: requestId, event: 'supabase_error', err: error });
       return NextResponse.json({ error: 'Не удалось загрузить сообщения.' }, { status: 500 });
     }
 
@@ -89,7 +91,7 @@ export async function GET(req: NextRequest) {
           .in('id', attachedIds);
 
         if (documentsError) {
-          console.error('[chat-messages][GET] Attached documents lookup error:', documentsError);
+          logger.error('Attached documents lookup failed', { chat_id: sessionId, request_id: requestId, event: 'documents_lookup_error', err: documentsError });
         } else {
           documentsById = new Map(
             (documentsData ?? []).map((document: any) => [
@@ -122,20 +124,21 @@ export async function GET(req: NextRequest) {
       }),
     });
   } catch (error) {
-    console.error('[chat-messages][GET] Unexpected error:', error);
+    logger.error('Unexpected error loading chat messages', { chat_id: sessionId, request_id: requestId, event: 'unexpected_error', err: error });
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
 
 export async function POST(req: NextRequest) {
   const sessionId = getSessionIdFromRequest(req);
+  const requestId = requestIdFrom(req);
   if (!sessionId) {
     return NextResponse.json({ error: 'sessionId is required' }, { status: 400 });
   }
 
   const backendUrl = process.env.BACKEND_URL;
   if (!backendUrl) {
-    console.error('[chat-messages][POST] BACKEND_URL is not configured');
+    logger.error('Chat backend is not configured (missing BACKEND_URL)', { chat_id: sessionId, request_id: requestId, event: 'config_error' });
     return NextResponse.json(
       { error: 'Chat backend is not configured', details: 'Missing BACKEND_URL' },
       { status: 503 },
@@ -160,7 +163,7 @@ export async function POST(req: NextRequest) {
     }
     userId = user.id;
   } catch (error) {
-    console.error('[chat-messages][POST] Auth check failed:', error);
+    logger.error('Auth check failed', { chat_id: sessionId, request_id: requestId, event: 'auth_failed', err: error });
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -176,6 +179,8 @@ export async function POST(req: NextRequest) {
         headers: {
           'Content-Type': 'application/json',
           'X-Backend-Secret': process.env.BACKEND_SHARED_SECRET ?? '',
+          'X-Chat-Id': sessionId,
+          'X-Request-Id': requestId,
         },
         body: JSON.stringify(forwardBody),
         signal: AbortSignal.timeout(2100000),
@@ -184,7 +189,7 @@ export async function POST(req: NextRequest) {
 
     if (!upstream.ok || !upstream.body) {
       const details = await upstream.text().catch(() => '');
-      console.error('[chat-messages][POST] Backend error:', upstream.status, details);
+      logger.error('Chat backend returned an error', { chat_id: sessionId, request_id: requestId, event: 'backend_error', status: upstream.status, details });
       return NextResponse.json(
         { error: 'Backend error', details: details || `HTTP ${upstream.status}` },
         { status: 502 },
@@ -194,7 +199,7 @@ export async function POST(req: NextRequest) {
     return new Response(upstream.body, { headers: SSE_HEADERS });
   } catch (error) {
     const details = error instanceof Error ? error.message : 'Unknown error';
-    console.error('[chat-messages][POST] Failed to reach backend:', details);
+    logger.error('Failed to reach chat backend', { chat_id: sessionId, request_id: requestId, event: 'backend_unreachable', err: error });
     return NextResponse.json({ error: 'Failed to reach chat backend', details }, { status: 502 });
   }
 }

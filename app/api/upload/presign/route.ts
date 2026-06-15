@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
 import { generatePresignedUploadUrl } from '@/lib/s3-client';
+import { logger, requestIdFrom } from '@/lib/server-logger';
 
 export const runtime = 'nodejs';
 
@@ -22,6 +23,7 @@ const ALLOWED_MIME_TYPES = new Set([
 ]);
 
 export async function POST(req: NextRequest) {
+  const requestId = requestIdFrom(req);
   try {
     const body = await req.json();
     const { filename, mimeType, size, projectId, userId } = body;
@@ -56,11 +58,10 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ uploadUrl, objectKey });
   } catch (error) {
-    console.error('[presign][POST] Error generating presigned URL:', {
-      error: error instanceof Error ? {
-        message: error.message,
-        stack: error.stack,
-      } : error,
+    logger.error('Error generating presigned URL', {
+      request_id: requestId,
+      event: 'presign_post_error',
+      err: error,
     });
     return NextResponse.json(
       { error: 'Не удалось сгенерировать ссылку для загрузки.' },

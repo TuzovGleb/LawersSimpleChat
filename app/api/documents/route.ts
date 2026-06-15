@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
 import { extractTextFromDocument } from '@/lib/document-processing';
+import { logger, requestIdFrom } from '@/lib/server-logger';
 
 // NOTE: Cloudflare Pages требует Edge Runtime
 // Обработка документов автоматически использует fallback через OpenAI API,
@@ -8,6 +9,7 @@ import { extractTextFromDocument } from '@/lib/document-processing';
 export const runtime = 'edge';
 
 export async function POST(req: NextRequest) {
+  const requestId = requestIdFrom(req);
   try {
     const formData = await req.formData();
     const file = formData.get('file');
@@ -48,7 +50,11 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (error) {
-    console.error('Error extracting document text:', error);
+    logger.error('Error extracting document text', {
+      request_id: requestId,
+      event: 'document_extract_error',
+      err: error,
+    });
     return NextResponse.json(
       {
         error:

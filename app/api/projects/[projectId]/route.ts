@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSupabase } from '@/lib/supabase';
 import { mapProject } from '@/lib/projects';
 import { slugify } from '@/lib/utils';
+import { logger, requestIdFrom } from '@/lib/server-logger';
 
 export const runtime = 'edge';
 
@@ -15,6 +16,7 @@ function getProjectIdFromRequest(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
+  const requestId = requestIdFrom(req);
   const projectId = getProjectIdFromRequest(req);
   if (!projectId) {
     return NextResponse.json({ error: 'projectId is required' }, { status: 400 });
@@ -42,12 +44,18 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ project: mapProject(data) });
   } catch (error) {
-    console.error('[project][GET] Unexpected error:', error);
+    logger.error('Unexpected error', {
+      request_id: requestId,
+      event: 'project_get_unexpected_error',
+      err: error,
+      project_id: projectId,
+    });
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
 
 export async function PATCH(req: NextRequest) {
+  const requestId = requestIdFrom(req);
   const projectId = getProjectIdFromRequest(req);
   if (!projectId) {
     return NextResponse.json({ error: 'projectId is required' }, { status: 400 });
@@ -85,18 +93,29 @@ export async function PATCH(req: NextRequest) {
     const { data, error } = await query.select('*').single();
 
     if (error || !data) {
-      console.error('[project][PATCH] Supabase error:', error);
+      logger.error('Supabase error', {
+        request_id: requestId,
+        event: 'project_patch_supabase_error',
+        err: error,
+        project_id: projectId,
+      });
       return NextResponse.json({ error: 'Не удалось обновить проект.' }, { status: 500 });
     }
 
     return NextResponse.json({ project: mapProject(data) });
   } catch (error) {
-    console.error('[project][PATCH] Unexpected error:', error);
+    logger.error('Unexpected error', {
+      request_id: requestId,
+      event: 'project_patch_unexpected_error',
+      err: error,
+      project_id: projectId,
+    });
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
 
 export async function DELETE(req: NextRequest) {
+  const requestId = requestIdFrom(req);
   const projectId = getProjectIdFromRequest(req);
   if (!projectId) {
     return NextResponse.json({ error: 'projectId is required' }, { status: 400 });
@@ -119,13 +138,23 @@ export async function DELETE(req: NextRequest) {
     const { error } = await query;
 
     if (error) {
-      console.error('[project][DELETE] Supabase error:', error);
+      logger.error('Supabase error', {
+        request_id: requestId,
+        event: 'project_delete_supabase_error',
+        err: error,
+        project_id: projectId,
+      });
       return NextResponse.json({ error: 'Не удалось удалить проект.' }, { status: 500 });
     }
 
     return NextResponse.json({ success: true });
   } catch (error) {
-    console.error('[project][DELETE] Unexpected error:', error);
+    logger.error('Unexpected error', {
+      request_id: requestId,
+      event: 'project_delete_unexpected_error',
+      err: error,
+      project_id: projectId,
+    });
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
