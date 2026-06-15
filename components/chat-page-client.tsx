@@ -889,18 +889,28 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
             throw new Error(`Ошибка загрузки файла в хранилище (${uploadResponse.status}).`);
           }
 
-          // Step 3: Notify backend to process the uploaded file
-          const response = await fetchWithRetry(`/api/projects/${selectedProjectId}/documents`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              objectKey,
-              filename: file.name,
-              mimeType: file.type || "application/octet-stream",
-              size: file.size,
-              userId: user.id,
-            }),
-          });
+          // Step 3: Notify backend to process the uploaded file.
+          // Распознавание скана (постранично через gemini) занимает заметно больше
+          // дефолтных 30с, поэтому поднимаем таймаут до 3 минут. Ретраи сводим к
+          // минимуму: повтор перезапускает тяжёлую обработку (скачивание из S3 +
+          // OCR) целиком — лучше показать ошибку, чем дублировать работу.
+          const response = await fetchWithRetry(
+            `/api/projects/${selectedProjectId}/documents`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                objectKey,
+                filename: file.name,
+                mimeType: file.type || "application/octet-stream",
+                size: file.size,
+                userId: user.id,
+              }),
+            },
+            1, // maxRetries
+            1000, // retryDelay
+            180000, // timeoutMs — 3 минуты на распознавание
+          );
 
           if (!response.ok) {
             const errorPayload = await response.json().catch(() => ({}));

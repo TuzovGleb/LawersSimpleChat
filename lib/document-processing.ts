@@ -55,8 +55,14 @@ export type ExtractedDocument = {
   text: string;
   rawTextLength: number;
   truncated: boolean;
-  strategy: 'text' | 'pdf' | 'docx' | 'doc' | 'vision' | 'llm-file';
+  strategy: 'text' | 'pdf' | 'docx' | 'doc' | 'vision' | 'llm-file' | 'pdf-pages';
 };
+
+// Постраничная обработка: сколько страниц распознаём одновременно.
+// Каждый запрос к gemini по странице ~25-30с; параллелизм сокращает общее
+// время до «самой медленной страницы», но не перегружает rate limit.
+const PDF_PAGE_CONCURRENCY = 5;
+const PDF_PAGE_MAX_RETRIES = 2;
 
 export async function extractTextFromDocument(buffer: Buffer, mimeType: string, filename: string): Promise<ExtractedDocument> {
   const extension = getFileExtension(filename);
@@ -88,6 +94,13 @@ export async function extractTextFromDocument(buffer: Buffer, mimeType: string, 
     const pdfResult = await extractPdf(buffer);
     if (pdfResult && pdfResult.length >= MIN_TEXT_LENGTH_FOR_SUCCESS) {
       return normalizeResult(pdfResult, 'pdf');
+    }
+    // Скан без текстового слоя: режем на страницы и распознаём их параллельно.
+    // Это укладывает каждый запрос в таймаут и обходит лимит output-токенов
+    // на больших делах. Возвращает null → откатываемся на единый запрос.
+    const perPage = await extractPdfPerPage(buffer, filename);
+    if (perPage) {
+      return normalizeResult(perPage, 'pdf-pages');
     }
     const llmResult = await extractWithFileAttachment(buffer, filename);
     return normalizeResult(llmResult, 'llm-file');
@@ -196,7 +209,7 @@ async function extractWithVision(buffer: Buffer, mimeType: string, filename: str
       ],
     });
 
-    return extractContentFromCompletion(completion.choices[0].message?.content);
+    return extractContentFromCompletion(completion.choices?.[0]?.message?.content);
   } catch (apiError: any) {
     console.error('[document-processing] API error in extractWithVision:', {
       filename,
@@ -212,151 +225,174 @@ async function extractWithVision(buffer: Buffer, mimeType: string, filename: str
   }
 }
 
-async function extractWithFileAttachment(buffer: Buffer, filename: string) {
+// Низкоуровневый вызов модели извлечения. Раньше completion.choices[0] падал
+// с "Cannot read properties of undefined (reading '0')", маскируя настоящую
+// ошибку провайдера (она лежит в теле ответа, а не в choices). Здесь разбираем
+// безопасно и логируем реальную причину.
+async function runExtractionCompletion(content: any[], context: Record<string, unknown>): Promise<string> {
   const openai = await getAIClient();
   if (!openai) {
     throw new Error('Neither OPENROUTER_API_KEY nor OPENAI_API_KEY is configured');
   }
-  
-  const extension = getFileExtension(filename);
-  const isPdfFile = extension === '.pdf';
-  const isImageFile = isImageFileType(extension);
-  
-  try {
-    // Определяем, используем ли мы OpenRouter
-    const isUsingOpenRouter = isOpenRouterAvailable() && 
-      (openai.baseURL?.includes('openrouter.ai') || !process.env.OPENAI_API_KEY);
-    
-    if (isUsingOpenRouter) {
-      // OpenRouter подход: используем base64 (OpenRouter не поддерживает files.create)
-      const base64 = buffer.toString('base64');
-      const mimeType = getMimeTypeFromExtension(extension);
-      
-      // Определяем контент в зависимости от типа файла
-      let content: any[] = [
-        {
-          type: 'text',
-          text: `Read the attached document "${filename}" and return only its textual content.`,
-        },
-      ];
-      
-      if (isPdfFile || isImageFile) {
-        // Для PDF и изображений используем image_url с base64
-        // OpenRouter автоматически обработает PDF
-        content.push({
-          type: 'image_url',
-          image_url: {
-            url: `data:${mimeType};base64,${base64}`,
-          },
-        });
-      } else {
-        // Для других файлов пробуем передать как текст (если это текстовый файл)
-        try {
-          const text = buffer.toString('utf-8');
-          content.push({
-            type: 'text',
-            text: `Document content:\n\n${text}`,
-          });
-        } catch {
-          // Если не текстовый, используем base64 в data URI
-          content.push({
-            type: 'image_url',
-            image_url: {
-              url: `data:${mimeType};base64,${base64}`,
-            },
-          });
-        }
-      }
-      
-      const model = getDocumentExtractionModel();
 
-      const completion = await openai.chat.completions.create({
-        model,
-        messages: [
-          {
-            role: 'system',
-            content: 'You are a meticulous legal transcription assistant. Extract the complete plain text from provided documents without adding commentary.',
-          },
-          {
-            role: 'user',
-            content: content,
-          },
-        ],
-        temperature: 0,
-        max_tokens: DOCUMENT_EXTRACTION_MAX_TOKENS,
-      });
-      
-      const text = completion.choices[0]?.message?.content ?? '';
-      return text.trim();
-    } else {
-      // Старый подход для прямого OpenAI (если используется)
-      // Пробуем использовать chat.completions с файлом через base64
-      const base64 = buffer.toString('base64');
-      const mimeType = getMimeTypeFromExtension(extension);
-      
-      let content: any[] = [
+  let completion: any;
+  try {
+    completion = await openai.chat.completions.create({
+      model: getDocumentExtractionModel(),
+      temperature: 0,
+      max_tokens: DOCUMENT_EXTRACTION_MAX_TOKENS,
+      messages: [
         {
-          type: 'text',
-          text: `Read the attached document "${filename}" and return only its textual content.`,
+          role: 'system',
+          content: 'You are a meticulous legal transcription assistant. Extract the complete plain text from provided documents without adding commentary.',
         },
-      ];
-      
-      if (isPdfFile || isImageFile) {
-        content.push({
-          type: 'image_url',
-          image_url: {
-            url: `data:${mimeType};base64,${base64}`,
-          },
-        });
-      } else {
-        try {
-          const text = buffer.toString('utf-8');
-          content.push({
-            type: 'text',
-            text: `Document content:\n\n${text}`,
-          });
-        } catch {
-          content.push({
-            type: 'image_url',
-            image_url: {
-              url: `data:${mimeType};base64,${base64}`,
-            },
-          });
-        }
-      }
-      
-      const completion = await openai.chat.completions.create({
-        model: getDocumentExtractionModel(),
-        messages: [
-          {
-            role: 'system',
-            content: 'You are a meticulous legal transcription assistant. Extract the complete plain text from provided documents without adding commentary.',
-          },
-          {
-            role: 'user',
-            content: content,
-          },
-        ],
-        temperature: 0,
-        max_tokens: DOCUMENT_EXTRACTION_MAX_TOKENS,
-      });
-      
-      const text = completion.choices[0]?.message?.content ?? '';
-      return text.trim();
-    }
+        { role: 'user', content },
+      ],
+    });
   } catch (apiError: any) {
-    console.error('[document-processing] API error in extractWithFileAttachment:', {
-      filename,
-      extension,
+    console.error('[document-processing] extraction API call failed:', {
+      ...context,
       error: {
         message: apiError?.message,
         status: apiError?.status,
         code: apiError?.code,
         type: apiError?.type,
-        stack: apiError?.stack,
       },
     });
     throw new Error(`File extraction API error: ${apiError?.message || 'Unknown error'}`);
+  }
+
+  const choice = completion?.choices?.[0];
+  if (!choice) {
+    const providerError = JSON.stringify(completion?.error ?? completion ?? null).slice(0, 1000);
+    console.error('[document-processing] extraction returned no choices:', { ...context, providerError });
+    throw new Error(`File extraction returned no choices from provider: ${providerError}`);
+  }
+  return extractContentFromCompletion(choice.message?.content);
+}
+
+async function extractWithFileAttachment(buffer: Buffer, filename: string): Promise<string> {
+  const extension = getFileExtension(filename);
+  const isPdfFile = extension === '.pdf';
+  const isImageFile = isImageFileType(extension);
+  const base64 = buffer.toString('base64');
+  const mimeType = getMimeTypeFromExtension(extension);
+
+  const content: any[] = [
+    {
+      type: 'text',
+      text: `Read the attached document "${filename}" and return only its textual content.`,
+    },
+  ];
+
+  if (isPdfFile || isImageFile) {
+    // PDF и изображения передаём как base64 data URI (OpenRouter обрабатывает сам)
+    content.push({ type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}` } });
+  } else {
+    // Для прочих файлов пробуем как текст, иначе — base64
+    try {
+      const text = buffer.toString('utf-8');
+      content.push({ type: 'text', text: `Document content:\n\n${text}` });
+    } catch {
+      content.push({ type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}` } });
+    }
+  }
+
+  return runExtractionCompletion(content, { filename, extension });
+}
+
+// Параллельный map с ограничением одновременных задач.
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (true) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      results[index] = await fn(items[index], index);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+  return results;
+}
+
+// Распознаём одну страницу PDF через gemini (type:file, как в проверенном эксперименте),
+// с несколькими повторами на случай разовой ошибки провайдера.
+async function extractSinglePdfPage(
+  pageBuffer: Buffer,
+  filename: string,
+  pageNumber: number,
+  totalPages: number,
+): Promise<string> {
+  const base64 = pageBuffer.toString('base64');
+  const content: any[] = [
+    {
+      type: 'text',
+      text: `This is page ${pageNumber} of ${totalPages} of "${filename}". Return ONLY its full textual content verbatim, preserving paragraph structure. No commentary.`,
+    },
+    {
+      type: 'file',
+      file: { filename: `${filename}#page-${pageNumber}`, file_data: `data:application/pdf;base64,${base64}` },
+    },
+  ];
+
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= PDF_PAGE_MAX_RETRIES; attempt++) {
+    try {
+      return await runExtractionCompletion(content, { filename, page: pageNumber, attempt });
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(`page ${pageNumber} extraction failed`);
+}
+
+// Постраничная обработка скана: режем PDF на одностраничные и распознаём их
+// параллельно. Возвращает null (→ откат на единый запрос), если постранично
+// неприменимо: не OpenRouter, одна страница, не удалось разрезать, или хотя бы
+// одна страница не распозналась (чтобы не сохранить документ с дырами).
+async function extractPdfPerPage(buffer: Buffer, filename: string): Promise<string | null> {
+  // gemini читает страницу PDF нативно только через OpenRouter (type:file).
+  // Для прямого OpenAI gpt-4o-mini это не работает — откат на единый запрос.
+  if (!isOpenRouterAvailable()) return null;
+
+  let pageBuffers: Buffer[];
+  try {
+    const { PDFDocument } = await import('pdf-lib');
+    const src = await PDFDocument.load(buffer, { ignoreEncryption: true });
+    const count = src.getPageCount();
+    if (count <= 1) return null; // одну страницу резать нет смысла
+    pageBuffers = [];
+    for (let i = 0; i < count; i++) {
+      const single = await PDFDocument.create();
+      const [page] = await single.copyPages(src, [i]);
+      single.addPage(page);
+      pageBuffers.push(Buffer.from(await single.save()));
+    }
+  } catch (err) {
+    console.error('[document-processing] PDF split failed, fallback to single request:', {
+      filename,
+      error: err instanceof Error ? err.message : err,
+    });
+    return null;
+  }
+
+  try {
+    const pages = await mapWithConcurrency(pageBuffers, PDF_PAGE_CONCURRENCY, (pageBuffer, index) =>
+      extractSinglePdfPage(pageBuffer, filename, index + 1, pageBuffers.length),
+    );
+    return pages.join('\n\n').trim();
+  } catch (err) {
+    console.error('[document-processing] per-page extraction failed, fallback to single request:', {
+      filename,
+      pages: pageBuffers.length,
+      error: err instanceof Error ? err.message : err,
+    });
+    return null;
   }
 }
 

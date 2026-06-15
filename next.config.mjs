@@ -12,6 +12,7 @@ const nextConfig = {
         'mammoth': 'commonjs mammoth',
         'pdf-parse': 'commonjs pdf-parse',
         'word-extractor': 'commonjs word-extractor',
+        'pdf-lib': 'commonjs pdf-lib',
       });
     }
     return config;
