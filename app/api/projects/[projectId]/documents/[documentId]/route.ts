@@ -18,6 +18,7 @@ function getProjectAndDocumentIds(req: NextRequest) {
 
 export async function DELETE(req: NextRequest) {
   const requestId = requestIdFrom(req);
+  const startedAt = Date.now();
   const { projectId, documentId } = getProjectAndDocumentIds(req);
   if (!projectId || !documentId) {
     return NextResponse.json({ error: 'projectId и documentId обязательны.' }, { status: 400 });
@@ -91,6 +92,13 @@ export async function DELETE(req: NextRequest) {
       .eq('id', projectId)
       .limit(1);
 
+    logger.info('Document deleted', {
+      request_id: requestId,
+      event: 'document_deleted',
+      duration_ms: Date.now() - startedAt,
+      project_id: projectId,
+      document_id: documentId,
+    });
     return NextResponse.json({ success: true });
   } catch (error) {
     logger.error('Unexpected error', {

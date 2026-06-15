@@ -10,6 +10,7 @@ export const runtime = 'edge';
 
 export async function POST(req: NextRequest) {
   const requestId = requestIdFrom(req);
+  const startedAt = Date.now();
   try {
     const formData = await req.formData();
     const file = formData.get('file');
@@ -36,6 +37,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    logger.info('Document text extracted', {
+      request_id: requestId,
+      event: 'document_text_extracted',
+      duration_ms: Date.now() - startedAt,
+      filename,
+    });
     return NextResponse.json({
       document: {
         id: uuidv4(),

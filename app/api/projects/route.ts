@@ -10,6 +10,7 @@ export const runtime = 'edge';
 
 export async function GET(req: NextRequest) {
   const requestId = requestIdFrom(req);
+  const startedAt = Date.now();
   // Check authentication
   const { user, response: authResponse } = await requireAuth();
   if (authResponse) return authResponse;
@@ -32,6 +33,12 @@ export async function GET(req: NextRequest) {
     }
 
     const projects = (data ?? []).map(mapProject);
+    logger.info('Projects listed', {
+      request_id: requestId,
+      event: 'projects_listed',
+      duration_ms: Date.now() - startedAt,
+      count: projects.length,
+    });
     return NextResponse.json({ projects });
   } catch (error) {
     logger.error('Unexpected error', {
@@ -45,6 +52,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const requestId = requestIdFrom(req);
+  const startedAt = Date.now();
   // Check authentication
   const { user, response: authResponse } = await requireAuth();
   if (authResponse) return authResponse;
@@ -97,6 +105,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Не удалось создать проект.' }, { status: 500 });
     }
 
+    logger.info('Project created', {
+      request_id: requestId,
+      event: 'project_created',
+      duration_ms: Date.now() - startedAt,
+      project_id: data.id,
+      name,
+    });
     return NextResponse.json({ project: mapProject(data) }, { status: 201 });
   } catch (error) {
     logger.error('Unexpected error', {

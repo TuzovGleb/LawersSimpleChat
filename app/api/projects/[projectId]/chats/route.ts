@@ -16,6 +16,7 @@ function getProjectIdFromRequest(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   const requestId = requestIdFrom(req);
+  const startedAt = Date.now();
   const projectId = getProjectIdFromRequest(req);
   if (!projectId) {
     return NextResponse.json({ error: 'projectId is required' }, { status: 400 });
@@ -59,6 +60,13 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Не удалось загрузить чаты проекта.' }, { status: 500 });
     }
 
+    logger.info('Project chats listed', {
+      request_id: requestId,
+      event: 'chats_listed',
+      duration_ms: Date.now() - startedAt,
+      project_id: projectId,
+      count: (data ?? []).length,
+    });
     return NextResponse.json({ chats: data ?? [] });
   } catch (error) {
     logger.error('Unexpected error', {
@@ -73,6 +81,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const requestId = requestIdFrom(req);
+  const startedAt = Date.now();
   const projectId = getProjectIdFromRequest(req);
   if (!projectId) {
     return NextResponse.json({ error: 'projectId is required' }, { status: 400 });
@@ -139,6 +148,13 @@ export async function POST(req: NextRequest) {
       .eq('id', projectId)
       .limit(1);
 
+    logger.info('Chat created', {
+      request_id: requestId,
+      event: 'chat_created',
+      duration_ms: Date.now() - startedAt,
+      project_id: projectId,
+      chat_id: newSessionId,
+    });
     return NextResponse.json({ chat: data }, { status: 201 });
   } catch (error) {
     logger.error('Unexpected error', {

@@ -36,6 +36,7 @@ function extractUtm(url: URL): UTMData {
 export async function GET(req: NextRequest) {
   const sessionId = getSessionIdFromRequest(req);
   const requestId = requestIdFrom(req);
+  const startedAt = Date.now();
 
   if (!sessionId) {
     return NextResponse.json({ error: 'sessionId is required' }, { status: 400 });
@@ -108,6 +109,7 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    logger.info('Chat history loaded', { chat_id: sessionId, request_id: requestId, event: 'history_loaded', message_count: messages.length, duration_ms: Date.now() - startedAt });
     return NextResponse.json({
       messages: messages.map((message: any) => {
         const messageAttachedIds = Array.isArray(message.attached_document_ids)
@@ -132,6 +134,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const sessionId = getSessionIdFromRequest(req);
   const requestId = requestIdFrom(req);
+  const startedAt = Date.now();
   if (!sessionId) {
     return NextResponse.json({ error: 'sessionId is required' }, { status: 400 });
   }
@@ -196,6 +199,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    logger.info('Chat message proxied to backend', { chat_id: sessionId, request_id: requestId, event: 'chat_proxied', status: upstream.status, duration_ms: Date.now() - startedAt });
     return new Response(upstream.body, { headers: SSE_HEADERS });
   } catch (error) {
     const details = error instanceof Error ? error.message : 'Unknown error';

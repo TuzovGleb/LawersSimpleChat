@@ -17,6 +17,7 @@ function getProjectIdFromRequest(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   const requestId = requestIdFrom(req);
+  const startedAt = Date.now();
   const projectId = getProjectIdFromRequest(req);
   if (!projectId) {
     return NextResponse.json({ error: 'projectId is required' }, { status: 400 });
@@ -42,6 +43,12 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Проект не найден.' }, { status: 404 });
     }
 
+    logger.info('Project loaded', {
+      request_id: requestId,
+      event: 'project_loaded',
+      duration_ms: Date.now() - startedAt,
+      project_id: projectId,
+    });
     return NextResponse.json({ project: mapProject(data) });
   } catch (error) {
     logger.error('Unexpected error', {
@@ -56,6 +63,7 @@ export async function GET(req: NextRequest) {
 
 export async function PATCH(req: NextRequest) {
   const requestId = requestIdFrom(req);
+  const startedAt = Date.now();
   const projectId = getProjectIdFromRequest(req);
   if (!projectId) {
     return NextResponse.json({ error: 'projectId is required' }, { status: 400 });
@@ -102,6 +110,12 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'Не удалось обновить проект.' }, { status: 500 });
     }
 
+    logger.info('Project updated', {
+      request_id: requestId,
+      event: 'project_updated',
+      duration_ms: Date.now() - startedAt,
+      project_id: projectId,
+    });
     return NextResponse.json({ project: mapProject(data) });
   } catch (error) {
     logger.error('Unexpected error', {
@@ -116,6 +130,7 @@ export async function PATCH(req: NextRequest) {
 
 export async function DELETE(req: NextRequest) {
   const requestId = requestIdFrom(req);
+  const startedAt = Date.now();
   const projectId = getProjectIdFromRequest(req);
   if (!projectId) {
     return NextResponse.json({ error: 'projectId is required' }, { status: 400 });
@@ -147,6 +162,12 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: 'Не удалось удалить проект.' }, { status: 500 });
     }
 
+    logger.info('Project deleted', {
+      request_id: requestId,
+      event: 'project_deleted',
+      duration_ms: Date.now() - startedAt,
+      project_id: projectId,
+    });
     return NextResponse.json({ success: true });
   } catch (error) {
     logger.error('Unexpected error', {

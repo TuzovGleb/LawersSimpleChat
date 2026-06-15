@@ -17,6 +17,7 @@ function getSessionIdFromRequest(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   const requestId = requestIdFrom(req);
+  const startedAt = Date.now();
   const sessionId = getSessionIdFromRequest(req);
   if (!sessionId) {
     return NextResponse.json({ error: 'sessionId is required' }, { status: 400 });
@@ -36,6 +37,12 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Чат не найден или нет доступа.' }, { status: 404 });
     }
 
+    logger.info('Chat session loaded', {
+      request_id: requestId,
+      event: 'chat_session_loaded',
+      duration_ms: Date.now() - startedAt,
+      chat_id: sessionId,
+    });
     return NextResponse.json({ chat: session });
   } catch (error) {
     logger.error('Unexpected error', {

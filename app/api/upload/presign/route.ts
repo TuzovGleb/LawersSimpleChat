@@ -24,6 +24,7 @@ const ALLOWED_MIME_TYPES = new Set([
 
 export async function POST(req: NextRequest) {
   const requestId = requestIdFrom(req);
+  const startedAt = Date.now();
   try {
     const body = await req.json();
     const { filename, mimeType, size, projectId, userId } = body;
@@ -56,6 +57,13 @@ export async function POST(req: NextRequest) {
 
     const uploadUrl = await generatePresignedUploadUrl(objectKey, mimeType);
 
+    logger.info('Presigned upload URL issued', {
+      request_id: requestId,
+      event: 'presign_issued',
+      duration_ms: Date.now() - startedAt,
+      project_id: projectId,
+      filename,
+    });
     return NextResponse.json({ uploadUrl, objectKey });
   } catch (error) {
     logger.error('Error generating presigned URL', {

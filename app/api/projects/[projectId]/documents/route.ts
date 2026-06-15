@@ -23,6 +23,7 @@ function getProjectIdFromRequest(req: NextRequest) {
 export async function GET(req: NextRequest) {
   const projectId = getProjectIdFromRequest(req);
   const requestId = requestIdFrom(req);
+  const startedAt = Date.now();
   if (!projectId) {
     return NextResponse.json({ error: 'projectId is required' }, { status: 400 });
   }
@@ -71,6 +72,7 @@ export async function GET(req: NextRequest) {
 
     try {
       const documents = (data ?? []).map(mapProjectDocument);
+      logger.info('Project documents listed', { project_id: projectId, request_id: requestId, event: 'documents_listed', count: documents.length, duration_ms: Date.now() - startedAt });
       return NextResponse.json({ documents });
     } catch (mappingError) {
       logger.error('Document mapping failed', { project_id: projectId, request_id: requestId, event: 'document_mapping_error', dataCount: data?.length ?? 0, err: mappingError });
@@ -91,6 +93,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const projectId = getProjectIdFromRequest(req);
   const requestId = requestIdFrom(req);
+  const startedAt = Date.now();
   if (!projectId) {
     return NextResponse.json({ error: 'projectId is required' }, { status: 400 });
   }
@@ -222,6 +225,7 @@ export async function POST(req: NextRequest) {
 
     try {
       const mappedDocument = mapProjectDocument(data);
+      logger.info('Document processed', { project_id: projectId, request_id: requestId, event: 'document_processed', filename, file_size: size, strategy: extraction.strategy, truncated: extraction.truncated, duration_ms: Date.now() - startedAt });
       return NextResponse.json(
         { document: mappedDocument },
         { status: 201 },
