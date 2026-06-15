@@ -82,6 +82,7 @@ jobs:
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           VM_NAME="lawers-opensearch-staging"
+          DATA_DISK="lawers-opensearch-data-staging"
           COMPOSE_FILE="backend/docker-compose.yml"
 
           if [ -z "$YC_SUBNET_ID" ]; then
@@ -98,12 +99,26 @@ jobs:
             fi
           else
             echo "Creating OpenSearch COI VM..."
+
+            # The data disk is a standalone resource (auto-delete=false) so the
+            # index survives VM deletion/recreation. Create it the first time,
+            # attach the existing one thereafter. device-name=osdata must match
+            # the x-yc-disks block in docker-compose.yml.
+            if yc compute disk get --name "$DATA_DISK" >/dev/null 2>&1; then
+              echo "Attaching existing data disk $DATA_DISK"
+              DISK_FLAG="--attach-disk disk-name=$DATA_DISK,device-name=osdata,auto-delete=false"
+            else
+              echo "Creating data disk $DATA_DISK"
+              DISK_FLAG="--create-disk name=$DATA_DISK,size=50,type=network-ssd,device-name=osdata,auto-delete=false"
+            fi
+
             yc compute instance create-with-container \
               --name "$VM_NAME" \
               --zone ru-central1-a \
               --cores 2 \
               --memory 4 \
               --create-boot-disk size=50,type=network-ssd \
+              $DISK_FLAG \
               --network-interface "subnet-id=${YC_SUBNET_ID},nat-ip-version=ipv4" \
               --service-account-id "$YC_SERVICE_ACCOUNT_ID" \
               --docker-compose-file "$COMPOSE_FILE"

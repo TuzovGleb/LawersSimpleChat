@@ -1,7 +1,19 @@
 services:
+  # One-shot: make the persistent data dir writable by the opensearch user
+  # (uid 1000). A freshly formatted, bind-mounted host dir is root-owned, and
+  # OpenSearch runs as uid 1000 and would otherwise fail to write.
+  opensearch-init:
+    image: busybox:1.36
+    command: sh -c "mkdir -p /data && chown -R 1000:1000 /data"
+    volumes:
+      - /home/yc-user/opensearch-data:/data
+
   opensearch:
     image: opensearchproject/opensearch:2.19.1
     container_name: lawers-opensearch
+    depends_on:
+      opensearch-init:
+        condition: service_completed_successfully
     environment:
       - discovery.type=single-node
       - DISABLE_SECURITY_PLUGIN=true
@@ -9,12 +21,20 @@ services:
     ports:
       - "9200:9200"
     volumes:
-      - opensearch-data:/usr/share/opensearch/data
+      # Bind-mount the persistent secondary disk (mounted by COI via the
+      # x-yc-disks block below). NOT a Docker named volume — those did not
+      # survive VM restarts on this COI VM, which is how the index kept
+      # vanishing.
+      - /home/yc-user/opensearch-data:/usr/share/opensearch/data
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
 
-volumes:
-  opensearch-data:
+# COI formats (once, if empty) and mounts the secondary disk to host_path on
+# every boot. device_name must match the attached disk's device-name.
+x-yc-disks:
+  - device_name: osdata
+    fs_type: ext4
+    host_path: /home/yc-user/opensearch-data
