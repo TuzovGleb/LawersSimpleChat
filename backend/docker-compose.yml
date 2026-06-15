@@ -32,20 +32,17 @@ services:
       timeout: 5s
       retries: 10
 
-  # Writes the Unified Agent config to a shared dir. The log group id is baked
-  # in at write time from this container's LOG_GROUP_ID env (shell expands
-  # $$LOG_GROUP_ID; the $$ keeps docker-compose from interpolating it).
+  # Writes the Unified Agent config to a shared dir. Quoted heredoc (<<'EOF')
+  # means NO shell/compose substitution — the log group id is written literally
+  # (the folder's default Cloud Logging group, where the frontend/backend
+  # Serverless Containers already ship).
   unified-agent-config:
     image: busybox:1.36
-    environment:
-      # Folder's default Cloud Logging group — the same one the frontend/backend
-      # Serverless Containers auto-ship to, so VM logs land alongside them.
-      - LOG_GROUP_ID=e23402ls0pgcs27coi91
     command:
       - sh
       - -c
       - |
-        cat > /config/config.yml <<EOF
+        cat > /config/config.yml <<'EOF'
         status:
           port: 16241
         storages:
@@ -68,7 +65,7 @@ services:
                 config:
                   iam:
                     cloud_meta: {}
-                  log_group_id: $$LOG_GROUP_ID
+                  log_group_id: e23402ls0pgcs27coi91
                   resource_type: opensearch-vm
                   resource_id: lawers-opensearch
         EOF
