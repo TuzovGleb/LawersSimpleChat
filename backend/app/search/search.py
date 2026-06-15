@@ -219,17 +219,23 @@ def format_decision_document(doc: dict) -> str:
         act_text = act_text[:MAX_ACT_TEXT_CHARS]
         truncated = True
 
-    header = "\n".join(
-        [
-            f"id: {doc.get('decision_id', '—')}",
-            f"Дело: {doc.get('case_number', '—')}",
-            f"Суд: {doc.get('court_name', '—')}",
-            f"Судья: {doc.get('judge', '—')}",
-            f"Дата решения: {doc.get('decision_date', '—')}",
-            f"Результат: {doc.get('decision_result', '—')} ({doc.get('result_type', '—')})",
-            f"Категория: {doc.get('category', '—')}",
-            f"Стороны: {doc.get('participants_names', '—')}",
-        ]
-    )
+    lines = [
+        f"id: {doc.get('decision_id', '—')}",
+        f"Дело: {doc.get('case_number', '—')}",
+        f"Суд: {doc.get('court_name', '—')}",
+        f"Судья: {doc.get('judge', '—')}",
+        f"Дата решения: {doc.get('decision_date', '—')}",
+        f"Результат: {doc.get('decision_result', '—')} ({doc.get('result_type', '—')})",
+        f"Категория: {doc.get('category', '—')}",
+        f"Стороны: {doc.get('participants_names', '—')}",
+    ]
+    # Links to the original document are stored with index=False and default to
+    # "" — only emit a line when the value is present so we never show an empty
+    # "Ссылка:" placeholder to the model.
+    if doc.get("act_url"):
+        lines.append(f"Ссылка на акт: {doc['act_url']}")
+    if doc.get("case_details_url"):
+        lines.append(f"Ссылка на дело: {doc['case_details_url']}")
+    header = "\n".join(lines)
     suffix = "\n\n[Текст обрезан — полный акт длиннее лимита контекста]" if truncated else ""
     return f"{header}\n\n---\n\n{act_text}{suffix}"

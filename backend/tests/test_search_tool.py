@@ -73,6 +73,31 @@ def test_format_decision_document_truncates_long_text():
     assert len(formatted) < 40_000
 
 
+def test_format_decision_document_includes_links_when_present():
+    doc = {
+        "decision_id": "dec-5",
+        "case_number": "2-500/2026",
+        "act_text": "Текст акта",
+        "act_url": "https://example.com/acts/dec-5.pdf",
+        "case_details_url": "https://example.com/cases/dec-5",
+    }
+    formatted = format_decision_document(doc)
+    assert "Ссылка на акт: https://example.com/acts/dec-5.pdf" in formatted
+    assert "Ссылка на дело: https://example.com/cases/dec-5" in formatted
+
+
+def test_format_decision_document_omits_empty_links():
+    doc = {
+        "decision_id": "dec-6",
+        "case_number": "2-600/2026",
+        "act_text": "Текст акта",
+        "act_url": "",
+        "case_details_url": "",
+    }
+    formatted = format_decision_document(doc)
+    assert "Ссылка" not in formatted
+
+
 @pytest.mark.asyncio
 async def test_search_court_practice_tool(mock_searcher, monkeypatch):
     async def fake_search(*args, **kwargs):
