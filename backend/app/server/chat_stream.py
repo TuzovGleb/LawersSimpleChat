@@ -128,10 +128,25 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
         },
     )
 
+    # Create the session row up front, before generation runs. This keeps the
+    # chat resolvable on a page refresh while the first answer is still
+    # streaming (or if generation later fails) instead of 404-ing until the turn
+    # completes. Messages are still persisted at the end of the turn.
+    if repo and is_new_session:
+        created = await repo.create_session(
+            session_id=session_id,
+            user_id=payload.userId,
+            project_id=project_id,
+            initial_message=payload.messages[0].content if payload.messages else "",
+            utm=payload.utm,
+        )
+        if not created:
+            session_id = None  # surfaced to client as null, matches prior behaviour
+
     # Initial heartbeat so the client sees data immediately.
     yield b": heartbeat\n\n"
 
-    task = asyncio.ensure_future(_run_graph(request, payload, session_id, project_id, history))
+    task = asyncio.ensure_future(_run_graph(request, payload, chat_id, project_id, history))
     try:
         while True:
             try:
@@ -171,16 +186,6 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
     last_user_content = last_user.content if last_user else ""
 
     if repo:
-        if is_new_session:
-            created = await repo.create_session(
-                session_id=session_id,
-                user_id=payload.userId,
-                project_id=project_id,
-                initial_message=payload.messages[0].content if payload.messages else "",
-                utm=payload.utm,
-            )
-            if not created:
-                session_id = None  # surfaced to client as null, matches prior behaviour
         if session_id:
             handlers = getattr(request.app.state, "tool_handlers", {}) or {}
             generated = split_generated(result.get("messages") or [])
