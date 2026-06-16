@@ -33,6 +33,7 @@ class CourtPracticeSearcher:
         date_from: str | None = None,
         date_to: str | None = None,
         result_type: str | None = None,
+        regions: list[int] | None = None,
     ) -> list[dict[str, Any]]:
         filters: list[dict[str, Any]] = []
         if date_from or date_to:
@@ -44,6 +45,9 @@ class CourtPracticeSearcher:
             filters.append({"range": {"decision_date": range_filter}})
         if result_type:
             filters.append({"term": {"result_type": result_type}})
+        if regions:
+            # Exact-match on the numeric СУДРФ region code stored at index time.
+            filters.append({"terms": {"region_code": regions}})
         return filters
 
     def _build_query_body(
@@ -53,9 +57,12 @@ class CourtPracticeSearcher:
         date_from: str | None = None,
         date_to: str | None = None,
         result_type: str | None = None,
+        regions: list[int] | None = None,
         size: int | None = None,
     ) -> dict[str, Any]:
-        filters = self._build_filters(date_from=date_from, date_to=date_to, result_type=result_type)
+        filters = self._build_filters(
+            date_from=date_from, date_to=date_to, result_type=result_type, regions=regions
+        )
         bool_query: dict[str, Any] = {
             "must": [
                 {
@@ -117,6 +124,7 @@ class CourtPracticeSearcher:
         date_from: str | None = None,
         date_to: str | None = None,
         result_type: str | None = None,
+        regions: list[int] | None = None,
     ) -> list[RankedDocument]:
         cleaned_queries = [q.strip() for q in queries if isinstance(q, str) and q.strip()]
         if not cleaned_queries:
@@ -128,6 +136,7 @@ class CourtPracticeSearcher:
                 date_from=date_from,
                 date_to=date_to,
                 result_type=result_type,
+                regions=regions,
             )
             response = self._client.search(index=self._config.index_alias, body=body)
             return self._hits_to_ranked(response.get("hits", {}).get("hits", []))[: self._config.top_k]
@@ -142,6 +151,7 @@ class CourtPracticeSearcher:
                     date_from=date_from,
                     date_to=date_to,
                     result_type=result_type,
+                    regions=regions,
                 )
             )
 
@@ -167,6 +177,7 @@ class CourtPracticeSearcher:
         date_from: str | None = None,
         date_to: str | None = None,
         result_type: str | None = None,
+        regions: list[int] | None = None,
     ) -> list[RankedDocument]:
         return await asyncio.to_thread(
             self.search_sync,
@@ -174,6 +185,7 @@ class CourtPracticeSearcher:
             date_from=date_from,
             date_to=date_to,
             result_type=result_type,
+            regions=regions,
         )
 
     def get_decision_sync(self, decision_id: str) -> dict | None:

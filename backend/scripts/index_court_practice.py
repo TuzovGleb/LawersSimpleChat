@@ -14,22 +14,28 @@ sys.path.insert(0, str(PROJECT_DIR))
 
 from app.search.client import OpenSearchConfig, build_opensearch_client
 from app.search.index import (
+    INDEX_ALIAS,
     INDEX_VERSION,
     bulk_index_documents,
+    delete_superseded_indices,
     ensure_index,
     normalize_case,
     parallel_index_documents,
     set_index_refresh,
 )
+from app.search.regions import region_code_from_catalog
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 
-def iter_cases_from_page(page: dict):
+def iter_cases_from_page(page: dict, region_code: int | None = None):
     page_meta = {
         "courtName": page.get("courtName"),
         "vnkod": page.get("vnkod"),
+        # Dataset-level region from the catalog; normalize_case prefers it and
+        # falls back to the court's vnkod prefix when it is None.
+        "region_code": region_code,
     }
     for case in page.get("cases") or []:
         document = normalize_case(case, page_meta)
@@ -37,23 +43,54 @@ def iter_cases_from_page(page: dict):
             yield document
 
 
+def _directory_region_code(directory: Path) -> int | None:
+    """Resolve a dataset's region code from its _catalog.json (root first)."""
+    root = directory / "_catalog.json"
+    candidates = [root] if root.is_file() else sorted(directory.rglob("_catalog.json"))
+    for path in candidates:
+        try:
+            with path.open(encoding="utf-8") as handle:
+                catalog = json.load(handle)
+        except (OSError, ValueError):
+            continue
+        code = region_code_from_catalog(catalog)
+        if code is not None:
+            return code
+    return None
+
+
+def _zip_region_code(archive: zipfile.ZipFile) -> int | None:
+    for name in sorted(n for n in archive.namelist() if n.endswith("_catalog.json")):
+        try:
+            with archive.open(name) as handle:
+                catalog = json.load(handle)
+        except (KeyError, ValueError):
+            continue
+        code = region_code_from_catalog(catalog)
+        if code is not None:
+            return code
+    return None
+
+
 def iter_cases_from_zip(zip_path: Path):
     with zipfile.ZipFile(zip_path) as archive:
+        region_code = _zip_region_code(archive)
         json_names = sorted(name for name in archive.namelist() if name.endswith(".json") and not name.endswith("/"))
-        logger.info("Found %s JSON files in archive", len(json_names))
+        logger.info("Found %s JSON files in archive (region_code=%s)", len(json_names), region_code)
         for name in json_names:
             with archive.open(name) as handle:
                 page = json.load(handle)
-            yield from iter_cases_from_page(page)
+            yield from iter_cases_from_page(page, region_code)
 
 
 def iter_cases_from_directory(directory: Path):
+    region_code = _directory_region_code(directory)
     json_paths = sorted(path for path in directory.rglob("*.json") if path.is_file())
-    logger.info("Found %s JSON files under %s", len(json_paths), directory)
+    logger.info("Found %s JSON files under %s (region_code=%s)", len(json_paths), directory, region_code)
     for path in json_paths:
         with path.open(encoding="utf-8") as handle:
             page = json.load(handle)
-        yield from iter_cases_from_page(page)
+        yield from iter_cases_from_page(page, region_code)
 
 
 def load_existing_ids(client, index_name: str) -> set[str]:
@@ -100,6 +137,11 @@ def main() -> int:
         "--no-refresh-tune",
         action="store_true",
         help="Do not disable refresh during load (refresh is normally turned off, then restored)",
+    )
+    parser.add_argument(
+        "--delete-old",
+        action="store_true",
+        help="After a fully successful load, delete prior indices of this family no longer bound to the alias",
     )
     args = parser.parse_args()
 
@@ -179,6 +221,16 @@ def main() -> int:
             logger.info("Restoring refresh interval")
             set_index_refresh(client, index_name=args.index_name, interval="1s")
             client.indices.refresh(index=args.index_name)
+
+    if args.delete_old:
+        if errors:
+            logger.warning(
+                "Skipping --delete-old: %s indexing error(s); keeping previous indices as fallback",
+                errors,
+            )
+        else:
+            removed = delete_superseded_indices(client, index_name=args.index_name, alias=INDEX_ALIAS)
+            logger.info("Deleted superseded indices: %s", removed or "none")
 
     logger.info("Done. indexed=%s skipped=%s errors=%s", indexed, skipped, errors)
     return 0 if errors == 0 else 2

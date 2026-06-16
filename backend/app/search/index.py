@@ -10,7 +10,7 @@ from opensearchpy.helpers import bulk, parallel_bulk
 
 logger = logging.getLogger(__name__)
 
-INDEX_VERSION = "court_decisions_v2"
+INDEX_VERSION = "court_decisions_v3"
 INDEX_ALIAS = "court_decisions"
 
 INDEX_BODY = {
@@ -50,6 +50,7 @@ INDEX_BODY = {
             "decision_date": {"type": "date", "format": "yyyy-MM-dd||strict_date_optional_time||epoch_millis"},
             "act_url": {"type": "keyword", "index": False},
             "case_details_url": {"type": "keyword", "index": False},
+            "region_code": {"type": "integer"},
         }
     },
 }
@@ -92,6 +93,18 @@ def normalize_case(case: dict, page_meta: dict) -> dict | None:
     if not decision_id:
         return None
 
+    # Numeric region key for filtering. Prefer the dataset-level code resolved
+    # from the catalog (authoritative for the whole dataset: covers courts with
+    # no vnkod such as областные суды, and legacy district prefixes like
+    # Таймыр/Эвенкия that belong to their край). Fall back to the first two
+    # chars of the court code, e.g. "52RS0001" -> 52. None when neither is
+    # available, so it just won't match a region filter rather than mapping to
+    # the wrong region.
+    region_code = page_meta.get("region_code")
+    if region_code is None:
+        region_prefix = vnkod[:2]
+        region_code = int(region_prefix) if region_prefix.isdigit() else None
+
     participants = case.get("participants") or []
     participant_names = [
         p.get("name")
@@ -126,6 +139,7 @@ def normalize_case(case: dict, page_meta: dict) -> dict | None:
         "decision_date": parse_russian_date(case.get("decisionDate")),
         "act_url": case.get("actUrl") or "",
         "case_details_url": case.get("caseDetailsUrl") or "",
+        "region_code": region_code,
     }
 
 
@@ -151,6 +165,28 @@ def ensure_index(client: OpenSearch, *, index_name: str = INDEX_VERSION, alias: 
         client.indices.update_aliases(body={"actions": actions})
 
     logger.info("Index alias ready", extra={"index": index_name, "alias": alias})
+
+
+def delete_superseded_indices(
+    client: OpenSearch, *, index_name: str = INDEX_VERSION, alias: str = INDEX_ALIAS
+) -> list[str]:
+    """Delete prior indices of this family that the alias no longer serves.
+
+    Only touches versioned indices named ``{alias}_*``; never deletes the
+    just-loaded ``index_name`` nor any index still bound to ``alias``. Returns
+    the names that were deleted (empty list when there is nothing to clean up).
+    """
+    if client.indices.exists_alias(name=alias):
+        bound = set(client.indices.get_alias(name=alias).keys())
+    else:
+        bound = set()
+
+    family = client.indices.get(index=f"{alias}_*", ignore_unavailable=True, allow_no_indices=True)
+    to_delete = [name for name in family if name != index_name and name not in bound]
+    for name in to_delete:
+        client.indices.delete(index=name)
+        logger.info("Deleted superseded index", extra={"index": name})
+    return to_delete
 
 
 def _to_action(doc: dict, index_name: str) -> dict:

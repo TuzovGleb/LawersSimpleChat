@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.pipelines.tools import court_practice_tool_specs
+from app.rag_core.prompt import get_system_prompt
 from app.search.client import OpenSearchConfig
 from app.search.rrf import RankedDocument
 from app.search.search import CourtPracticeSearcher, format_decision_document, format_search_results
@@ -26,6 +27,32 @@ def test_build_query_body_or_match_with_phrase_boost(mock_searcher):
     phrase = bool_query["should"][0]["match_phrase"]["act_text"]
     assert phrase["boost"] == 2.0
     assert phrase["slop"] == 2
+
+
+def test_build_query_body_region_filter(mock_searcher):
+    body = mock_searcher._build_query_body("неустойка", regions=[52, 77])
+    filters = body["query"]["bool"]["filter"]
+    assert {"terms": {"region_code": [52, 77]}} in filters
+
+
+def test_build_query_body_no_region_filter_by_default(mock_searcher):
+    body = mock_searcher._build_query_body("неустойка")
+    # Nothing to filter on -> no filter clause, so search spans all regions.
+    assert "filter" not in body["query"]["bool"]
+
+
+def test_search_tool_regions_param_carries_region_reference(mock_searcher):
+    tool = court_practice_tool_specs(mock_searcher)[0].tool
+    regions_doc = tool.args["regions"].get("description", "")
+    # The region-number table lives on the tool parameter (cohesion), not the prompt.
+    assert "52 Нижегородская область" in regions_doc
+    assert "91 Крым" in regions_doc
+
+
+def test_system_prompt_keeps_region_logic_without_the_table():
+    prompt = get_system_prompt()
+    assert "Как определять регион" in prompt  # selection logic stays in the prompt
+    assert "Справка по номерам регионов" not in prompt  # number table moved to the tool
 
 
 def test_format_search_results_empty():

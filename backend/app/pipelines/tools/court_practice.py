@@ -9,15 +9,28 @@ turn is replayed into context.
 the OpenSearch client) so the app's composition root never sees the backend.
 """
 import logging
-from typing import Literal
+from typing import Annotated, Literal
 
 from langchain_core.tools import tool
 
 from app.pipelines.tools.base import InlineResultHandler, ToolResultHandler, ToolSpec
 from app.search import CourtPracticeSearcher, OpenSearchConfig, build_opensearch_client
+from app.search.regions import REGION_REFERENCE
 from app.search.search import format_decision_document, format_search_results
 
 logger = logging.getLogger(__name__)
+
+# The region-number reference for the `regions` argument lives next to the
+# parameter it documents (the system prompt keeps only the high-level
+# region-SELECTION logic). The list comes from app.search.regions so it never
+# drifts from the codes the indexer assigns. Note Крым=91 (not the official 82),
+# matching the СУДРФ vnkod prefix actually stored in region_code.
+_REGIONS_PARAM_DOC = (
+    "Optional list of 2-digit region numbers (коды субъектов РФ) to restrict the "
+    "search to, e.g. [52] for Нижегородская область or [77, 50] for Москва + "
+    "Московская область. Omit (None) to search the whole country. Pass only "
+    "numbers from this reference: " + REGION_REFERENCE
+)
 
 
 class CourtDecisionHandler(ToolResultHandler):
@@ -46,6 +59,7 @@ def court_practice_tool_specs(searcher: CourtPracticeSearcher) -> list[ToolSpec]
         date_from: str | None = None,
         date_to: str | None = None,
         result_type: Literal["granted", "denied", "partial", "other"] | None = None,
+        regions: Annotated[list[int] | None, _REGIONS_PARAM_DOC] = None,
     ) -> str:
         """Search court decisions (суды общей юрисдикции) by full text.
 
@@ -57,6 +71,9 @@ def court_practice_tool_specs(searcher: CourtPracticeSearcher) -> list[ToolSpec]
         queries. Strip names, case numbers, amounts, addresses, dates — the
         corpus is anonymized and these only add noise.
         Use date_from/date_to as YYYY-MM-DD. result_type filters outcome.
+        Use regions to restrict to specific subjects of the RF (see the
+        parameter reference); the rules for choosing a region are in the system
+        prompt.
         Returns compact snippets; call get_court_decision for full act text.
         """
         if not queries:
@@ -71,6 +88,7 @@ def court_practice_tool_specs(searcher: CourtPracticeSearcher) -> list[ToolSpec]
             date_from=date_from,
             date_to=date_to,
             result_type=result_type,
+            regions=regions,
         )
         return format_search_results(results)
 

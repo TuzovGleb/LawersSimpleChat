@@ -1,4 +1,11 @@
-from app.search.index import generate_decision_id, normalize_case, parse_russian_date
+from unittest.mock import MagicMock
+
+from app.search.index import (
+    delete_superseded_indices,
+    generate_decision_id,
+    normalize_case,
+    parse_russian_date,
+)
 
 
 def test_parse_russian_date():
@@ -59,3 +66,52 @@ def test_normalize_case_works_without_court_uid():
 
 def test_normalize_case_skips_missing_act_text():
     assert normalize_case({"caseNumber": "2-1/2026"}, {}) is None
+
+
+def test_normalize_case_derives_region_code_from_vnkod():
+    case = {"caseNumber": "2-2728/2026", "actText": "Решение суда"}
+    document = normalize_case(case, {"vnkod": "52RS0001"})
+    assert document is not None
+    assert document["region_code"] == 52
+
+
+def test_normalize_case_region_code_none_for_non_numeric_or_missing_vnkod():
+    case = {"caseNumber": "2-2728/2026", "actText": "Решение суда"}
+    # Malformed / missing prefix yields None rather than mapping to a wrong region.
+    assert normalize_case(case, {"vnkod": "XXRS0001"})["region_code"] is None
+    assert normalize_case(case, {"vnkod": ""})["region_code"] is None
+
+
+def test_normalize_case_prefers_catalog_region_over_vnkod():
+    case = {"caseNumber": "2-1/2026", "actText": "Решение суда"}
+    # Таймырский (vnkod prefix 84) court belongs to Красноярский край (24) per catalog.
+    doc = normalize_case(case, {"vnkod": "84RS0001", "region_code": 24})
+    assert doc["region_code"] == 24
+
+
+def test_normalize_case_uses_catalog_region_when_vnkod_empty():
+    case = {"caseNumber": "2-2/2026", "actText": "Решение суда"}
+    # Областной суд has no vnkod, but the dataset region still applies.
+    doc = normalize_case(case, {"vnkod": "", "region_code": 52})
+    assert doc["region_code"] == 52
+
+
+def test_delete_superseded_indices_keeps_current_and_aliased():
+    client = MagicMock()
+    client.indices.exists_alias.return_value = True
+    client.indices.get_alias.return_value = {"court_decisions_v3": {}}
+    client.indices.get.return_value = {
+        "court_decisions_v1": {},
+        "court_decisions_v2": {},
+        "court_decisions_v3": {},
+    }
+
+    removed = delete_superseded_indices(
+        client, index_name="court_decisions_v3", alias="court_decisions"
+    )
+
+    # v3 is the current/aliased index and must survive; older versions go.
+    assert sorted(removed) == ["court_decisions_v1", "court_decisions_v2"]
+    deleted = {c.kwargs["index"] for c in client.indices.delete.call_args_list}
+    assert deleted == {"court_decisions_v1", "court_decisions_v2"}
+    assert "court_decisions_v3" not in deleted
