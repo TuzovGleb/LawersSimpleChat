@@ -906,16 +906,18 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
             `/api/projects/${selectedProjectId}/documents`,
             {
               method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                ...(chatId ? { "X-Chat-Id": chatId } : {}),
-              },
+              headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
                 objectKey,
                 filename: file.name,
                 mimeType: file.type || "application/octet-stream",
                 size: file.size,
                 userId: user.id,
+                // Stable chat id in the BODY (not a custom header): a cross-origin
+                // proxy (NEXT_PUBLIC_PROXY_URL) would drop a custom header at the
+                // CORS preflight. The Next route forwards it to the backend as
+                // X-Chat-Id, exactly like the chat path does from the URL.
+                chatId,
               }),
             },
             1, // maxRetries
