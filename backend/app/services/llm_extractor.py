@@ -84,9 +84,17 @@ class LlmDocumentExtractor:
         # A LangChain ChatOpenAI pre-built for the extraction model (gemini-3.5-flash).
         self._llm = llm
 
-    async def _run(self, content: list, system: str) -> str:
+    async def _run(self, content: list, system: str, *, run_name=None, metadata=None) -> str:
+        # run_name/metadata land on the LangSmith child run (nested under the
+        # document_extraction parent trace started in the endpoint).
+        config: dict = {}
+        if run_name:
+            config["run_name"] = run_name
+        if metadata:
+            config["metadata"] = metadata
         message = await self._llm.ainvoke(
-            [SystemMessage(content=system), HumanMessage(content=content)]
+            [SystemMessage(content=system), HumanMessage(content=content)],
+            config=config or None,
         )
         return _extract_content(message)
 
@@ -99,7 +107,7 @@ class LlmDocumentExtractor:
             },
             {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64}"}},
         ]
-        return await self._run(content, _VISION_SYSTEM)
+        return await self._run(content, _VISION_SYSTEM, run_name="document_vision")
 
     async def file_attachment(self, data: bytes, filename: str) -> str:
         ext = file_extension(filename)
@@ -118,7 +126,7 @@ class LlmDocumentExtractor:
                 content.append({"type": "text", "text": f"Document content:\n\n{data.decode('utf-8')}"})
             except UnicodeDecodeError:
                 content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
-        return await self._run(content, _EXTRACTION_SYSTEM)
+        return await self._run(content, _EXTRACTION_SYSTEM, run_name="document_file_attachment")
 
     async def _extract_single_page(
         self, page_bytes: bytes, filename: str, page_no: int, total: int
@@ -143,7 +151,11 @@ class LlmDocumentExtractor:
         last_error: Exception | None = None
         for _attempt in range(PDF_PAGE_MAX_RETRIES + 1):
             try:
-                return await self._run(content, _EXTRACTION_SYSTEM)
+                return await self._run(
+                    content, _EXTRACTION_SYSTEM,
+                    run_name="document_ocr_page",
+                    metadata={"page_index": page_no, "total_pages": total},
+                )
             except Exception as err:  # noqa: BLE001 - retried below
                 last_error = err
         raise last_error or RuntimeError(f"page {page_no} extraction failed")

@@ -8,6 +8,7 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from langsmith.run_helpers import trace as langsmith_trace
 
 from app.config import CONFIG
 from app.pipelines.tools import handlers_of, load_tool_specs
@@ -20,7 +21,7 @@ from app.services.document_extraction import extract_text_from_document
 from app.services.llm_extractor import LlmDocumentExtractor
 from app.services.s3_client import S3Client
 from app.services.supabase_repo import SupabaseRepo, map_project_document
-from app.utils import RequestContextMiddleware
+from app.utils import RequestContextMiddleware, current_request_id
 
 logger = logging.getLogger(__name__)
 
@@ -147,9 +148,24 @@ async def extract_document(request: Request, payload: DocumentExtractRequest) ->
         if not data:
             raise HTTPException(status_code=400, detail="Empty file cannot be processed")
 
-        extraction = await extract_text_from_document(
-            data, payload.mimeType, payload.filename, extractor
-        )
+        # Wrap the whole extraction in ONE LangSmith run so the per-page OCR
+        # ChatOpenAI calls nest as children (one tree per document, no flooding).
+        # The nested calls auto-attach via langchain<->langsmith contextvar interop,
+        # which also propagates into the asyncio page tasks. No-op when tracing off.
+        with langsmith_trace(
+            name="document_extraction",
+            run_type="chain",
+            metadata={
+                "project_id": payload.projectId,
+                "object_key": payload.objectKey,
+                "filename": payload.filename,
+                "mime_type": payload.mimeType,
+                "request_id": current_request_id(),
+            },
+        ):
+            extraction = await extract_text_from_document(
+                data, payload.mimeType, payload.filename, extractor
+            )
         if not extraction.text:
             raise HTTPException(status_code=422, detail="Could not extract text from document")
 
