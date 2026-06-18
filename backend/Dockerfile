@@ -1,6 +1,7 @@
 FROM python:3.11-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+# antiword: extract text from legacy .doc (binary Word) files in a subprocess.
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates antiword \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -LsSf https://astral.sh/uv/0.5.27/install.sh | sh
