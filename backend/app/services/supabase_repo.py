@@ -31,6 +31,26 @@ def unique_document_ids(message: dict | None) -> list[str]:
     return list(seen)[:MAX_CONTEXT_DOCUMENTS]
 
 
+def map_project_document(row: dict) -> dict:
+    """DB row -> camelCase shape the frontend's normalizeDocument expects.
+
+    Mirrors mapProjectDocument in lib/projects.ts so the proxied response is
+    drop-in for the existing client.
+    """
+    return {
+        "id": row.get("id"),
+        "project_id": row.get("project_id"),
+        "name": row.get("name"),
+        "mimeType": row.get("mime_type"),
+        "size": row.get("size"),
+        "text": row.get("text"),
+        "truncated": row.get("truncated"),
+        "rawTextLength": row.get("raw_text_length"),
+        "strategy": row.get("strategy") or "text",
+        "uploadedAt": row.get("uploaded_at"),
+    }
+
+
 class SupabaseRepo:
     def __init__(self, client: AsyncClient):
         self._client = client
@@ -38,6 +58,10 @@ class SupabaseRepo:
         # concurrent turns (double-submit / retry) can't collide on seq.
         # Process-local: assumes a single backend instance.
         self._save_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        # Serialize check-then-insert of a document per object_key so a client
+        # retry can't create a duplicate row. Process-local (single instance);
+        # a DB unique(object_key) constraint would harden this across instances.
+        self._doc_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     @classmethod
     async def create(cls, url: str, service_role_key: str) -> "SupabaseRepo":
@@ -292,3 +316,46 @@ class SupabaseRepo:
                 await self._client.table("chat_messages").insert(records).execute()
         except Exception:
             logger.exception("Failed to save chat messages", extra={"session_id": session_id})
+
+    # --- project_documents (document extraction write path) ---
+    #
+    # Unlike the chat path, these DO NOT swallow errors: the caller (the extract
+    # endpoint) must surface a failure to the client rather than silently drop a
+    # document.
+
+    def document_lock(self, object_key: str) -> asyncio.Lock:
+        return self._doc_locks[object_key]
+
+    async def get_document_by_object_key(
+        self, project_id: str, object_key: str
+    ) -> dict | None:
+        res = (
+            await self._client.table("project_documents")
+            .select("*")
+            .eq("project_id", project_id)
+            .eq("object_key", object_key)
+            .order("uploaded_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+        return rows[0] if rows else None
+
+    async def insert_project_document(self, record: dict) -> dict:
+        res = await self._client.table("project_documents").insert([record]).execute()
+        rows = res.data or []
+        if not rows:
+            raise RuntimeError("project_documents insert returned no row")
+        return rows[0]
+
+    async def touch_project(
+        self, project_id: str, user_id: str | None, now: str
+    ) -> None:
+        """Bump projects.updated_at (drives UI sort order). Non-fatal on failure."""
+        try:
+            query = self._client.table("projects").update({"updated_at": now}).eq("id", project_id)
+            if user_id:
+                query = query.eq("user_id", user_id)
+            await query.execute()
+        except Exception:
+            logger.warning("Failed to touch project updated_at", extra={"project_id": project_id})

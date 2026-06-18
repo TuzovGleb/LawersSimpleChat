@@ -1,22 +1,25 @@
 """FastAPI application for the legal chat backend."""
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 import logging
 import os
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.config import CONFIG
 from app.pipelines.tools import handlers_of, load_tool_specs
 from app.pipelines.workflows import build_chat_graph
 from app.rag_core.llm import get_chat_registry
 from app.server.chat_stream import stream_chat
-from app.server.schema import ChatRequest
+from app.server.schema import ChatRequest, DocumentExtractRequest
 from app.server.security import verify_backend_secret
+from app.services.document_extraction import extract_text_from_document
 from app.services.llm_extractor import LlmDocumentExtractor
 from app.services.s3_client import S3Client
-from app.services.supabase_repo import SupabaseRepo
+from app.services.supabase_repo import SupabaseRepo, map_project_document
 from app.utils import RequestContextMiddleware
 
 logger = logging.getLogger(__name__)
@@ -118,6 +121,66 @@ async def get_chat_messages(request: Request, chat_id: str) -> dict:
 @app.post("/chats/{chat_id}/messages", dependencies=[Depends(verify_backend_secret)])
 async def post_chat_message(request: Request, chat_id: str, payload: ChatRequest):
     return StreamingResponse(stream_chat(request, chat_id, payload), headers=SSE_HEADERS)
+
+
+@app.post("/documents/extract", dependencies=[Depends(verify_backend_secret)])
+async def extract_document(request: Request, payload: DocumentExtractRequest) -> JSONResponse:
+    s3: S3Client | None = request.app.state.s3
+    repo: SupabaseRepo | None = request.app.state.repo
+    extractor = request.app.state.doc_extractor
+    if not s3:
+        raise HTTPException(status_code=503, detail="S3 not configured")
+    if not repo:
+        raise HTTPException(status_code=503, detail="Persistence not configured")
+
+    log_ctx = {"project_id": payload.projectId, "object_key": payload.objectKey}
+
+    # Serialize per object_key so a client retry can't double-extract/double-insert.
+    async with repo.document_lock(payload.objectKey):
+        existing = await repo.get_document_by_object_key(payload.projectId, payload.objectKey)
+        if existing:
+            logger.info("Document already extracted; returning existing", extra=log_ctx)
+            return JSONResponse(content={"document": map_project_document(existing)})
+
+        logger.info("Downloading document from S3", extra={**log_ctx, "size": payload.size})
+        data = await s3.download(payload.objectKey)
+        if not data:
+            raise HTTPException(status_code=400, detail="Empty file cannot be processed")
+
+        extraction = await extract_text_from_document(
+            data, payload.mimeType, payload.filename, extractor
+        )
+        if not extraction.text:
+            raise HTTPException(status_code=422, detail="Could not extract text from document")
+
+        now = datetime.now(timezone.utc).isoformat()
+        record = {
+            "id": str(uuid4()),
+            "project_id": payload.projectId,
+            "name": payload.filename,
+            "mime_type": payload.mimeType,
+            "size": payload.size,
+            "text": extraction.text,
+            "truncated": extraction.truncated,
+            "raw_text_length": extraction.raw_text_length,
+            "strategy": extraction.strategy,
+            "uploaded_at": now,
+            "checksum": None,
+            "created_at": now,
+            "object_key": payload.objectKey,
+        }
+        row = await repo.insert_project_document(record)
+        await repo.touch_project(payload.projectId, payload.userId, now)
+        logger.info(
+            "Document processed",
+            extra={
+                **log_ctx,
+                "strategy": extraction.strategy,
+                "raw_text_length": extraction.raw_text_length,
+                "doc_filename": payload.filename,
+            },
+        )
+        return JSONResponse(status_code=201, content={"document": map_project_document(row)})
 
 
 def get_app() -> FastAPI:
