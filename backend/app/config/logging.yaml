@@ -1,0 +1,61 @@
+logging:
+  version: 1
+  disable_existing_loggers: False
+  formatters:
+    simple:
+      format: '[%(asctime)s] [%(levelname)s] [%(name)s] [%(funcName)s]: %(message)s'
+      datefmt: '%Y-%m-%dT%H:%M:%S%z'
+
+    json:
+      (): app.utils.JSONFormatter
+      fmt_keys:
+        level: levelname
+        message: message
+        timestamp: timestamp
+        logger: name
+        module: module
+        function: funcName
+        line: lineno
+        thread_name: threadName
+
+  filters:
+    request_context:
+      (): app.utils.RequestContextFilter
+
+  handlers:
+    # Single sink: one-line JSON to stdout. Serverless Containers auto-ship
+    # stdout to Cloud Logging and lift message/level into native fields, leaving
+    # surface/chat_id/request_id queryable as json_payload.<field>. The previous
+    # RotatingFileHandler wrote to an ephemeral /tmp path that never reached
+    # Cloud Logging and was lost on container restart — removed.
+    console:
+      level: INFO
+      class: logging.StreamHandler
+      formatter: json
+      filters: [request_context]
+      stream: ext://sys.stdout
+
+  loggers:
+    httpx:
+      level: WARNING
+      handlers: [console]
+      propagate: false
+
+    httpcore:
+      level: WARNING
+      handlers: [console]
+      propagate: false
+
+    openai._base_client:
+      level: WARNING
+      handlers: [console]
+      propagate: false
+
+    app:
+      level: DEBUG
+      handlers: [console]
+      propagate: false
+
+  root:
+    level: INFO
+    handlers: [console]

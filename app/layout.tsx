@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter, Lora } from "next/font/google";
 import "./globals.css";
 import { metadataStrings } from "./metadata-strings";
+import { ClientErrorReporter } from "@/components/client-error-reporter";
 
 const inter = Inter({
   subsets: ["latin", "cyrillic"],
@@ -79,6 +80,7 @@ export default function RootLayout({
   return (
     <html lang="ru" suppressHydrationWarning>
       <body className={bodyClassName}>
+        <ClientErrorReporter />
         {children}
       </body>
     </html>

@@ -1,0 +1,18 @@
+app:
+  # Shared secret expected from the Next.js proxy (header: X-Backend-Secret).
+  backend_secret: ${env.get('BACKEND_SHARED_SECRET', '')}
+
+  # Supabase service-role access (same project the Next.js app uses).
+  supabase:
+    url: ${env.get('SUPABASE_URL', '')}
+    service_role_key: ${env.get('SUPABASE_SERVICE_ROLE_KEY', '')}
+
+  # CORS origins allowed to call the backend directly (comma separated).
+  # When all traffic goes through the Next.js proxy this can stay empty.
+  cors_origins: ${env.get('BACKEND_CORS_ORIGINS', '')}
+
+  # OpenSearch for court practice full-text search.
+  opensearch:
+    url: ${env.get('OPENSEARCH_URL', 'http://localhost:9200')}
+    index_alias: ${env.get('OPENSEARCH_INDEX_ALIAS', 'court_decisions')}
+    top_k: ${env.get('OPENSEARCH_TOP_K', '8')}

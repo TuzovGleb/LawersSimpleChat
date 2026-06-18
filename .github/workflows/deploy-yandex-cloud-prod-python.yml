@@ -1,0 +1,306 @@
+name: Deploy to Yandex Cloud (Prod, Python backend)
+
+# Деплоит НОВУЮ архитектуру в ПРОД:
+#   1) Python-бэкенд (FastAPI + LangGraph)   -> контейнер jhelper-backend
+#   2) Next.js фронт с /api/chat-прокси      -> контейнер jhelper-bot
+#
+# OpenSearch ПЕРЕИСПОЛЬЗУЕТСЯ — тот же инстанс, что и стейджинг
+# (lawers-opensearch-staging, индекс court_decisions). Здесь он НЕ провижится:
+# провижн делает "Deploy OpenSearch (Staging)", индексация —
+# "Index court practice (Staging OpenSearch)". Тут только читаем его IP.
+# Запуск только вручную.
+# Для возврата на старую монолит-архитектуру запустите "Deploy to Yandex Cloud".
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Ветка для деплоя'
+        required: true
+        default: 'main'
+        type: string
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: Deploy ENV
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.inputs.branch }}
+
+      - name: Install Yandex Cloud CLI
+        run: |
+          mkdir -p $HOME/.local/bin
+          curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s
+          if [ -f "$HOME/.local/bin/yc" ]; then
+            chmod +x $HOME/.local/bin/yc
+            echo "$HOME/.local/bin" >> $GITHUB_PATH
+          else
+            YC_PATH=$(find $HOME -name yc -type f -executable 2>/dev/null | head -1)
+            if [ -n "$YC_PATH" ]; then
+              echo "$(dirname $YC_PATH)" >> $GITHUB_PATH
+            else
+              echo "Error: yc not found after installation"
+              exit 1
+            fi
+          fi
+
+      - name: Setup Yandex Cloud CLI with JSON key
+        env:
+          YC_SA_JSON: ${{ secrets.YC_SA_JSON }}
+          YC_CLOUD_ID: ${{ secrets.YC_CLOUD_ID }}
+          YC_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+
+          if [ -z "$YC_SA_JSON" ]; then
+            echo "Error: YC_SA_JSON secret is empty or not set"
+            exit 1
+          fi
+
+          printf '%s' "$YC_SA_JSON" | sed 's/[[:space:]]*$//' > /tmp/sa-key.json
+          chmod 600 /tmp/sa-key.json
+
+          if ! python3 -m json.tool /tmp/sa-key.json > /dev/null 2>&1; then
+            echo "Error: Invalid JSON format in YC_SA_JSON"
+            exit 1
+          fi
+
+          yc config profile create deploy-profile || true
+          yc config set service-account-key /tmp/sa-key.json
+          yc config set cloud-id "$YC_CLOUD_ID"
+          yc config set folder-id "$YC_FOLDER_ID"
+
+      - name: Login to Yandex Container Registry
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          IAM_TOKEN=$(yc iam create-token)
+          echo "$IAM_TOKEN" | docker login --username iam --password-stdin cr.yandex
+
+      # ---------- 1. Resolve OpenSearch (provisioned by a separate workflow) ----------
+
+      - name: Resolve OpenSearch URL (read-only — never provisions)
+        id: opensearch
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          # Prod reuses the SAME OpenSearch instance as staging.
+          VM_NAME="lawers-opensearch-staging"
+
+          # The backend deploy must NOT create or update the OpenSearch VM:
+          # re-provisioning can wipe its data volume (the indexed court
+          # decisions). Provisioning lives in the separate
+          # "Deploy OpenSearch (Staging)" workflow; here we only read the IP.
+          if ! yc compute instance get --name "$VM_NAME" >/dev/null 2>&1; then
+            echo "Error: OpenSearch VM '$VM_NAME' not found."
+            echo "Run the 'Deploy OpenSearch (Staging)' workflow once to provision it, then re-run this deploy."
+            exit 1
+          fi
+
+          PUBLIC_IP=$(yc compute instance get --name "$VM_NAME" --format json | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          for iface in data.get('network_interfaces', []):
+              nat = iface.get('primary_v4_address', {}).get('one_to_one_nat') or {}
+              if nat.get('address'):
+                  print(nat['address'])
+                  raise SystemExit(0)
+          print('')
+          ")
+
+          if [ -z "$PUBLIC_IP" ]; then
+            echo "Error: could not resolve public IP for $VM_NAME"
+            exit 1
+          fi
+
+          echo "OpenSearch public IP: $PUBLIC_IP"
+          echo "public_ip=$PUBLIC_IP" >> "$GITHUB_OUTPUT"
+          echo "url=http://${PUBLIC_IP}:9200" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for OpenSearch
+        run: |
+          URL="${{ steps.opensearch.outputs.url }}"
+          for i in $(seq 1 36); do
+            if curl -fsS --max-time 10 "${URL}/_cluster/health"; then
+              echo "" && echo "OpenSearch is healthy at $URL"
+              exit 0
+            fi
+            echo "Attempt $i/36 - waiting for OpenSearch..."
+            sleep 10
+          done
+          echo "Error: OpenSearch did not become healthy at $URL"
+          exit 1
+
+      # ---------- 2. Python backend ----------
+
+      - name: Build backend Docker image
+        run: |
+          docker build \
+            -t cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-backend:prod-${{ github.sha }} \
+            backend
+          docker tag cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-backend:prod-${{ github.sha }} \
+                     cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-backend:prod
+
+      - name: Push backend Docker image
+        run: |
+          docker push cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-backend:prod-${{ github.sha }}
+          docker push cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-backend:prod
+
+      - name: Deploy backend to Serverless Container
+        env:
+          OPENROUTER_API_KEY: ${{ vars.OPENROUTER_API_KEY }}
+          SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          BACKEND_SHARED_SECRET: ${{ secrets.BACKEND_SHARED_SECRET }}
+          SITE_URL: ${{ vars.NEXT_PUBLIC_SITE_URL }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+
+          if [ -z "${SUPABASE_SERVICE_ROLE_KEY}" ] || [ -z "${BACKEND_SHARED_SECRET}" ]; then
+            echo "Error: SUPABASE_SERVICE_ROLE_KEY and BACKEND_SHARED_SECRET secrets are required"
+            exit 1
+          fi
+
+          # Создаём контейнер при первом деплое
+          yc serverless container get --name jhelper-backend > /dev/null 2>&1 \
+            || yc serverless container create --name jhelper-backend
+
+          ENV_VARS="OPENROUTER_API_KEY=${OPENROUTER_API_KEY}"
+          ENV_VARS="${ENV_VARS},SUPABASE_URL=${SUPABASE_URL}"
+          ENV_VARS="${ENV_VARS},SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}"
+          ENV_VARS="${ENV_VARS},BACKEND_SHARED_SECRET=${BACKEND_SHARED_SECRET}"
+          ENV_VARS="${ENV_VARS},SITE_URL=${SITE_URL}"
+          ENV_VARS="${ENV_VARS},LOGS_PATH=/tmp/app-logs"
+          ENV_VARS="${ENV_VARS},OPENSEARCH_URL=${{ steps.opensearch.outputs.url }}"
+          ENV_VARS="${ENV_VARS},OPENSEARCH_INDEX_ALIAS=court_decisions"
+          ENV_VARS="${ENV_VARS},OPENSEARCH_TOP_K=8"
+
+          # LangSmith — опционально. Устанавливаем оба варианта имён переменных,
+          # т.к. разные версии langchain/langsmith смотрят на разные.
+          if [ -n "${LANGSMITH_API_KEY}" ]; then
+            ENV_VARS="${ENV_VARS},LANGSMITH_TRACING=true,LANGCHAIN_TRACING_V2=true"
+            ENV_VARS="${ENV_VARS},LANGSMITH_API_KEY=${LANGSMITH_API_KEY},LANGCHAIN_API_KEY=${LANGSMITH_API_KEY}"
+            ENV_VARS="${ENV_VARS},LANGSMITH_PROJECT=jhelper-prod,LANGCHAIN_PROJECT=jhelper-prod"
+            ENV_VARS="${ENV_VARS},LANGSMITH_ENDPOINT=https://api.smith.langchain.com"
+          fi
+
+          yc serverless container revision deploy \
+            --container-name jhelper-backend \
+            --image cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-backend:prod-${{ github.sha }} \
+            --service-account-id ${{ secrets.YC_SERVICE_ACCOUNT_ID }} \
+            --cores 1 \
+            --memory 1GB \
+            --execution-timeout 1800s \
+            --concurrency 10 \
+            --environment "${ENV_VARS}"
+
+          # Публичный invoke нужно включить один раз вручную:
+          #   yc serverless container allow-unauthenticated-invoke jhelper-backend
+          # Или через консоль: Serverless Containers → jhelper-backend → Публичный доступ.
+          # Требует роли serverless.containers.admin у сервисного аккаунта.
+          # Настройка сохраняется для всех последующих ревизий, в CI не нужна.
+
+      - name: Resolve backend URL
+        id: backend
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          BACKEND_URL=$(yc serverless container get --name jhelper-backend --format json | python3 -c "import sys, json; print(json.load(sys.stdin)['url'].rstrip('/'))")
+          echo "Backend URL: $BACKEND_URL"
+          echo "url=$BACKEND_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke check backend /health
+        run: |
+          for i in $(seq 1 10); do
+            if curl -fsS --max-time 15 "${{ steps.backend.outputs.url }}/health"; then
+              echo "" && echo "Backend is healthy"
+              exit 0
+            fi
+            echo "Attempt $i failed, retrying in 5s..."
+            sleep 5
+          done
+          echo "Error: backend /health did not respond"
+          exit 1
+
+      # ---------- 3. Next.js frontend (proxy /api/chat) ----------
+
+      - name: Build frontend Docker image
+        run: |
+          docker build \
+            --build-arg NEXT_PUBLIC_SUPABASE_URL="${{ vars.NEXT_PUBLIC_SUPABASE_URL }}" \
+            --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY="${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}" \
+            --build-arg NEXT_PUBLIC_SITE_URL="${{ vars.NEXT_PUBLIC_SITE_URL }}" \
+            --build-arg NEXT_PUBLIC_PROXY_URL="${{ vars.NEXT_PUBLIC_PROXY_URL }}" \
+            --build-arg NEXT_PUBLIC_ENABLE_SIGNUP="${{ vars.NEXT_PUBLIC_ENABLE_SIGNUP }}" \
+            -t cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-bot:prod-pyarch-${{ github.sha }} .
+          docker tag cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-bot:prod-pyarch-${{ github.sha }} \
+                     cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-bot:prod-pyarch
+
+      - name: Push frontend Docker image
+        run: |
+          docker push cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-bot:prod-pyarch-${{ github.sha }}
+          docker push cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-bot:prod-pyarch
+
+      - name: Deploy frontend to Serverless Container (Prod)
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_SITE_URL: ${{ vars.NEXT_PUBLIC_SITE_URL }}
+          NEXT_PUBLIC_PROXY_URL: ${{ vars.NEXT_PUBLIC_PROXY_URL }}
+          NEXT_PUBLIC_ENABLE_SIGNUP: ${{ vars.NEXT_PUBLIC_ENABLE_SIGNUP }}
+          S3_BUCKET_NAME: ${{ vars.S3_BUCKET_NAME }}
+          S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+          S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+          BACKEND_SHARED_SECRET: ${{ secrets.BACKEND_SHARED_SECRET }}
+          BACKEND_URL: ${{ steps.backend.outputs.url }}
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+
+          ENV_VARS="NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL},NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}"
+
+          # Связка с Python-бэкендом (отличие от старой архитектуры)
+          ENV_VARS="${ENV_VARS},BACKEND_URL=${BACKEND_URL},BACKEND_SHARED_SECRET=${BACKEND_SHARED_SECRET}"
+
+          # S3 (Yandex Object Storage) — загрузка документов остаётся в Next.js
+          ENV_VARS="${ENV_VARS},S3_BUCKET_NAME=${S3_BUCKET_NAME},S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID},S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY}"
+
+          # OpenRouter/OpenAI нужны Next.js для извлечения текста документов (vision/llm)
+          ENV_VARS="${ENV_VARS},OPENROUTER_API_KEY=${{ vars.OPENROUTER_API_KEY }},OPENAI_API_KEY=${{ vars.OPENAI_API_KEY }}"
+
+          if [ -n "${NEXT_PUBLIC_SITE_URL}" ]; then
+            ENV_VARS="${ENV_VARS},NEXT_PUBLIC_SITE_URL=${NEXT_PUBLIC_SITE_URL}"
+          fi
+
+          if [ -n "${NEXT_PUBLIC_ENABLE_SIGNUP}" ]; then
+            ENV_VARS="${ENV_VARS},NEXT_PUBLIC_ENABLE_SIGNUP=${NEXT_PUBLIC_ENABLE_SIGNUP}"
+          else
+            ENV_VARS="${ENV_VARS},NEXT_PUBLIC_ENABLE_SIGNUP=false"
+          fi
+
+          if [ -n "${NEXT_PUBLIC_PROXY_URL}" ]; then
+            ENV_VARS="${ENV_VARS},NEXT_PUBLIC_PROXY_URL=${NEXT_PUBLIC_PROXY_URL}"
+          fi
+
+          yc serverless container revision deploy \
+            --container-name jhelper-bot \
+            --image cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-bot:prod-pyarch-${{ github.sha }} \
+            --service-account-id ${{ secrets.YC_SERVICE_ACCOUNT_ID }} \
+            --cores 1 \
+            --memory 2GB \
+            --execution-timeout 1800s \
+            --concurrency 10 \
+            --environment "${ENV_VARS}"
+
+      - name: Deployment summary
+        run: |
+          {
+            echo "## Prod deploy complete"
+            echo ""
+            echo "- **OpenSearch:** ${{ steps.opensearch.outputs.url }}"
+            echo "- **Backend:** ${{ steps.backend.outputs.url }}"
+            echo ""
+            echo "### Add court practice"
+            echo "OpenSearch is shared with staging — the index is already populated."
+            echo "To load new cases, run **Index court practice (Staging OpenSearch)** with the URL above."
+          } >> "$GITHUB_STEP_SUMMARY"

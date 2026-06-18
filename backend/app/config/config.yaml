@@ -1,0 +1,4 @@
+extend:
+  - app.yaml
+  - chat.yaml
+  - logging.yaml

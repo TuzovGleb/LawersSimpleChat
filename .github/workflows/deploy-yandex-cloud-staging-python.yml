@@ -1,8 +1,9 @@
 name: Deploy to Yandex Cloud (Staging, Python backend)
 
 # Деплоит НОВУЮ архитектуру на тот же staging-адрес:
-#   1) Python-бэкенд (FastAPI + LangGraph) -> контейнер jhelper-backend-staging
-#   2) Next.js фронт с /api/chat-прокси    -> контейнер jhelper-bot-staging
+#   1) OpenSearch (COI VM)                   -> lawers-opensearch-staging
+#   2) Python-бэкенд (FastAPI + LangGraph)   -> контейнер jhelper-backend-staging
+#   3) Next.js фронт с /api/chat-прокси      -> контейнер jhelper-bot-staging
 #
 # Запуск только вручную. Ветка выбирается нативным дроп-дауном
 # "Use workflow from" в диалоге Run workflow (обычно feature/python-langgraph-backend).
@@ -76,7 +77,59 @@ jobs:
           IAM_TOKEN=$(yc iam create-token)
           echo "$IAM_TOKEN" | docker login --username iam --password-stdin cr.yandex
 
-      # ---------- 1. Python backend ----------
+      # ---------- 1. Resolve OpenSearch (provisioned by a separate workflow) ----------
+
+      - name: Resolve OpenSearch URL (read-only — never provisions)
+        id: opensearch
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          VM_NAME="lawers-opensearch-staging"
+
+          # The backend deploy must NOT create or update the OpenSearch VM:
+          # re-provisioning can wipe its data volume (the indexed court
+          # decisions). Provisioning lives in the separate
+          # "Deploy OpenSearch (Staging)" workflow; here we only read the IP.
+          if ! yc compute instance get --name "$VM_NAME" >/dev/null 2>&1; then
+            echo "Error: OpenSearch VM '$VM_NAME' not found."
+            echo "Run the 'Deploy OpenSearch (Staging)' workflow once to provision it, then re-run this deploy."
+            exit 1
+          fi
+
+          PUBLIC_IP=$(yc compute instance get --name "$VM_NAME" --format json | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          for iface in data.get('network_interfaces', []):
+              nat = iface.get('primary_v4_address', {}).get('one_to_one_nat') or {}
+              if nat.get('address'):
+                  print(nat['address'])
+                  raise SystemExit(0)
+          print('')
+          ")
+
+          if [ -z "$PUBLIC_IP" ]; then
+            echo "Error: could not resolve public IP for $VM_NAME"
+            exit 1
+          fi
+
+          echo "OpenSearch public IP: $PUBLIC_IP"
+          echo "public_ip=$PUBLIC_IP" >> "$GITHUB_OUTPUT"
+          echo "url=http://${PUBLIC_IP}:9200" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for OpenSearch
+        run: |
+          URL="${{ steps.opensearch.outputs.url }}"
+          for i in $(seq 1 36); do
+            if curl -fsS --max-time 10 "${URL}/_cluster/health"; then
+              echo "" && echo "OpenSearch is healthy at $URL"
+              exit 0
+            fi
+            echo "Attempt $i/36 - waiting for OpenSearch..."
+            sleep 10
+          done
+          echo "Error: OpenSearch did not become healthy at $URL"
+          exit 1
+
+      # ---------- 2. Python backend ----------
 
       - name: Build backend Docker image
         run: |
@@ -117,6 +170,9 @@ jobs:
           ENV_VARS="${ENV_VARS},BACKEND_SHARED_SECRET=${BACKEND_SHARED_SECRET}"
           ENV_VARS="${ENV_VARS},SITE_URL=${SITE_URL}"
           ENV_VARS="${ENV_VARS},LOGS_PATH=/tmp/app-logs"
+          ENV_VARS="${ENV_VARS},OPENSEARCH_URL=${{ steps.opensearch.outputs.url }}"
+          ENV_VARS="${ENV_VARS},OPENSEARCH_INDEX_ALIAS=court_decisions"
+          ENV_VARS="${ENV_VARS},OPENSEARCH_TOP_K=8"
 
           # LangSmith — опционально. Устанавливаем оба варианта имён переменных,
           # т.к. разные версии langchain/langsmith смотрят на разные.
@@ -164,7 +220,7 @@ jobs:
           echo "Error: backend /health did not respond"
           exit 1
 
-      # ---------- 2. Next.js frontend (proxy /api/chat) ----------
+      # ---------- 3. Next.js frontend (proxy /api/chat) ----------
 
       - name: Build frontend Docker image
         run: |
@@ -232,3 +288,23 @@ jobs:
             --execution-timeout 1800s \
             --concurrency 10 \
             --environment "${ENV_VARS}"
+
+      - name: Deployment summary
+        run: |
+          {
+            echo "## Staging deploy complete"
+            echo ""
+            echo "- **OpenSearch:** ${{ steps.opensearch.outputs.url }}"
+            echo "- **Backend:** ${{ steps.backend.outputs.url }}"
+            echo ""
+            echo "### Index court practice (local)"
+            echo '```bash'
+            echo "cd backend && uv sync"
+            echo "uv run python scripts/index_court_practice.py \\"
+            echo "  --source /path/to/avtozavodsky-cases-2020-2026.zip \\"
+            echo "  --opensearch-url ${{ steps.opensearch.outputs.url }} \\"
+            echo "  --batch-size 500"
+            echo '```'
+            echo ""
+            echo "### Or upload zip to S3 and run workflow **Index court practice (Staging OpenSearch)**"
+          } >> "$GITHUB_STEP_SUMMARY"

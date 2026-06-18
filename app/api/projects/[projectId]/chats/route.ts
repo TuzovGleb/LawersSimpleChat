@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
 import { getSupabase } from '@/lib/supabase';
+import { logger, requestIdFrom } from '@/lib/server-logger';
 
 export const runtime = 'edge';
 
@@ -14,6 +15,8 @@ function getProjectIdFromRequest(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
+  const requestId = requestIdFrom(req);
+  const startedAt = Date.now();
   const projectId = getProjectIdFromRequest(req);
   if (!projectId) {
     return NextResponse.json({ error: 'projectId is required' }, { status: 400 });
@@ -48,18 +51,37 @@ export async function GET(req: NextRequest) {
       .order('created_at', { ascending: false });
 
     if (error) {
-      console.error('[project-chats][GET] Supabase error:', error);
+      logger.error('Supabase error', {
+        request_id: requestId,
+        event: 'project_chats_get_supabase_error',
+        err: error,
+        project_id: projectId,
+      });
       return NextResponse.json({ error: 'Не удалось загрузить чаты проекта.' }, { status: 500 });
     }
 
+    logger.info('Project chats listed', {
+      request_id: requestId,
+      event: 'chats_listed',
+      duration_ms: Date.now() - startedAt,
+      project_id: projectId,
+      count: (data ?? []).length,
+    });
     return NextResponse.json({ chats: data ?? [] });
   } catch (error) {
-    console.error('[project-chats][GET] Unexpected error:', error);
+    logger.error('Unexpected error', {
+      request_id: requestId,
+      event: 'project_chats_get_unexpected_error',
+      err: error,
+      project_id: projectId,
+    });
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
 
 export async function POST(req: NextRequest) {
+  const requestId = requestIdFrom(req);
+  const startedAt = Date.now();
   const projectId = getProjectIdFromRequest(req);
   if (!projectId) {
     return NextResponse.json({ error: 'projectId is required' }, { status: 400 });
@@ -111,7 +133,12 @@ export async function POST(req: NextRequest) {
       .single();
 
     if (error || !data) {
-      console.error('[project-chats][POST] Supabase error:', error);
+      logger.error('Supabase error', {
+        request_id: requestId,
+        event: 'project_chats_post_supabase_error',
+        err: error,
+        project_id: projectId,
+      });
       return NextResponse.json({ error: 'Не удалось создать чат.' }, { status: 500 });
     }
 
@@ -121,9 +148,21 @@ export async function POST(req: NextRequest) {
       .eq('id', projectId)
       .limit(1);
 
+    logger.info('Chat created', {
+      request_id: requestId,
+      event: 'chat_created',
+      duration_ms: Date.now() - startedAt,
+      project_id: projectId,
+      chat_id: newSessionId,
+    });
     return NextResponse.json({ chat: data }, { status: 201 });
   } catch (error) {
-    console.error('[project-chats][POST] Unexpected error:', error);
+    logger.error('Unexpected error', {
+      request_id: requestId,
+      event: 'project_chats_post_unexpected_error',
+      err: error,
+      project_id: projectId,
+    });
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

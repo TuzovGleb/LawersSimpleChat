@@ -1,0 +1,35 @@
+[project]
+name = "lawers-chat-backend"
+version = "0.1.0"
+description = "FastAPI + LangGraph chat backend for LawersSimpleChat (legal assistant)."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi[standard]>=0.115.6",
+    "uvicorn>=0.34.0",
+    "langchain>=0.3.14",
+    "langchain-core>=0.3.29",
+    "langchain-openai>=0.3.0",
+    "langgraph>=0.2.63",
+    "langgraph-checkpoint-postgres>=2.0.13",
+    "langsmith>=0.2.0",
+    "psycopg[binary]>=3.2.4",
+    "metayaml>=1.2",
+    "python-dotenv>=1.0.1",
+    "supabase>=2.10.0",
+    "pydantic>=2.10.0",
+    "opensearch-py>=2.8.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+    "pytest-asyncio>=0.26.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.uv]
+package = false

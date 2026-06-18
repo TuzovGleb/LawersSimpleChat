@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { v4 as uuidv4 } from "uuid";
 import { CaseSelectionScreen } from "@/components/case-selection-screen";
@@ -11,6 +11,7 @@ import { useExportMessage } from "@/hooks/use-export-message";
 import { useAuth } from "@/hooks/use-auth";
 import { ToasterClient } from "@/components/toaster-client";
 import { fetchWithRetry, safeJsonResponse, resolveApiUrl } from "@/lib/utils";
+import { setCurrentChatId } from "@/lib/client-error-logger";
 
 type LocalChatSession = {
   id: string;
@@ -33,10 +34,12 @@ const DEFAULT_PROJECT_NAME = "Мои дела";
 
 function createEmptySession(projectId: string): LocalChatSession {
   const now = new Date().toISOString();
+  const chatId = uuidv4();
   return {
-    id: uuidv4(),
+    id: chatId,
     title: "Новый чат",
     messages: [],
+    backendSessionId: chatId,
     documents: [],
     createdAt: now,
     projectId,
@@ -91,7 +94,25 @@ function toMessageDocument(document: SessionDocument): ChatMessageDocument {
   };
 }
 
-export function ChatPageClient() {
+function normalizeDbMessages(raw: unknown): ChatMessage[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((msg: any) => ({
+    role: msg.role,
+    content: msg.content,
+    attachedDocumentIds: Array.isArray(msg.attachedDocumentIds)
+      ? msg.attachedDocumentIds
+      : Array.isArray(msg.attached_document_ids)
+        ? msg.attached_document_ids
+        : undefined,
+    attachedDocuments: Array.isArray(msg.attachedDocuments)
+      ? msg.attachedDocuments
+      : Array.isArray(msg.attached_documents)
+        ? msg.attached_documents
+        : undefined,
+  }));
+}
+
+export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {}) {
   const searchParams = useSearchParams();
   const router = useRouter();
   const { user, loading: authLoading, signOut } = useAuth();
@@ -119,6 +140,14 @@ export function ChatPageClient() {
   const [isUploadingDocument, setIsUploadingDocument] = useState(false);
   const [pendingMessageDocuments, setPendingMessageDocuments] = useState<SessionDocument[]>([]);
   const [isLoadingChatsFromDB, setIsLoadingChatsFromDB] = useState(false);
+  // Чат, открытый по прямой ссылке /chat/[chatId]: ждём, пока он появится в списке сессий
+  const pendingInitialChatIdRef = useRef<string | null>(initialChatId ?? null);
+  const [isResolvingInitialChat, setIsResolvingInitialChat] = useState<boolean>(Boolean(initialChatId));
+  // Сессии, для которых сообщения уже загружены из БД в этом сеансе работы
+  const loadedMessageSessionsRef = useRef<Set<string>>(new Set());
+  const [loadingMessagesSessionId, setLoadingMessagesSessionId] = useState<string | null>(null);
+  // Проект, для которого список чатов уже загружен из БД (нужно, чтобы не сбрасывать deep-link раньше времени)
+  const dbChatsLoadedProjectRef = useRef<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<SelectedModel>('openai'); // Выбранная модель (по умолчанию openai)
   const [isPageVisible, setIsPageVisible] = useState(true);
   const [pendingRequest, setPendingRequest] = useState<{
@@ -160,6 +189,51 @@ export function ChatPageClient() {
       router.push("/auth");
     }
   }, [authLoading, user, router]);
+
+  // Resolve deep link /chat/[chatId]: find the chat's project and open the workspace on it
+  useEffect(() => {
+    if (!initialChatId || !user?.id) return;
+    let isCancelled = false;
+
+    const resolveChat = async () => {
+      try {
+        const response = await fetchWithRetry(`/api/chat/${encodeURIComponent(initialChatId)}`);
+        if (isCancelled) return;
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const data = await response.json();
+        const projectId = typeof data?.chat?.project_id === "string" ? data.chat.project_id : null;
+        if (!projectId) {
+          throw new Error("Chat has no project");
+        }
+        if (isCancelled || pendingInitialChatIdRef.current !== initialChatId) return;
+        setSelectedProjectId(projectId);
+        setIsInWorkspace(true);
+        setActiveSessionId(initialChatId);
+      } catch (error) {
+        console.error("Не удалось открыть чат по ссылке:", error);
+        if (isCancelled) return;
+        pendingInitialChatIdRef.current = null;
+        window.history.replaceState(null, "", "/workspace");
+        toast({
+          variant: "destructive",
+          title: "Чат не найден",
+          description: "Чат по этой ссылке не существует или у вас нет к нему доступа.",
+        });
+      } finally {
+        if (!isCancelled) {
+          setIsResolvingInitialChat(false);
+        }
+      }
+    };
+
+    void resolveChat();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [initialChatId, toast, user?.id]);
 
   useEffect(() => {
     if (!user?.id) return;
@@ -342,55 +416,18 @@ export function ChatPageClient() {
 
         if (isCancelled) return;
 
-        // Load messages for each session
-        const sessionsWithMessages = await Promise.all(
-          dbChats.map(async (chat: any) => {
-            try {
-              const messagesResponse = await fetchWithRetry(`/api/chat/${chat.id}/messages`);
-              if (!messagesResponse.ok) {
-                console.warn(`Failed to load messages for session ${chat.id}`);
-                return null;
-              }
-
-              const messagesData = await messagesResponse.json();
-              const messages = Array.isArray(messagesData?.messages) 
-                ? messagesData.messages.map((msg: any) => ({
-                    role: msg.role,
-                    content: msg.content,
-                    attachedDocumentIds: Array.isArray(msg.attachedDocumentIds)
-                      ? msg.attachedDocumentIds
-                      : Array.isArray(msg.attached_document_ids)
-                        ? msg.attached_document_ids
-                        : undefined,
-                    attachedDocuments: Array.isArray(msg.attachedDocuments)
-                      ? msg.attachedDocuments
-                      : Array.isArray(msg.attached_documents)
-                        ? msg.attached_documents
-                        : undefined,
-                  }))
-                : [];
-
-              const localSession: LocalChatSession = {
-                id: chat.id,
-                title: generateTitle(chat.initial_message || 'Новый чат'),
-                messages,
-                backendSessionId: chat.id,
-                createdAt: chat.created_at,
-                documents: [],
-                projectId: chat.project_id,
-              };
-
-              return localSession;
-            } catch (error) {
-              console.error(`Error loading messages for session ${chat.id}:`, error);
-              return null;
-            }
-          })
+        // Messages are loaded lazily for the active chat only (see effect below)
+        const validSessions: LocalChatSession[] = dbChats.map(
+          (chat: any): LocalChatSession => ({
+            id: chat.id,
+            title: generateTitle(chat.initial_message || 'Новый чат'),
+            messages: [],
+            backendSessionId: chat.id,
+            createdAt: chat.created_at,
+            documents: [],
+            projectId: chat.project_id,
+          }),
         );
-
-        if (isCancelled) return;
-
-        const validSessions = sessionsWithMessages.filter((s): s is LocalChatSession => s !== null);
 
         // Merge database sessions with localStorage sessions
         setSessions((prev) => {
@@ -413,9 +450,11 @@ export function ChatPageClient() {
               merged[existingIndex] = {
                 ...merged[existingIndex],
                 ...dbSession,
+                // Keep cached messages: dbSession arrives without them (lazy loading)
+                messages: merged[existingIndex].messages,
                 // Keep local documents if they exist
-                documents: merged[existingIndex].documents.length > 0 
-                  ? merged[existingIndex].documents 
+                documents: merged[existingIndex].documents.length > 0
+                  ? merged[existingIndex].documents
                   : dbSession.documents,
               };
             } else {
@@ -453,6 +492,7 @@ export function ChatPageClient() {
     });
       } finally {
         if (!isCancelled) {
+          dbChatsLoadedProjectRef.current = selectedProjectId;
           setIsLoadingChatsFromDB(false);
         }
       }
@@ -469,6 +509,26 @@ export function ChatPageClient() {
     if (!selectedProjectId) return;
 
     const sessionsForProject = sessions.filter((session) => session.projectId === selectedProjectId);
+
+    const pendingChatId = pendingInitialChatIdRef.current;
+    if (pendingChatId) {
+      const pendingSession = sessionsForProject.find(
+        (session) => session.id === pendingChatId || session.backendSessionId === pendingChatId,
+      );
+      if (pendingSession) {
+        pendingInitialChatIdRef.current = null;
+        if (activeSessionId !== pendingSession.id) {
+          setActiveSessionId(pendingSession.id);
+        }
+        return;
+      }
+      // Чат из ссылки ещё не появился в списке — ждём окончания загрузки чатов из БД
+      if (dbChatsLoadedProjectRef.current !== selectedProjectId) {
+        return;
+      }
+      pendingInitialChatIdRef.current = null;
+    }
+
     if (!sessionsForProject.length) {
       setActiveSessionId(null);
       return;
@@ -477,7 +537,71 @@ export function ChatPageClient() {
     if (!activeSessionId || !sessionsForProject.some((session) => session.id === activeSessionId)) {
       setActiveSessionId(sessionsForProject[0].id);
     }
-  }, [activeSessionId, selectedProjectId, sessions]);
+  }, [activeSessionId, isLoadingChatsFromDB, selectedProjectId, sessions]);
+
+  // Lazy-load messages for the active chat only
+  useEffect(() => {
+    if (!activeSessionId || !user?.id) return;
+    if (loadedMessageSessionsRef.current.has(activeSessionId)) return;
+    if (!sessions.some((session) => session.id === activeSessionId)) return;
+
+    const sessionId = activeSessionId;
+    let isCancelled = false;
+
+    const loadMessages = async () => {
+      setLoadingMessagesSessionId(sessionId);
+      try {
+        const response = await fetchWithRetry(`/api/chat/${encodeURIComponent(sessionId)}/messages`);
+        if (isCancelled) return;
+        if (!response.ok) {
+          if (response.status === 404) {
+            // Новый чат, которого ещё нет на сервере — загружать нечего
+            loadedMessageSessionsRef.current.add(sessionId);
+          } else {
+            console.warn(`Failed to load messages for session ${sessionId} (HTTP ${response.status})`);
+          }
+          return;
+        }
+
+        const data = await response.json();
+        const fetchedMessages = normalizeDbMessages(data?.messages);
+        if (isCancelled) return;
+
+        loadedMessageSessionsRef.current.add(sessionId);
+        setSessions((prev) =>
+          prev.map((session) => {
+            if (session.id !== sessionId && session.backendSessionId !== sessionId) return session;
+            // Не затираем локальные сообщения (например, оптимистично добавленные перед ответом)
+            if (fetchedMessages.length <= session.messages.length) return session;
+            return { ...session, messages: fetchedMessages };
+          }),
+        );
+      } catch (error) {
+        console.error(`Не удалось загрузить сообщения чата ${sessionId}:`, error);
+      } finally {
+        if (!isCancelled) {
+          setLoadingMessagesSessionId((current) => (current === sessionId ? null : current));
+        }
+      }
+    };
+
+    void loadMessages();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activeSessionId, sessions, user?.id]);
+
+  // Keep the URL in sync with the active chat so links can be shared and survive reloads
+  useEffect(() => {
+    if (typeof window === "undefined" || authLoading || !user) return;
+    if (isResolvingInitialChat || pendingInitialChatIdRef.current) return;
+
+    const targetPath = isInWorkspace && activeSessionId ? `/chat/${activeSessionId}` : "/workspace";
+    if (window.location.pathname !== targetPath) {
+      window.history.replaceState(null, "", `${targetPath}${window.location.search}`);
+    }
+  }, [activeSessionId, authLoading, isInWorkspace, isResolvingInitialChat, user]);
 
   const activeProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
@@ -500,6 +624,15 @@ export function ChatPageClient() {
     [activeSessionId, selectedProjectId, sessions],
   );
 
+  // Tag uncaught browser errors with the active chat id so client-side errors
+  // correlate with backend/BFF logs (see lib/client-error-logger.ts).
+  useEffect(() => {
+    setCurrentChatId(activeSession?.backendSessionId ?? activeSessionId);
+  }, [activeSession, activeSessionId]);
+
+
+  const isLoadingMessages =
+    Boolean(activeSessionId) && loadingMessagesSessionId === activeSessionId;
 
   const handleNewChat = useCallback(() => {
     if (!selectedProjectId) return;
@@ -511,6 +644,7 @@ export function ChatPageClient() {
   }, [selectedProjectId]);
 
   const handleSelectSession = useCallback((sessionId: string) => {
+    pendingInitialChatIdRef.current = null;
     setActiveSessionId(sessionId);
     setInput("");
     setPendingMessageDocuments([]);
@@ -518,6 +652,7 @@ export function ChatPageClient() {
 
   const handleSelectProject = useCallback(
     (projectId: string) => {
+      pendingInitialChatIdRef.current = null;
       setSelectedProjectId(projectId);
       setIsInWorkspace(true);
     },
@@ -525,6 +660,7 @@ export function ChatPageClient() {
   );
 
   const handleBackToSelection = useCallback(() => {
+    pendingInitialChatIdRef.current = null;
     setIsInWorkspace(false);
     setSelectedProjectId(null);
     setPendingMessageDocuments([]);
@@ -753,18 +889,28 @@ export function ChatPageClient() {
             throw new Error(`Ошибка загрузки файла в хранилище (${uploadResponse.status}).`);
           }
 
-          // Step 3: Notify backend to process the uploaded file
-          const response = await fetchWithRetry(`/api/projects/${selectedProjectId}/documents`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              objectKey,
-              filename: file.name,
-              mimeType: file.type || "application/octet-stream",
-              size: file.size,
-              userId: user.id,
-            }),
-          });
+          // Step 3: Notify backend to process the uploaded file.
+          // Распознавание скана (постранично через gemini) занимает заметно больше
+          // дефолтных 30с, поэтому поднимаем таймаут до 3 минут. Ретраи сводим к
+          // минимуму: повтор перезапускает тяжёлую обработку (скачивание из S3 +
+          // OCR) целиком — лучше показать ошибку, чем дублировать работу.
+          const response = await fetchWithRetry(
+            `/api/projects/${selectedProjectId}/documents`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                objectKey,
+                filename: file.name,
+                mimeType: file.type || "application/octet-stream",
+                size: file.size,
+                userId: user.id,
+              }),
+            },
+            1, // maxRetries
+            1000, // retryDelay
+            180000, // timeoutMs — 3 минуты на распознавание
+          );
 
           if (!response.ok) {
             const errorPayload = await response.json().catch(() => ({}));
@@ -874,7 +1020,7 @@ export function ChatPageClient() {
   );
 
   const handleSendMessage = useCallback(async () => {
-    if (!activeSession || isLoading) return;
+    if (!activeSession || isLoading || isLoadingMessages) return;
     if (!selectedProjectId) {
       toast({
         variant: "destructive",
@@ -895,7 +1041,10 @@ export function ChatPageClient() {
     if (!trimmedMessage && pendingMessageDocuments.length === 0) return;
 
     const sessionLocalId = activeSession.id;
-    const backendSessionId = activeSession.backendSessionId;
+    const chatId = activeSession.backendSessionId ?? activeSession.id;
+    // После отправки локальная история становится актуальной — лениво перезагружать её не нужно
+    loadedMessageSessionsRef.current.add(sessionLocalId);
+    loadedMessageSessionsRef.current.add(chatId);
     const hasUserMessages = activeSession.messages.some((message) => message.role === "user");
     const isFirstUserMessage = !hasUserMessages;
     const attachedDocuments = pendingMessageDocuments.map(toMessageDocument);
@@ -920,10 +1069,18 @@ export function ChatPageClient() {
     setPendingRequest({
       sessionLocalId,
       messagesForRequest,
-      backendSessionId,
+      backendSessionId: chatId,
       isFirstUserMessage,
       trimmedMessage: userMessage.content,
     });
+
+    if (!activeSession.backendSessionId) {
+      setSessions((prev) =>
+        prev.map((session) =>
+          session.id === sessionLocalId ? { ...session, backendSessionId: chatId } : session,
+        ),
+      );
+    }
 
     setSessions((prev) =>
       prev.map((session) => {
@@ -940,7 +1097,7 @@ export function ChatPageClient() {
       // Используем увеличенный таймаут (35 минут) для долгих thinking-запросов
       // Сервер настроен на 30 минут, добавляем запас
       // Теперь используем streaming для получения ответа с heartbeat
-      const resolvedUrl = resolveApiUrl(`/api/chat${utmQuery}`);
+      const resolvedUrl = resolveApiUrl(`/api/chat/${encodeURIComponent(chatId)}/messages${utmQuery}`);
       
       // Создаем AbortController для возможности отмены запроса
       const abortController = new AbortController();
@@ -964,10 +1121,8 @@ export function ChatPageClient() {
         },
         body: JSON.stringify({
           messages: messagesForRequest,
-          sessionId: backendSessionId,
           projectId: selectedProjectId,
-          userId: user.id,
-          selectedModel, // Передаем выбранную модель для OpenRouter
+          selectedModel,
         }),
         signal: AbortSignal.timeout(2100000), // 35 минут таймаут
       });
@@ -1062,7 +1217,7 @@ export function ChatPageClient() {
                     if (session.id !== sessionLocalId) return session;
                     return {
                       ...session,
-                      backendSessionId: data.sessionId ?? session.backendSessionId,
+                      backendSessionId: data.sessionId ?? session.backendSessionId ?? chatId,
                       messages: [...session.messages, assistantMessage],
                       projectId: data.projectId ?? session.projectId ?? selectedProjectId,
                     };
@@ -1135,10 +1290,10 @@ export function ChatPageClient() {
       setIsLoading(false);
       setIsThinking(false);
     }
-  }, [activeSession, input, isLoading, isPageVisible, pendingMessageDocuments, selectedProjectId, selectedModel, toast, user?.id, utmQuery]);
+  }, [activeSession, input, isLoading, isLoadingMessages, isPageVisible, pendingMessageDocuments, selectedProjectId, selectedModel, toast, user?.id, utmQuery]);
 
-  // Show loading while checking auth
-  if (authLoading) {
+  // Show loading while checking auth or resolving a /chat/[chatId] deep link
+  if (authLoading || (user && isResolvingInitialChat)) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <div className="text-center">
@@ -1175,6 +1330,16 @@ export function ChatPageClient() {
 
   const currentProject = projects.find((p) => p.id === selectedProjectId);
   if (!currentProject) {
+    if (isProjectsLoading) {
+      return (
+        <div className="flex min-h-screen items-center justify-center">
+          <div className="text-center">
+            <div className="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-current border-r-transparent align-[-0.125em] motion-reduce:animate-[spin_1.5s_linear_infinite]" />
+            <p className="mt-4 text-muted-foreground">Загрузка...</p>
+          </div>
+        </div>
+      );
+    }
     return null;
   }
 
@@ -1191,6 +1356,7 @@ export function ChatPageClient() {
         isThinking={isThinking}
         isUploadingDocument={isUploadingDocument}
         isLoadingChats={isLoadingChatsFromDB}
+        isLoadingMessages={isLoadingMessages}
         pendingDocuments={pendingMessageDocuments}
         selectedModel={selectedModel}
         onModelChange={setSelectedModel}

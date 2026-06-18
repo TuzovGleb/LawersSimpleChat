@@ -46,6 +46,7 @@ interface CaseWorkspaceProps {
   isThinking: boolean;
   isUploadingDocument: boolean;
   isLoadingChats: boolean;
+  isLoadingMessages: boolean;
   pendingDocuments: SessionDocument[];
   selectedModel: SelectedModel;
   onModelChange: (model: SelectedModel) => void;
@@ -69,6 +70,7 @@ export function CaseWorkspace({
   isThinking,
   isUploadingDocument,
   isLoadingChats,
+  isLoadingMessages,
   pendingDocuments,
   selectedModel,
   onModelChange,
@@ -494,6 +496,13 @@ export function CaseWorkspace({
                     </h2>
                     <p className="mt-2 text-sm">Получаем вашу историю разговоров</p>
                   </div>
+                ) : isLoadingMessages && activeSession && activeSession.messages.length === 0 ? (
+                  <div className="mt-10 text-center" style={{ color: "var(--text-secondary)" }}>
+                    <Loader2 className="mx-auto h-10 w-10 animate-spin" />
+                    <h2 className="text-xl font-semibold mt-4" style={{ color: "var(--text-primary)" }}>
+                      Загрузка сообщений...
+                    </h2>
+                  </div>
                 ) : activeSession && activeSession.messages.length === 0 && !isLoading ? (
                   <div className="mt-10 text-center">
                     <h2
@@ -908,6 +917,7 @@ export function CaseWorkspace({
                       isLoading ||
                       isUploadingDocument ||
                       isLoadingChats ||
+                      isLoadingMessages ||
                       (!input.trim() && pendingDocuments.length === 0)
                     }
                     size="icon"
@@ -919,7 +929,7 @@ export function CaseWorkspace({
                       color: "#fff",
                     }}
                   >
-                    {isLoading || isLoadingChats ? (
+                    {isLoading || isLoadingChats || isLoadingMessages ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
                     ) : (
                       <Send className="h-4 w-4" />

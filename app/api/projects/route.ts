@@ -4,10 +4,13 @@ import { createClient } from '@/lib/supabase/server';
 import { requireAuth } from '@/lib/auth-helpers';
 import { mapProject } from '@/lib/projects';
 import { slugify } from '@/lib/utils';
+import { logger, requestIdFrom } from '@/lib/server-logger';
 
 export const runtime = 'edge';
 
 export async function GET(req: NextRequest) {
+  const requestId = requestIdFrom(req);
+  const startedAt = Date.now();
   // Check authentication
   const { user, response: authResponse } = await requireAuth();
   if (authResponse) return authResponse;
@@ -21,19 +24,35 @@ export async function GET(req: NextRequest) {
       .order('updated_at', { ascending: false });
 
     if (error) {
-      console.error('[projects][GET] Supabase error:', error);
+      logger.error('Supabase error', {
+        request_id: requestId,
+        event: 'projects_get_supabase_error',
+        err: error,
+      });
       return NextResponse.json({ error: 'Не удалось загрузить проекты.' }, { status: 500 });
     }
 
     const projects = (data ?? []).map(mapProject);
+    logger.info('Projects listed', {
+      request_id: requestId,
+      event: 'projects_listed',
+      duration_ms: Date.now() - startedAt,
+      count: projects.length,
+    });
     return NextResponse.json({ projects });
   } catch (error) {
-    console.error('[projects][GET] Unexpected error:', error);
+    logger.error('Unexpected error', {
+      request_id: requestId,
+      event: 'projects_get_unexpected_error',
+      err: error,
+    });
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
 
 export async function POST(req: NextRequest) {
+  const requestId = requestIdFrom(req);
+  const startedAt = Date.now();
   // Check authentication
   const { user, response: authResponse } = await requireAuth();
   if (authResponse) return authResponse;
@@ -70,8 +89,12 @@ export async function POST(req: NextRequest) {
       .single();
 
     if (error || !data) {
-      console.error('[projects][POST] Supabase error:', error);
-      
+      logger.error('Supabase error', {
+        request_id: requestId,
+        event: 'projects_post_supabase_error',
+        err: error,
+      });
+
       // Обработка ошибки дубликата slug
       if (error?.code === '23505') {
         return NextResponse.json({ 
@@ -82,9 +105,20 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Не удалось создать проект.' }, { status: 500 });
     }
 
+    logger.info('Project created', {
+      request_id: requestId,
+      event: 'project_created',
+      duration_ms: Date.now() - startedAt,
+      project_id: data.id,
+      name,
+    });
     return NextResponse.json({ project: mapProject(data) }, { status: 201 });
   } catch (error) {
-    console.error('[projects][POST] Unexpected error:', error);
+    logger.error('Unexpected error', {
+      request_id: requestId,
+      event: 'projects_post_unexpected_error',
+      err: error,
+    });
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
@@ -105,7 +139,10 @@ async function ensureProjectSlugIsUnique(
       .maybeSingle();
 
     if (error) {
-      console.warn('[projects][slug] Supabase lookup error:', error);
+      logger.warn('Supabase lookup error', {
+        event: 'projects_slug_lookup_error',
+        err: error,
+      });
       break;
     }
 

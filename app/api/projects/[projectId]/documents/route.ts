@@ -4,6 +4,7 @@ import { getSupabase } from '@/lib/supabase';
 import { extractTextFromDocument } from '@/lib/document-processing';
 import { mapProjectDocument } from '@/lib/projects';
 import { downloadFileFromS3 } from '@/lib/s3-client';
+import { logger, requestIdFrom } from '@/lib/server-logger';
 
 // NOTE: Для Yandex Cloud Serverless Containers используем Node.js runtime
 // Node.js runtime обеспечивает лучшую поддержку DNS lookup и внешних API
@@ -21,6 +22,8 @@ function getProjectIdFromRequest(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   const projectId = getProjectIdFromRequest(req);
+  const requestId = requestIdFrom(req);
+  const startedAt = Date.now();
   if (!projectId) {
     return NextResponse.json({ error: 'projectId is required' }, { status: 400 });
   }
@@ -34,12 +37,7 @@ export async function GET(req: NextRequest) {
     if (!hasSupabaseUrl) missing.push('NEXT_PUBLIC_SUPABASE_URL');
     if (!hasSupabaseKey) missing.push('NEXT_PUBLIC_SUPABASE_ANON_KEY');
     
-    console.error('[project-documents][GET] Missing environment variables:', {
-      projectId,
-      missing,
-      hasSupabaseUrl,
-      hasSupabaseKey,
-    });
+    logger.error('Missing environment variables', { project_id: projectId, request_id: requestId, event: 'missing_env', missing, hasSupabaseUrl, hasSupabaseKey });
     
     return NextResponse.json(
       { error: 'Server configuration error. Please contact support.' },
@@ -51,11 +49,7 @@ export async function GET(req: NextRequest) {
     const supabase = await getSupabase();
     
     if (!supabase) {
-      console.error('[project-documents][GET] Failed to create Supabase client:', {
-        projectId,
-        hasSupabaseUrl,
-        hasSupabaseKey,
-      });
+      logger.error('Failed to create Supabase client', { project_id: projectId, request_id: requestId, event: 'supabase_client_error', hasSupabaseUrl, hasSupabaseKey });
       return NextResponse.json(
         { error: 'Не удалось подключиться к базе данных.' },
         { status: 500 }
@@ -69,16 +63,7 @@ export async function GET(req: NextRequest) {
       .order('uploaded_at', { ascending: false });
 
     if (error) {
-      console.error('[project-documents][GET] Supabase query error:', {
-        projectId,
-        error: {
-          message: error.message,
-          code: error.code,
-          details: error.details,
-          hint: error.hint,
-        },
-        stack: error instanceof Error ? error.stack : undefined,
-      });
+      logger.error('Supabase query failed', { project_id: projectId, request_id: requestId, event: 'supabase_query_error', err: error });
       return NextResponse.json(
         { error: 'Не удалось получить документы проекта.' },
         { status: 500 }
@@ -87,32 +72,17 @@ export async function GET(req: NextRequest) {
 
     try {
       const documents = (data ?? []).map(mapProjectDocument);
+      logger.info('Project documents listed', { project_id: projectId, request_id: requestId, event: 'documents_listed', count: documents.length, duration_ms: Date.now() - startedAt });
       return NextResponse.json({ documents });
     } catch (mappingError) {
-      console.error('[project-documents][GET] Document mapping error:', {
-        projectId,
-        dataCount: data?.length ?? 0,
-        error: mappingError instanceof Error ? {
-          message: mappingError.message,
-          stack: mappingError.stack,
-        } : mappingError,
-      });
+      logger.error('Document mapping failed', { project_id: projectId, request_id: requestId, event: 'document_mapping_error', dataCount: data?.length ?? 0, err: mappingError });
       return NextResponse.json(
         { error: 'Ошибка при обработке данных документов.' },
         { status: 500 }
       );
     }
   } catch (error) {
-    console.error('[project-documents][GET] Unexpected error:', {
-      projectId,
-      error: error instanceof Error ? {
-        message: error.message,
-        stack: error.stack,
-        name: error.name,
-      } : error,
-      hasSupabaseUrl,
-      hasSupabaseKey,
-    });
+    logger.error('Unexpected error listing project documents', { project_id: projectId, request_id: requestId, event: 'unexpected_error', err: error, hasSupabaseUrl, hasSupabaseKey });
     return NextResponse.json(
       { error: 'Внутренняя ошибка сервера. Попробуйте позже.' },
       { status: 500 }
@@ -122,6 +92,8 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const projectId = getProjectIdFromRequest(req);
+  const requestId = requestIdFrom(req);
+  const startedAt = Date.now();
   if (!projectId) {
     return NextResponse.json({ error: 'projectId is required' }, { status: 400 });
   }
@@ -135,12 +107,7 @@ export async function POST(req: NextRequest) {
     if (!hasSupabaseUrl) missing.push('NEXT_PUBLIC_SUPABASE_URL');
     if (!hasSupabaseKey) missing.push('NEXT_PUBLIC_SUPABASE_ANON_KEY');
     
-    console.error('[project-documents][POST] Missing environment variables:', {
-      projectId,
-      missing,
-      hasSupabaseUrl,
-      hasSupabaseKey,
-    });
+    logger.error('Missing environment variables', { project_id: projectId, request_id: requestId, event: 'missing_env', missing, hasSupabaseUrl, hasSupabaseKey });
     
     return NextResponse.json(
       { error: 'Server configuration error. Please contact support.' },
@@ -171,14 +138,7 @@ export async function POST(req: NextRequest) {
     try {
       buffer = await downloadFileFromS3(objectKey);
     } catch (downloadError) {
-      console.error('[project-documents][POST] S3 download error:', {
-        projectId,
-        objectKey,
-        error: downloadError instanceof Error ? {
-          message: downloadError.message,
-          stack: downloadError.stack,
-        } : downloadError,
-      });
+      logger.error('S3 download failed', { project_id: projectId, request_id: requestId, event: 's3_download_error', objectKey, err: downloadError });
       return NextResponse.json(
         { error: 'Не удалось скачать файл из хранилища.' },
         { status: 500 },
@@ -193,16 +153,7 @@ export async function POST(req: NextRequest) {
     try {
       extraction = await extractTextFromDocument(buffer, mimeType, filename);
     } catch (extractionError) {
-      console.error('[project-documents][POST] Document extraction error:', {
-        projectId,
-        filename,
-        mimeType,
-        fileSize: size,
-        error: extractionError instanceof Error ? {
-          message: extractionError.message,
-          stack: extractionError.stack,
-        } : extractionError,
-      });
+      logger.error('Document extraction failed', { project_id: projectId, request_id: requestId, event: 'document_extraction_error', filename, mimeType, fileSize: size, err: extractionError });
       return NextResponse.json(
         { error: 'Ошибка при извлечении текста из документа.' },
         { status: 500 },
@@ -219,12 +170,7 @@ export async function POST(req: NextRequest) {
     const supabase = await getSupabase();
 
     if (!supabase) {
-      console.error('[project-documents][POST] Failed to create Supabase client:', {
-        projectId,
-        filename,
-        hasSupabaseUrl,
-        hasSupabaseKey,
-      });
+      logger.error('Failed to create Supabase client', { project_id: projectId, request_id: requestId, event: 'supabase_client_error', filename, hasSupabaseUrl, hasSupabaseKey });
       return NextResponse.json(
         { error: 'Не удалось подключиться к базе данных.' },
         { status: 500 },
@@ -256,17 +202,7 @@ export async function POST(req: NextRequest) {
       .single();
 
     if (error || !data) {
-      console.error('[project-documents][POST] Supabase insert error:', {
-        projectId,
-        filename,
-        error: error ? {
-          message: error.message,
-          code: error.code,
-          details: error.details,
-          hint: error.hint,
-        } : null,
-        hasData: !!data,
-      });
+      logger.error('Supabase insert failed', { project_id: projectId, request_id: requestId, event: 'supabase_insert_error', filename, hasData: !!data, err: error });
       return NextResponse.json(
         { error: 'Не удалось сохранить документ.' },
         { status: 500 },
@@ -284,47 +220,25 @@ export async function POST(req: NextRequest) {
       }
       await projectUpdate;
     } catch (updateError) {
-      console.warn('[project-documents][POST] Failed to update project timestamp:', {
-        projectId,
-        userId: userIdClean,
-        error: updateError instanceof Error ? {
-          message: updateError.message,
-          stack: updateError.stack,
-        } : updateError,
-      });
+      logger.warn('Failed to update project timestamp', { project_id: projectId, request_id: requestId, event: 'project_touch_failed', user_id: userIdClean, err: updateError });
     }
 
     try {
       const mappedDocument = mapProjectDocument(data);
+      logger.info('Document processed', { project_id: projectId, request_id: requestId, event: 'document_processed', filename, file_size: size, strategy: extraction.strategy, truncated: extraction.truncated, duration_ms: Date.now() - startedAt });
       return NextResponse.json(
         { document: mappedDocument },
         { status: 201 },
       );
     } catch (mappingError) {
-      console.error('[project-documents][POST] Document mapping error:', {
-        projectId,
-        filename,
-        error: mappingError instanceof Error ? {
-          message: mappingError.message,
-          stack: mappingError.stack,
-        } : mappingError,
-      });
+      logger.error('Document mapping failed', { project_id: projectId, request_id: requestId, event: 'document_mapping_error', filename, err: mappingError });
       return NextResponse.json(
         { error: 'Ошибка при обработке данных документа.' },
         { status: 500 },
       );
     }
   } catch (error) {
-    console.error('[project-documents][POST] Unexpected error:', {
-      projectId,
-      error: error instanceof Error ? {
-        message: error.message,
-        stack: error.stack,
-        name: error.name,
-      } : error,
-      hasSupabaseUrl,
-      hasSupabaseKey,
-    });
+    logger.error('Unexpected error processing document', { project_id: projectId, request_id: requestId, event: 'unexpected_error', err: error, hasSupabaseUrl, hasSupabaseKey });
     return NextResponse.json(
       {
         error:

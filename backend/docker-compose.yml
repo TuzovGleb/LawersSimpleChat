@@ -1,0 +1,99 @@
+services:
+  # One-shot: make the persistent data dir writable by the opensearch user
+  # (uid 1000). A freshly formatted, bind-mounted host dir is root-owned, and
+  # OpenSearch runs as uid 1000 and would otherwise fail to write.
+  opensearch-init:
+    image: busybox:1.36
+    command: sh -c "mkdir -p /data && chown -R 1000:1000 /data"
+    volumes:
+      - /home/yc-user/opensearch-data:/data
+
+  opensearch:
+    image: opensearchproject/opensearch:2.19.1
+    container_name: lawers-opensearch
+    depends_on:
+      opensearch-init:
+        condition: service_completed_successfully
+    environment:
+      - discovery.type=single-node
+      - DISABLE_SECURITY_PLUGIN=true
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    volumes:
+      # Bind-mount the persistent secondary disk (mounted by COI via the
+      # x-yc-disks block below). NOT a Docker named volume — those did not
+      # survive VM restarts on this COI VM, which is how the index kept
+      # vanishing.
+      - /home/yc-user/opensearch-data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Writes the Unified Agent config to a shared dir. Quoted heredoc (<<'EOF')
+  # means NO shell/compose substitution — the log group id is written literally
+  # (the folder's default Cloud Logging group, where the frontend/backend
+  # Serverless Containers already ship).
+  unified-agent-config:
+    image: busybox:1.36
+    command:
+      - sh
+      - -c
+      - |
+        cat > /config/config.yml <<'EOF'
+        status:
+          port: 16241
+        storages:
+          - name: main
+            plugin: fs
+            config:
+              directory: /data
+              max_partition_size: 100mb
+        routes:
+          - input:
+              plugin: file
+              config:
+                path: /var/lib/docker/containers/*/*-json.log
+            channel:
+              pipe:
+                - storage_ref:
+                    name: main
+              output:
+                plugin: yc_logs
+                config:
+                  iam:
+                    cloud_meta: {}
+                  log_group_id: e23402ls0pgcs27coi91
+                  resource_type: opensearch-vm
+                  resource_id: lawers-opensearch
+        EOF
+    volumes:
+      - /home/yc-user/unified-agent:/config
+
+  # Tails every container's docker json-file logs on this VM (OpenSearch + init)
+  # and ships them to the SAME Cloud Logging group as the Serverless Containers,
+  # so all services land in one place. Auth via the VM service account (cloud_meta);
+  # the deploy SA already has 'editor', which covers logging.writer.
+  # NOTE: validate on the VM after first deploy — `docker logs lawers-unified-agent`
+  # and `curl localhost:16241/status`. A misconfigured agent does not affect
+  # OpenSearch (separate service); it just stops shipping VM logs.
+  unified-agent:
+    image: cr.yandex/yc/unified-agent
+    container_name: lawers-unified-agent
+    restart: always
+    depends_on:
+      unified-agent-config:
+        condition: service_completed_successfully
+    volumes:
+      - /home/yc-user/unified-agent:/etc/yandex/unified_agent:ro
+      - /home/yc-user/unified-agent-data:/data
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+
+# COI formats (once, if empty) and mounts the secondary disk to host_path on
+# every boot. device_name must match the attached disk's device-name.
+x-yc-disks:
+  - device_name: osdata
+    fs_type: ext4
+    host_path: /home/yc-user/opensearch-data

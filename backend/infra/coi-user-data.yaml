@@ -1,0 +1,2 @@
+#cloud-config
+# Minimal user-data for Yandex COI (containers are defined in docker-compose metadata).
