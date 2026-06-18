@@ -14,8 +14,6 @@ from supabase import AsyncClient, acreate_client
 
 logger = logging.getLogger(__name__)
 
-MAX_CONTEXT_DOCUMENTS = 20
-
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -28,7 +26,7 @@ def unique_document_ids(message: dict | None) -> list[str]:
     for doc_id in message["attachedDocumentIds"]:
         if isinstance(doc_id, str) and doc_id.strip():
             seen[doc_id] = None
-    return list(seen)[:MAX_CONTEXT_DOCUMENTS]
+    return list(seen)
 
 
 def map_project_document(row: dict) -> dict:
@@ -217,7 +215,7 @@ class SupabaseRepo:
         for message in messages:
             for doc_id in unique_document_ids(message):
                 ids[doc_id] = None
-        id_list = list(ids)[:MAX_CONTEXT_DOCUMENTS]
+        id_list = list(ids)
 
         if not project_id or not id_list:
             return {}

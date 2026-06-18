@@ -24,7 +24,6 @@ from app.rag_core.prompt import get_system_prompt
 
 logger = logging.getLogger(__name__)
 
-MAX_CONTEXT_DOCUMENTS = 20
 MISSING_TOOL_RESULT = "[Результат инструмента недоступен]"
 
 
@@ -47,7 +46,7 @@ def _format_with_attachments(row: dict, documents_by_id: dict[str, dict]) -> str
         doc_id
         for doc_id in (row.get("attachedDocumentIds") or [])
         if isinstance(doc_id, str) and doc_id.strip()
-    ][:MAX_CONTEXT_DOCUMENTS]
+    ]
 
     prepared = []
     for doc_id in attachment_ids:
