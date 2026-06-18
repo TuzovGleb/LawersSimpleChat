@@ -14,6 +14,7 @@ from app.rag_core.llm import get_chat_registry
 from app.server.chat_stream import stream_chat
 from app.server.schema import ChatRequest
 from app.server.security import verify_backend_secret
+from app.services.s3_client import S3Client
 from app.services.supabase_repo import SupabaseRepo
 from app.utils import RequestContextMiddleware
 
@@ -59,6 +60,20 @@ async def lifespan(app: FastAPI):
     else:
         app.state.repo = None
         logger.warning("Supabase not configured; chat history will not be persisted")
+
+    s3_cfg = config["app"].get("s3") or {}
+    if s3_cfg.get("bucket") and s3_cfg.get("access_key_id") and s3_cfg.get("secret_access_key"):
+        app.state.s3 = S3Client(
+            bucket=s3_cfg["bucket"],
+            access_key_id=s3_cfg["access_key_id"],
+            secret_access_key=s3_cfg["secret_access_key"],
+            endpoint_url=s3_cfg.get("endpoint_url") or "https://storage.yandexcloud.net",
+            region=s3_cfg.get("region") or "ru-central1",
+        )
+        logger.info("S3 document storage enabled", extra={"s3_bucket": s3_cfg["bucket"]})
+    else:
+        app.state.s3 = None
+        logger.warning("S3 not configured; document extraction from object storage disabled")
 
     logger.info("Chat backend ready")
     yield

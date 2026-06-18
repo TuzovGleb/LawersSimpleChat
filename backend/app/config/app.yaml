@@ -16,3 +16,13 @@ app:
     url: ${env.get('OPENSEARCH_URL', 'http://localhost:9200')}
     index_alias: ${env.get('OPENSEARCH_INDEX_ALIAS', 'court_decisions')}
     top_k: ${env.get('OPENSEARCH_TOP_K', '8')}
+
+  # S3 / Yandex Object Storage — read uploaded documents to extract their text.
+  # endpoint/region default to Yandex Object Storage (no separate secret needed),
+  # matching lib/s3-client.ts on the Next.js side.
+  s3:
+    bucket: ${env.get('S3_BUCKET_NAME', '')}
+    access_key_id: ${env.get('S3_ACCESS_KEY_ID', '')}
+    secret_access_key: ${env.get('S3_SECRET_ACCESS_KEY', '')}
+    endpoint_url: ${env.get('S3_ENDPOINT', 'https://storage.yandexcloud.net')}
+    region: ${env.get('S3_REGION', 'ru-central1')}
