@@ -14,6 +14,7 @@ from app.rag_core.llm import get_chat_registry
 from app.server.chat_stream import stream_chat
 from app.server.schema import ChatRequest
 from app.server.security import verify_backend_secret
+from app.services.llm_extractor import LlmDocumentExtractor
 from app.services.s3_client import S3Client
 from app.services.supabase_repo import SupabaseRepo
 from app.utils import RequestContextMiddleware
@@ -46,6 +47,10 @@ async def lifespan(app: FastAPI):
 
     chat_params = config["chat"]["params"]
     registry = get_chat_registry(chat_params)
+
+    # Dedicated extraction model (gemini-3.5-flash) for document OCR/conversion.
+    _, extraction_llm = registry.resolve("document_extraction")
+    app.state.doc_extractor = LlmDocumentExtractor(extraction_llm)
 
     tool_specs = load_tool_specs(config["app"])
     app.state.tool_handlers = handlers_of(tool_specs)
