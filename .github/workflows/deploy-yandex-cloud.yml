@@ -1,8 +1,11 @@
-name: Deploy to Yandex Cloud
+name: Deploy to Yandex Cloud (LEGACY monolith)
 
+# СТАРАЯ монолит-архитектура (чат внутри Next.js, без Python-бэкенда и OpenSearch).
+# Деплоит в тот же контейнер jhelper-bot, что и новый прод-воркфлоу
+# "Deploy to Yandex Cloud (Prod, Python backend)", поэтому авто-триггер на push
+# ОТКЛЮЧЁН — иначе любой push в main перезатирал бы новый прод-фронт монолитом.
+# Оставлен только ручной запуск как аварийный rollback на монолит.
 on:
-  push:
-    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
