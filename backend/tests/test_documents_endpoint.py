@@ -140,3 +140,14 @@ def test_extract_empty_file_400(client):
 def test_extract_validation_422(client):
     r = client.post("/documents/extract", json={"objectKey": "x"})
     assert r.status_code == 422  # pydantic: missing required fields
+
+
+def test_extract_with_chat_id_header(client):
+    # X-Chat-Id is bound by the middleware and tagged on the extraction trace;
+    # the request must still succeed (exercises the chat_id branch).
+    repo = FakeRepo()
+    client.app.state.repo = repo
+    client.app.state.s3 = FakeS3(b"hello with chat")
+    r = client.post("/documents/extract", json=_payload(), headers={"X-Chat-Id": "chat-abc"})
+    assert r.status_code == 201
+    assert r.json()["document"]["text"] == "hello with chat"

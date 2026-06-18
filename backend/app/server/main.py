@@ -21,7 +21,7 @@ from app.services.document_extraction import extract_text_from_document
 from app.services.llm_extractor import LlmDocumentExtractor
 from app.services.s3_client import S3Client
 from app.services.supabase_repo import SupabaseRepo, map_project_document
-from app.utils import RequestContextMiddleware, current_request_id
+from app.utils import RequestContextMiddleware, current_chat_id, current_request_id
 
 logger = logging.getLogger(__name__)
 
@@ -152,15 +152,18 @@ async def extract_document(request: Request, payload: DocumentExtractRequest) ->
         # ChatOpenAI calls nest as children (one tree per document, no flooding).
         # The nested calls auto-attach via langchain<->langsmith contextvar interop,
         # which also propagates into the asyncio page tasks. No-op when tracing off.
+        chat_id = current_chat_id()  # bound from X-Chat-Id by RequestContextMiddleware
         with langsmith_trace(
             name="document_extraction",
             run_type="chain",
+            tags=["document_extraction", chat_id] if chat_id else ["document_extraction"],
             metadata={
                 "project_id": payload.projectId,
                 "object_key": payload.objectKey,
                 "filename": payload.filename,
                 "mime_type": payload.mimeType,
                 "request_id": current_request_id(),
+                "chat_id": chat_id,
             },
         ):
             extraction = await extract_text_from_document(

@@ -94,6 +94,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const projectId = getProjectIdFromRequest(req);
   const requestId = requestIdFrom(req);
+  const chatId = req.headers.get('x-chat-id');
   const startedAt = Date.now();
   if (!projectId) {
     return NextResponse.json({ error: 'projectId is required' }, { status: 400 });
@@ -146,6 +147,8 @@ export async function POST(req: NextRequest) {
         'Content-Type': 'application/json',
         'X-Backend-Secret': process.env.BACKEND_SHARED_SECRET ?? '',
         'X-Request-Id': requestId,
+        // Forward the stable chat id so the backend tags the extraction trace.
+        ...(chatId ? { 'X-Chat-Id': chatId } : {}),
       },
       body: JSON.stringify(forwardBody),
       // Per-page OCR of large scans can run minutes; allow well past the backend

@@ -852,6 +852,9 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
       setIsUploadingDocument(true);
 
       const files = Array.from(fileList);
+      // Stable chat id (client-generated, exists before the chat row) so the
+      // backend can tag the extraction trace with chat_id for LangSmith.
+      const chatId = activeSession?.backendSessionId ?? activeSessionId;
       for (const file of files) {
         try {
           // Step 1: Get presigned URL
@@ -903,7 +906,10 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
             `/api/projects/${selectedProjectId}/documents`,
             {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              headers: {
+                "Content-Type": "application/json",
+                ...(chatId ? { "X-Chat-Id": chatId } : {}),
+              },
               body: JSON.stringify({
                 objectKey,
                 filename: file.name,
@@ -980,7 +986,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
 
       setIsUploadingDocument(false);
     },
-    [selectedProjectId, setProjects, toast, user?.id],
+    [selectedProjectId, setProjects, toast, user?.id, activeSession?.backendSessionId, activeSessionId],
   );
 
   const handleRemovePendingDocument = useCallback((documentId: string) => {
