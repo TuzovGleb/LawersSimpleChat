@@ -23,3 +23,17 @@ class ChatRequest(BaseModel):
     utm: dict | None = None
 
     model_config = {"extra": "ignore"}
+
+
+class DocumentExtractRequest(BaseModel):
+    """POST /documents/extract — the file is already in S3 (objectKey)."""
+
+    objectKey: str = Field(min_length=1)
+    filename: str = Field(min_length=1)
+    mimeType: str = Field(min_length=1)
+    size: int = Field(gt=0)
+    projectId: str = Field(min_length=1)
+    userId: str | None = None
+    documentId: str | None = None
+
+    model_config = {"extra": "ignore"}

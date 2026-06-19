@@ -852,6 +852,9 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
       setIsUploadingDocument(true);
 
       const files = Array.from(fileList);
+      // Stable chat id (client-generated, exists before the chat row) so the
+      // backend can tag the extraction trace with chat_id for LangSmith.
+      const chatId = activeSession?.backendSessionId ?? activeSessionId;
       for (const file of files) {
         try {
           // Step 1: Get presigned URL
@@ -890,10 +893,15 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
           }
 
           // Step 3: Notify backend to process the uploaded file.
-          // Распознавание скана (постранично через gemini) занимает заметно больше
-          // дефолтных 30с, поэтому поднимаем таймаут до 3 минут. Ретраи сводим к
-          // минимуму: повтор перезапускает тяжёлую обработку (скачивание из S3 +
-          // OCR) целиком — лучше показать ошибку, чем дублировать работу.
+          // Распознавание многостраничных сканов (постранично через gemini) легко
+          // выходит за прежние 3 минуты, из-за чего загрузка постоянно падала по
+          // таймауту. Поднимаем клиентский таймаут до предела серверного контейнера
+          // (execution-timeout 1800s = 30 минут), чтобы сервер успевал вернуть
+          // нормальный ответ/ошибку, а не браузер абортил запрос раньше времени.
+          // TODO: уйти от таймаута на фронте вовсе — перевести извлечение в
+          // асинхронную модель (job + polling/SSE прогресса).
+          // Ретраи сводим к минимуму: повтор перезапускает тяжёлую обработку
+          // (скачивание из S3 + OCR) целиком — лучше показать ошибку, чем дублировать.
           const response = await fetchWithRetry(
             `/api/projects/${selectedProjectId}/documents`,
             {
@@ -905,11 +913,16 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
                 mimeType: file.type || "application/octet-stream",
                 size: file.size,
                 userId: user.id,
+                // Stable chat id in the BODY (not a custom header): a cross-origin
+                // proxy (NEXT_PUBLIC_PROXY_URL) would drop a custom header at the
+                // CORS preflight. The Next route forwards it to the backend as
+                // X-Chat-Id, exactly like the chat path does from the URL.
+                chatId,
               }),
             },
             1, // maxRetries
             1000, // retryDelay
-            180000, // timeoutMs — 3 минуты на распознавание
+            1800000, // timeoutMs — 30 минут (предел контейнера execution-timeout 1800s)
           );
 
           if (!response.ok) {
@@ -975,7 +988,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
 
       setIsUploadingDocument(false);
     },
-    [selectedProjectId, setProjects, toast, user?.id],
+    [selectedProjectId, setProjects, toast, user?.id, activeSession?.backendSessionId, activeSessionId],
   );
 
   const handleRemovePendingDocument = useCallback((documentId: string) => {
