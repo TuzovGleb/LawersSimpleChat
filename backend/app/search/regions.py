@@ -97,6 +97,10 @@ REGION_CODE_TO_NAME: dict[int, str] = {
     89: "Ямало-Ненецкий АО",
     91: "Крым",
     92: "Севастополь",
+    # Федеральные суды вне субъектов РФ. 99 не используется СУДРФ как код
+    # субъекта, остаётся 2-значным (как требует док тула search_court_practice)
+    # и читается как «федеральный / высший суд».
+    99: "Верховный Суд РФ",
 }
 
 REGION_NAME_TO_CODE: dict[str, int] = {name: code for code, name in REGION_CODE_TO_NAME.items()}

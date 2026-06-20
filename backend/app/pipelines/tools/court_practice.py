@@ -16,7 +16,7 @@ from langchain_core.tools import tool
 from app.pipelines.tools.base import InlineResultHandler, ToolResultHandler, ToolSpec
 from app.search import CourtPracticeSearcher, OpenSearchConfig, build_opensearch_client
 from app.search.regions import REGION_REFERENCE
-from app.search.search import format_decision_document, format_search_results
+from app.search.search import format_decision_document, format_search_results, format_vs_crosscheck
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +90,12 @@ def court_practice_tool_specs(searcher: CourtPracticeSearcher) -> list[ToolSpec]
             result_type=result_type,
             regions=regions,
         )
-        return format_search_results(results)
+        # Always append a Верховный Суд РФ cross-check (independent of the
+        # lawyer's region filter) so the model can spot overturning/contradictory
+        # higher-court positions before relying on the main results.
+        vs_results = await searcher.vs_crosscheck(cleaned)
+        primary_ids = {(r.source.get("decision_id") or r.doc_id) for r in results}
+        return format_search_results(results) + format_vs_crosscheck(vs_results, primary_ids)
 
     @tool
     async def get_court_decision(decision_id: str) -> str:

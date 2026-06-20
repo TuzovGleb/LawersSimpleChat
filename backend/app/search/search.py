@@ -21,6 +21,12 @@ SEARCH_FIELDS = [
 MAX_ACT_TEXT_CHARS = 30_000
 SNIPPET_CHARS = 400
 
+# Supreme Court (Верховный Суд РФ) cross-check: every court-practice search also
+# pulls a few ВС acts on the same topic so the model can spot overturning /
+# contradictory higher-court positions. region_code 99 == ВС РФ.
+VS_REGION_CODE = 99
+VS_CROSSCHECK_SIZE = 3
+
 
 class CourtPracticeSearcher:
     def __init__(self, client: OpenSearch, config: OpenSearchConfig):
@@ -188,6 +194,46 @@ class CourtPracticeSearcher:
             regions=regions,
         )
 
+    def vs_crosscheck_sync(self, queries: list[str]) -> list[RankedDocument]:
+        """Always-on Верховный Суд РФ (region 99) cross-check.
+
+        Runs the same topical queries against ВС practice only. The caller's
+        region/result_type/date filters are intentionally NOT applied: a ВС
+        position is the highest authority regardless of which region the lawyer
+        searched, and ВС result_type values are outside the tool's vocabulary.
+        No RRF — just the few most relevant ВС acts, deduped by decision_id.
+        """
+        cleaned = [q.strip() for q in queries if isinstance(q, str) and q.strip()]
+        if not cleaned:
+            return []
+
+        header = {"index": self._config.index_alias}
+        msearch_body: list[dict] = []
+        for query in cleaned:
+            msearch_body.append(header)
+            msearch_body.append(
+                self._build_query_body(query, regions=[VS_REGION_CODE], size=VS_CROSSCHECK_SIZE)
+            )
+
+        response = self._client.msearch(body=msearch_body)
+        seen: set[str] = set()
+        collected: list[RankedDocument] = []
+        for resp in response.get("responses") or []:
+            if resp.get("error"):
+                logger.warning("ВС crosscheck sub-query failed", extra={"os_error": resp["error"]})
+                continue
+            for doc in self._hits_to_ranked(resp.get("hits", {}).get("hits", [])):
+                if doc.doc_id in seen:
+                    continue
+                seen.add(doc.doc_id)
+                collected.append(doc)
+                if len(collected) >= VS_CROSSCHECK_SIZE:
+                    return collected
+        return collected
+
+    async def vs_crosscheck(self, queries: list[str]) -> list[RankedDocument]:
+        return await asyncio.to_thread(self.vs_crosscheck_sync, queries)
+
     def get_decision_sync(self, decision_id: str) -> dict | None:
         try:
             response = self._client.get(index=self._config.index_alias, id=decision_id)
@@ -222,6 +268,43 @@ def format_search_results(results: list[RankedDocument]) -> str:
             )
         )
     return "\n\n".join(blocks)
+
+
+def format_vs_crosscheck(results: list[RankedDocument], primary_ids: set[str] | None = None) -> str:
+    """Render the always-appended ВС РФ cross-check block.
+
+    primary_ids lets us avoid repeating ВС decisions already shown in the main
+    results (e.g. when the lawyer explicitly searched region 99).
+    """
+    header = "\n\n=== ПЕРЕКРЁСТНАЯ ПРОВЕРКА: ВЕРХОВНЫЙ СУД РФ (высшая инстанция) ==="
+    if not results:
+        return (
+            header
+            + "\nРелевантная практика ВС РФ по этим запросам не найдена (это не гарантия её "
+            "отсутствия — Постановления Пленума и Обзоры практики ВС стоит проверить отдельно)."
+        )
+
+    primary_ids = primary_ids or set()
+    fresh = [doc for doc in results if (doc.source.get("decision_id") or doc.doc_id) not in primary_ids]
+    if not fresh:
+        return header + "\nПрактика ВС РФ по теме уже присутствует в основной выдаче выше."
+
+    blocks: list[str] = []
+    for index, doc in enumerate(fresh, start=1):
+        source = doc.source
+        snippet = doc.highlights[0] if doc.highlights else (source.get("act_text") or "")[:SNIPPET_CHARS]
+        blocks.append(
+            "\n".join(
+                [
+                    f"{index}. id: {source.get('decision_id', doc.doc_id)}",
+                    f"   Дело: {source.get('case_number', '—')}",
+                    f"   Дата решения: {source.get('decision_date', '—')}",
+                    f"   Исход: {source.get('result_type', '—')}",
+                    f"   Фрагмент: {snippet}",
+                ]
+            )
+        )
+    return header + "\n" + "\n\n".join(blocks)
 
 
 def format_decision_document(doc: dict) -> str:

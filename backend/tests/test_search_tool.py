@@ -6,7 +6,12 @@ from app.pipelines.tools import court_practice_tool_specs
 from app.rag_core.prompt import get_system_prompt
 from app.search.client import OpenSearchConfig
 from app.search.rrf import RankedDocument
-from app.search.search import CourtPracticeSearcher, format_decision_document, format_search_results
+from app.search.search import (
+    CourtPracticeSearcher,
+    format_decision_document,
+    format_search_results,
+    format_vs_crosscheck,
+)
 
 
 @pytest.fixture
@@ -53,6 +58,58 @@ def test_system_prompt_keeps_region_logic_without_the_table():
     prompt = get_system_prompt()
     assert "Как определять регион" in prompt  # selection logic stays in the prompt
     assert "Справка по номерам регионов" not in prompt  # number table moved to the tool
+
+
+def test_vs_crosscheck_uses_region_99_without_result_type(mock_searcher):
+    mock_searcher._client.msearch.return_value = {
+        "responses": [
+            {"hits": {"hits": [
+                {"_id": "vs-1", "_source": {"decision_id": "vs-1", "region_code": 99,
+                                            "case_number": "5-КГ26-1", "act_text": "позиция ВС"}}
+            ]}}
+        ]
+    }
+    out = mock_searcher.vs_crosscheck_sync(["снижение неустойки"])
+    assert [d.doc_id for d in out] == ["vs-1"]
+    # The ВС arm always pins region 99 and never sends a result_type filter.
+    body = mock_searcher._client.msearch.call_args.kwargs["body"]
+    filters = body[1]["query"]["bool"]["filter"]
+    assert {"terms": {"region_code": [99]}} in filters
+    assert all("result_type" not in (f.get("term") or {}) for f in filters)
+
+
+def test_format_vs_crosscheck_empty_and_dedup():
+    assert "не найдена" in format_vs_crosscheck([])
+    doc = RankedDocument(
+        doc_id="vs-9",
+        source={"decision_id": "vs-9", "case_number": "5-КГ26-9", "result_type": "overturned"},
+        highlights=["фрагмент ВС"],
+    )
+    fresh = format_vs_crosscheck([doc])
+    assert "ВЕРХОВНЫЙ СУД РФ" in fresh and "vs-9" in fresh
+    deduped = format_vs_crosscheck([doc], primary_ids={"vs-9"})
+    assert "vs-9" not in deduped and "основной выдаче" in deduped
+
+
+@pytest.mark.asyncio
+async def test_search_court_practice_appends_vs_crosscheck(mock_searcher, monkeypatch):
+    async def fake_search(*args, **kwargs):
+        return [RankedDocument(doc_id="reg-1", source={"decision_id": "reg-1", "case_number": "2-1/2026",
+                                                       "court_name": "Райсуд"}, highlights=["рег фрагмент"])]
+
+    async def fake_vs(queries):
+        return [RankedDocument(doc_id="vs-1", source={"decision_id": "vs-1", "case_number": "5-КГ26-1",
+                                                      "result_type": "overturned"}, highlights=["позиция ВС"])]
+
+    monkeypatch.setattr(mock_searcher, "search", fake_search)
+    monkeypatch.setattr(mock_searcher, "vs_crosscheck", fake_vs)
+    tool = court_practice_tool_specs(mock_searcher)[0].tool
+    out = await tool.ainvoke(
+        {"queries": ["неустойка"], "date_from": None, "date_to": None, "result_type": None, "regions": None}
+    )
+    assert "reg-1" in out  # primary results preserved
+    assert "ПЕРЕКРЁСТНАЯ ПРОВЕРКА: ВЕРХОВНЫЙ СУД РФ" in out  # ВС block always appended
+    assert "vs-1" in out
 
 
 def test_format_search_results_empty():
