@@ -14,7 +14,7 @@ on:
       branch:
         description: 'Ветка для деплоя'
         required: true
-        default: 'feature/python-langgraph-backend'
+        default: 'staging'
         type: string
 
 jobs:

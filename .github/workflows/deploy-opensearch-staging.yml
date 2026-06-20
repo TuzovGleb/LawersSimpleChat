@@ -11,7 +11,7 @@ on:
       branch:
         description: 'Branch (source of backend/docker-compose.yml)'
         required: true
-        default: 'feature/python-langgraph-backend-search'
+        default: 'staging'
         type: string
       update_container:
         description: 'Update the container on an existing VM (normally NOT needed; preserves the data volume)'
