@@ -49,7 +49,7 @@ export default function HomePage() {
       <header className={`app-header ${isScrolled ? 'scrolled' : ''}`}>
         <div className="container-x app-header-inner">
           <a href="#top" className="logo">
-            Джихелпер<span className="dot">.</span>
+            Джейхелпер<span className="dot">.</span>
           </a>
           <nav className="flex items-center gap-3">
             <a href="#features" className="hidden md:inline text-sm font-medium" style={{ color: 'var(--text-primary)', opacity: .82 }}>Возможности</a>
@@ -88,7 +88,7 @@ export default function HomePage() {
         <div className="container-x">
           <div className="sec-eyebrow">Возможности</div>
           <h2 style={{ fontSize: 'clamp(28px, 3.5vw, 40px)', maxWidth: 720, marginBottom: 48 }}>
-            Что вы получаете в Джихелпере
+            Что вы получаете в Джейхелпере
           </h2>
           <div className="grid gap-5" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))' }}>
             {features.map((feature) => (
@@ -183,7 +183,7 @@ export default function HomePage() {
         <div className="container-x">
           <div className="flex items-center justify-between gap-8 flex-wrap">
             <a href="#top" className="logo">
-              Джихелпер<span className="dot">.</span>
+              Джейхелпер<span className="dot">.</span>
             </a>
             <div className="flex gap-7 flex-wrap">
               <button onClick={handleLogin} style={{ background: 'transparent', border: 0, color: 'var(--text-secondary)', fontSize: 14, padding: 0, cursor: 'pointer' }}>Войти</button>
@@ -192,7 +192,7 @@ export default function HomePage() {
             </div>
           </div>
           <div style={{ marginTop: 24, paddingTop: 20, borderTop: '1px solid var(--border-strong)', display: 'flex', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', color: 'var(--text-secondary)', fontSize: 13 }}>
-            <span>© {new Date().getFullYear()} Джихелпер. Все права защищены.</span>
+            <span>© {new Date().getFullYear()} Джейхелпер. Все права защищены.</span>
             <span>Работаем в России. Оплата картой РФ.</span>
           </div>
         </div>

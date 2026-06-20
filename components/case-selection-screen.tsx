@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { CreateCaseDialog } from "@/components/create-case-dialog";
@@ -107,12 +108,13 @@ export function CaseSelectionScreen({
     <div className="flex min-h-screen flex-col" style={{ background: "var(--bg)" }}>
       <header className="app-header">
         <div className="container-x app-header-inner">
-          <h1
+          <Link
+            href="/workspace"
             className="logo"
             style={{ fontFamily: "var(--font-serif-family)", fontWeight: 600 }}
           >
-            Джихелпер<span className="dot">.</span>
-          </h1>
+            Джейхелпер<span className="dot">.</span>
+          </Link>
           <div className="flex items-center gap-2">
             <Button
               variant="ghost"

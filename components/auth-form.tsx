@@ -203,7 +203,7 @@ export function AuthForm() {
     <div className="auth-shell">
       <aside className="auth-aside">
         <Link href="/" className="logo" style={{ color: "#fff" }}>
-          Джихелпер<span className="dot" style={{ color: "var(--brand-accent-bg)" }}>.</span>
+          Джейхелпер<span className="dot" style={{ color: "var(--brand-accent-bg)" }}>.</span>
         </Link>
         <div className="aside-body">
           <h2
@@ -241,7 +241,7 @@ export function AuthForm() {
         <div className="auth-form-wrap">
           {isSignupEnabled ? (
             <>
-              <h1>{defaultTab === "registration" ? "Создайте аккаунт" : "Войти в Джихелпер"}</h1>
+              <h1>{defaultTab === "registration" ? "Создайте аккаунт" : "Войти в Джейхелпер"}</h1>
               <p className="lede">Введите email и пароль</p>
 
               <Tabs defaultValue={defaultTab} className="w-full">
@@ -323,7 +323,7 @@ export function AuthForm() {
             </>
           ) : (
             <>
-              <h1>Войти в Джихелпер</h1>
+              <h1>Войти в Джейхелпер</h1>
               <p className="lede">Введите email и пароль</p>
 
               <LoginForm
