@@ -10,6 +10,7 @@ import { ThinkingIndicator } from "@/components/thinking-indicator";
 import { cn } from "@/lib/utils";
 import type { ChatMessage, Project, SessionDocument, SelectedModel } from "@/lib/types";
 import {
+  AlertCircle,
   ArrowLeft,
   Download,
   FileText,
@@ -19,6 +20,7 @@ import {
   MessageSquare,
   Paperclip,
   Plus,
+  RotateCcw,
   Send,
   X,
 } from "lucide-react";
@@ -58,6 +60,7 @@ interface CaseWorkspaceProps {
   onAttachDocument: (files: FileList | null) => void;
   onRemovePendingDocument: (documentId: string) => void;
   onExportMessage?: (messageIndex: number) => void;
+  onRetryMessage?: (messageIndex: number) => void;
   onSignOut: () => void;
 }
 
@@ -82,6 +85,7 @@ export function CaseWorkspace({
   onAttachDocument,
   onRemovePendingDocument,
   onExportMessage,
+  onRetryMessage,
   onSignOut,
 }: CaseWorkspaceProps) {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -533,7 +537,12 @@ export function CaseWorkspace({
                       <div className="max-w-full md:max-w-[80%]">
                         <div
                           className="message-content rounded-2xl px-4 py-3"
-                          style={{ background: "#F0F0EE" }}
+                          style={{
+                            background: "#F0F0EE",
+                            ...(message.status === "failed"
+                              ? { border: "1px solid #DC2626" }
+                              : {}),
+                          }}
                         >
                           {message.content.trim() ? (
                             <p
@@ -574,6 +583,26 @@ export function CaseWorkspace({
                               </div>
                             )}
                         </div>
+                        {message.status === "failed" && (
+                          <div className="mt-1 flex items-center justify-end gap-2">
+                            <span
+                              className="inline-flex items-center gap-1 text-xs"
+                              style={{ color: "#DC2626" }}
+                            >
+                              <AlertCircle className="h-3 w-3 shrink-0" />
+                              {message.errorText || "Не удалось отправить"}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => onRetryMessage?.(index)}
+                              className="inline-flex items-center gap-1 text-xs font-medium hover:underline"
+                              style={{ color: "#DC2626" }}
+                            >
+                              <RotateCcw className="h-3 w-3 shrink-0" />
+                              Повторить
+                            </button>
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div className="group relative max-w-full md:max-w-[85%]">

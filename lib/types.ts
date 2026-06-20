@@ -8,6 +8,12 @@ export interface ChatMessage {
     thinkingTimeSeconds?: number;
     wasReasoning?: boolean;
   };
+  // Set on a user message whose turn failed to generate. Such a message is a
+  // local-only, retryable artifact: it is never persisted server-side and is
+  // excluded from request payloads and localStorage. Cleared on retry, dropped
+  // when the user sends a new message instead of retrying.
+  status?: 'failed';
+  errorText?: string;
 }
 
 export interface ChatMessageDocument {

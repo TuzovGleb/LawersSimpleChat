@@ -359,7 +359,13 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
   useEffect(() => {
     if (!hasInitialized || typeof window === "undefined") return;
     try {
-      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(sessions));
+      // Strip failed (uncommitted) messages: they are ephemeral retry artifacts
+      // that the backend never persisted, so they must not survive a refresh.
+      const sanitized = sessions.map((session) => ({
+        ...session,
+        messages: session.messages.filter((message) => message.status !== "failed"),
+      }));
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(sanitized));
       console.log('[Cache] Saved', sessions.length, 'sessions to localStorage');
     } catch (error) {
       console.error("Не удалось сохранить чаты в localStorage:", error);
@@ -1032,7 +1038,12 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
     [activeSession, activeProject, exportMessage, toast]
   );
 
-  const handleSendMessage = useCallback(async () => {
+  const handleSendMessage = useCallback(async (override?: {
+    content: string;
+    attachedDocumentIds: string[];
+    attachedDocuments: ChatMessage["attachedDocuments"];
+    baseMessages: ChatMessage[];
+  }) => {
     if (!activeSession || isLoading || isLoadingMessages) return;
     if (!selectedProjectId) {
       toast({
@@ -1050,18 +1061,28 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
       });
       return;
     }
-    const trimmedMessage = input.trim();
-    if (!trimmedMessage && pendingMessageDocuments.length === 0) return;
+    const trimmedMessage = override ? override.content : input.trim();
+    const attachedDocuments = override
+      ? override.attachedDocuments ?? []
+      : pendingMessageDocuments.map(toMessageDocument);
+    const attachedDocumentIds = override
+      ? override.attachedDocumentIds
+      : attachedDocuments.map((document) => document.id);
+    if (!override && !trimmedMessage && attachedDocumentIds.length === 0) return;
 
     const sessionLocalId = activeSession.id;
     const chatId = activeSession.backendSessionId ?? activeSession.id;
     // После отправки локальная история становится актуальной — лениво перезагружать её не нужно
     loadedMessageSessionsRef.current.add(sessionLocalId);
     loadedMessageSessionsRef.current.add(chatId);
-    const hasUserMessages = activeSession.messages.some((message) => message.role === "user");
-    const isFirstUserMessage = !hasUserMessages;
-    const attachedDocuments = pendingMessageDocuments.map(toMessageDocument);
-    const attachedDocumentIds = attachedDocuments.map((document) => document.id);
+
+    // Committed history only: a previously failed (uncommitted) turn is dropped
+    // when the user sends/retries (variant A). For a retry we rebuild from the
+    // history that preceded the failed message (override.baseMessages).
+    const committed = (override ? override.baseMessages : activeSession.messages).filter(
+      (message) => message.status !== "failed",
+    );
+    const isFirstUserMessage = !committed.some((message) => message.role === "user");
     const userMessage: ChatMessage = {
       role: "user",
       content: trimmedMessage,
@@ -1069,10 +1090,12 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         ? { attachedDocumentIds, attachedDocuments }
         : {}),
     };
-    const messagesForRequest = [...activeSession.messages, userMessage];
+    const messagesForRequest = [...committed, userMessage];
 
-    setInput("");
-    setPendingMessageDocuments([]);
+    if (!override) {
+      setInput("");
+      setPendingMessageDocuments([]);
+    }
     setIsLoading(true);
     
     // Reasoning модель включена на постоянку - всегда показываем thinking indicator
@@ -1284,19 +1307,19 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         setPendingRequest(null);
       }
       
+      // Mark the in-flight user message (the last one) as failed instead of
+      // appending a bot error reply. It stays retryable and is dropped from
+      // history/localStorage, so the on-screen history never diverges from what
+      // the backend persisted — a failed turn is persisted nowhere.
       setSessions((prev) =>
         prev.map((session) => {
           if (session.id !== sessionLocalId) return session;
-          return {
-            ...session,
-            messages: [
-              ...session.messages,
-              {
-                role: "assistant",
-                content: "Извините, произошла ошибка при обработке запроса. Попробуйте ещё раз.",
-              },
-            ],
-          };
+          const messages = [...session.messages];
+          const lastIndex = messages.length - 1;
+          if (lastIndex >= 0 && messages[lastIndex].role === "user") {
+            messages[lastIndex] = { ...messages[lastIndex], status: "failed" };
+          }
+          return { ...session, messages };
         }),
       );
     } finally {
@@ -1304,6 +1327,24 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
       setIsThinking(false);
     }
   }, [activeSession, input, isLoading, isLoadingMessages, isPageVisible, pendingMessageDocuments, selectedProjectId, selectedModel, toast, user?.id, utmQuery]);
+
+  // Retry a failed user turn: re-send its content/attachments with the history
+  // that preceded it. The failed message is always the last one, but we slice
+  // by index defensively.
+  const handleRetryMessage = useCallback(
+    (messageIndex: number) => {
+      if (!activeSession) return;
+      const target = activeSession.messages[messageIndex];
+      if (!target || target.role !== "user") return;
+      void handleSendMessage({
+        content: target.content,
+        attachedDocumentIds: target.attachedDocumentIds ?? [],
+        attachedDocuments: target.attachedDocuments ?? [],
+        baseMessages: activeSession.messages.slice(0, messageIndex),
+      });
+    },
+    [activeSession, handleSendMessage],
+  );
 
   // Show loading while checking auth or resolving a /chat/[chatId] deep link
   if (authLoading || (user && isResolvingInitialChat)) {
@@ -1381,6 +1422,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         onAttachDocument={processDocumentFiles}
         onRemovePendingDocument={handleRemovePendingDocument}
         onExportMessage={handleExportMessage}
+        onRetryMessage={handleRetryMessage}
         onSignOut={signOut}
       />
       <ToasterClient />
