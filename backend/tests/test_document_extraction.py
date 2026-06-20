@@ -1,32 +1,27 @@
-"""Tests for the document extraction port (routing parity + native parsers)."""
+"""Tests for the document extraction dispatcher (routing + native parsers).
+
+PDFs/images route straight to the recognizer (no native PDF parsing); office
+formats parse natively and fall back to the recognizer when empty.
+"""
 import io
 import shutil
 
 import pytest
 
+from app.rag_core.recognizers.base import RecognitionResult
 from app.services import document_extraction as de
 
 
-# --- fake LLM extractor that records which path the dispatcher took ---
+# --- fake recognizer that records that it was invoked ---
 
-class FakeLlm:
-    def __init__(self, file_attachment="LLM-FILE", vision="VISION", per_page="PER-PAGE"):
-        self._file_attachment = file_attachment
-        self._vision = vision
-        self._per_page = per_page
-        self.calls: list[str] = []
+class FakeRecognizer:
+    def __init__(self, text="RECOGNIZED", strategy="sotaocr"):
+        self._result = RecognitionResult(text=text, strategy=strategy)
+        self.calls = 0
 
-    async def vision(self, data, mime_type, filename):
-        self.calls.append("vision")
-        return self._vision
-
-    async def file_attachment(self, data, filename):
-        self.calls.append("file_attachment")
-        return self._file_attachment
-
-    async def pdf_per_page(self, data, filename):
-        self.calls.append("pdf_per_page")
-        return self._per_page
+    async def recognize(self, data, mime_type, filename):
+        self.calls += 1
+        return self._result
 
 
 # --- detection helpers ---
@@ -59,14 +54,11 @@ def test_normalize_result_strips_nul_and_trims():
     assert r.strategy == "text"
 
 
-# --- routing parity (native parsers monkeypatched for determinism) ---
+# --- routing (native parsers monkeypatched for determinism) ---
 
 @pytest.fixture
 def patch_natives(monkeypatch):
-    state = {"pdf": "", "docx": "", "doc": ""}
-
-    async def fake_pdf(data):
-        return state["pdf"]
+    state = {"docx": "", "doc": ""}
 
     async def fake_docx(data):
         return state["docx"]
@@ -74,109 +66,63 @@ def patch_natives(monkeypatch):
     async def fake_doc(data):
         return state["doc"]
 
-    monkeypatch.setattr(de, "extract_pdf", fake_pdf)
     monkeypatch.setattr(de, "extract_docx", fake_docx)
     monkeypatch.setattr(de, "extract_doc", fake_doc)
     return state
 
 
-async def test_route_plain_text_no_llm():
-    llm = FakeLlm()
-    r = await de.extract_text_from_document(b"hello world", "text/plain", "a.txt", llm)
+async def test_route_plain_text_no_recognizer():
+    rec = FakeRecognizer()
+    r = await de.extract_text_from_document(b"hello world", "text/plain", "a.txt", rec)
     assert r.strategy == "text" and r.text == "hello world"
-    assert llm.calls == []
+    assert rec.calls == 0
 
 
 async def test_route_docx_native_then_fallback(patch_natives):
-    llm = FakeLlm()
+    rec = FakeRecognizer(strategy="llm-file", text="LLM-FILE")
     patch_natives["docx"] = "real docx body"
-    r = await de.extract_text_from_document(b"x", "x", "a.docx", llm)
+    r = await de.extract_text_from_document(b"x", "x", "a.docx", rec)
     assert r.strategy == "docx" and r.text == "real docx body"
-    assert llm.calls == []
+    assert rec.calls == 0
 
-    patch_natives["docx"] = ""  # empty -> LLM file fallback
-    r = await de.extract_text_from_document(b"x", "x", "a.docx", llm)
+    patch_natives["docx"] = ""  # empty -> recognizer fallback
+    r = await de.extract_text_from_document(b"x", "x", "a.docx", rec)
     assert r.strategy == "llm-file" and r.text == "LLM-FILE"
-    assert llm.calls == ["file_attachment"]
+    assert rec.calls == 1
 
 
 async def test_route_doc_native_then_fallback(patch_natives):
-    llm = FakeLlm()
+    rec = FakeRecognizer(strategy="llm-file")
     patch_natives["doc"] = "legacy doc body"
-    r = await de.extract_text_from_document(b"x", "application/msword", "a.doc", llm)
+    r = await de.extract_text_from_document(b"x", "application/msword", "a.doc", rec)
     assert r.strategy == "doc"
-    assert llm.calls == []
+    assert rec.calls == 0
 
     patch_natives["doc"] = ""
-    r = await de.extract_text_from_document(b"x", "application/msword", "a.doc", llm)
+    r = await de.extract_text_from_document(b"x", "application/msword", "a.doc", rec)
     assert r.strategy == "llm-file"
+    assert rec.calls == 1
 
 
-async def test_route_pdf_threshold(patch_natives):
-    # >= 80 chars of native text -> "pdf"
-    llm = FakeLlm()
-    patch_natives["pdf"] = "A" * de.MIN_TEXT_LENGTH_FOR_SUCCESS
-    r = await de.extract_text_from_document(b"x", "application/pdf", "a.pdf", llm)
-    assert r.strategy == "pdf"
-    assert llm.calls == []
-
-    # < 80 chars -> per-page OCR
-    llm = FakeLlm()
-    patch_natives["pdf"] = "A" * (de.MIN_TEXT_LENGTH_FOR_SUCCESS - 1)
-    r = await de.extract_text_from_document(b"x", "application/pdf", "a.pdf", llm)
-    assert r.strategy == "pdf-pages" and r.text == "PER-PAGE"
-    assert llm.calls == ["pdf_per_page"]
-
-    # < 80 chars and per-page returns None -> single file-attachment
-    llm = FakeLlm(per_page=None)
-    patch_natives["pdf"] = ""
-    r = await de.extract_text_from_document(b"x", "application/pdf", "a.pdf", llm)
-    assert r.strategy == "llm-file"
-    assert llm.calls == ["pdf_per_page", "file_attachment"]
+async def test_route_pdf_always_recognizer(patch_natives):
+    # No native PDF parsing: even a "real" PDF goes through the recognizer.
+    rec = FakeRecognizer(strategy="sotaocr", text="OCR TEXT")
+    r = await de.extract_text_from_document(b"%PDF-1.4 ...", "application/pdf", "a.pdf", rec)
+    assert r.strategy == "sotaocr" and r.text == "OCR TEXT"
+    assert rec.calls == 1
 
 
 async def test_route_image_and_unknown(patch_natives):
-    llm = FakeLlm()
-    r = await de.extract_text_from_document(b"x", "image/png", "a.png", llm)
-    assert r.strategy == "vision" and llm.calls == ["vision"]
+    rec = FakeRecognizer(strategy="sotaocr")
+    r = await de.extract_text_from_document(b"x", "image/png", "a.png", rec)
+    assert r.strategy == "sotaocr" and rec.calls == 1
 
-    llm = FakeLlm()
-    r = await de.extract_text_from_document(b"x", "application/zip", "a.zip", llm)
-    assert r.strategy == "llm-file" and llm.calls == ["file_attachment"]
+    rec = FakeRecognizer(strategy="llm-file")
+    r = await de.extract_text_from_document(b"x", "application/zip", "a.zip", rec)
+    assert r.strategy == "llm-file" and rec.calls == 1
 
 
 # --- native parsers on real files ---
-
-def _build_pdf(text: str) -> bytes:
-    objs = [
-        b"<< /Type /Catalog /Pages 2 0 R >>",
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-        b"/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
-    ]
-    stream = b"BT /F1 18 Tf 72 700 Td (" + text.encode("latin-1") + b") Tj ET"
-    objs.append(b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream")
-    objs.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
-    out = bytearray(b"%PDF-1.4\n")
-    offsets = []
-    for i, body in enumerate(objs, start=1):
-        offsets.append(len(out))
-        out += str(i).encode() + b" 0 obj\n" + body + b"\nendobj\n"
-    xref = len(out)
-    n = len(objs) + 1
-    out += b"xref\n0 " + str(n).encode() + b"\n0000000000 65535 f \n"
-    for off in offsets:
-        out += ("%010d 00000 n \n" % off).encode()
-    out += (b"trailer\n<< /Size " + str(n).encode() + b" /Root 1 0 R >>\nstartxref\n"
-            + str(xref).encode() + b"\n%%EOF\n")
-    return bytes(out)
-
-
-def test_extract_pdf_sync_real():
-    text = "DOCEXTRACT the quick brown fox jumps over the lazy dog again and again"
-    extracted = de._extract_pdf_sync(_build_pdf(text))
-    assert "DOCEXTRACT" in extracted
-
 
 def test_extract_docx_sync_real():
     from docx import Document
@@ -189,10 +135,6 @@ def test_extract_docx_sync_real():
     extracted = de._extract_docx_sync(buf.getvalue())
     assert "DOCXMARKER" in extracted
     assert "Second paragraph" in extracted
-
-
-def test_extract_pdf_sync_garbage_returns_empty():
-    assert de._extract_pdf_sync(b"not a pdf at all") == ""
 
 
 @pytest.mark.skipif(shutil.which("antiword") is None, reason="antiword not installed")

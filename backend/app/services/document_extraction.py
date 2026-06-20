@@ -1,12 +1,12 @@
-"""Document text extraction — faithful Python port of lib/document-processing.ts.
+"""Document text extraction dispatcher.
 
-Routing, thresholds and fallback edges mirror the Next.js implementation 1:1 so
-extracted text stays consistent after the migration. Native parsers (pdf/docx/doc)
-are CPU-bound or spawn a subprocess, so they run OFF the FastAPI event loop.
-
-The LLM/vision paths (vision, file-attachment, per-page scanned-PDF OCR) are
-abstracted behind ``LlmExtractor`` and implemented separately (see the LLM
-extractor module) so they can be traced through LangChain/LangSmith.
+Routes an uploaded document to text. Office/plain formats are parsed natively
+off the FastAPI event loop (CPU-bound / subprocess). Everything OCR-able — PDFs
+(no native PDF text parsing: even text-layer PDFs go through OCR so mixed/partial
+scans are never missed) and images — is handed to the configured
+:class:`Recognizer` (see ``app/rag_core/recognizers``: a SotaOCR -> LLM fallback
+chain). Native office parsers fall back to the same recognizer when they yield
+nothing.
 """
 from __future__ import annotations
 
@@ -16,17 +16,19 @@ import logging
 import os
 import tempfile
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:  # avoid an import cycle: recognizers import helpers from here.
+    from app.rag_core.recognizers.base import Recognizer
 
 logger = logging.getLogger(__name__)
 
-# Mirror lib/document-processing.ts constants.
-MIN_TEXT_LENGTH_FOR_SUCCESS = 80
-PDF_PAGE_CONCURRENCY = 5
+# Per-page scanned-PDF OCR knobs (consumed by the LLM recognizer).
+PDF_PAGE_CONCURRENCY = 10
 PDF_PAGE_MAX_RETRIES = 2
 DOCUMENT_EXTRACTION_MAX_TOKENS = 16384
 
-Strategy = Literal["text", "pdf", "docx", "doc", "vision", "llm-file", "pdf-pages"]
+Strategy = Literal["text", "docx", "doc", "vision", "llm-file", "pdf-pages", "sotaocr"]
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic"}
 _MIME_BY_EXT = {
@@ -97,18 +99,8 @@ def normalize_result(raw_text: str, strategy: Strategy) -> ExtractedDocument:
 
 
 # --- native parsers (CPU-bound / subprocess -> run off the event loop) ---
-
-def _extract_pdf_sync(data: bytes) -> str:
-    try:
-        from pypdf import PdfReader
-
-        reader = PdfReader(io.BytesIO(data))
-        parts = [(page.extract_text() or "") for page in reader.pages]
-        return "\n".join(parts).strip()
-    except Exception:
-        logger.warning("PDF native parse failed; will fall back", exc_info=True)
-        return ""
-
+# Note: PDFs are intentionally NOT parsed natively — every PDF goes through the
+# recognizer (OCR) so partial/mixed scans are never silently dropped.
 
 def _extract_docx_sync(data: bytes) -> str:
     try:
@@ -119,10 +111,6 @@ def _extract_docx_sync(data: bytes) -> str:
     except Exception:
         logger.warning("DOCX native parse failed; will fall back", exc_info=True)
         return ""
-
-
-async def extract_pdf(data: bytes) -> str:
-    return await asyncio.to_thread(_extract_pdf_sync, data)
 
 
 async def extract_docx(data: bytes) -> str:
@@ -163,20 +151,17 @@ async def extract_doc(data: bytes) -> str:
                 pass
 
 
-# --- LLM extraction interface (concrete impl lives in the LLM extractor module) ---
+# --- dispatcher ---
 
-class LlmExtractor(Protocol):
-    async def vision(self, data: bytes, mime_type: str, filename: str) -> str: ...
+async def _recognize(
+    recognizer: "Recognizer", data: bytes, mime_type: str, filename: str
+) -> ExtractedDocument:
+    result = await recognizer.recognize(data, mime_type, filename)
+    return normalize_result(result.text, result.strategy)
 
-    async def file_attachment(self, data: bytes, filename: str) -> str: ...
-
-    async def pdf_per_page(self, data: bytes, filename: str) -> str | None: ...
-
-
-# --- dispatcher (mirror extractTextFromDocument) ---
 
 async def extract_text_from_document(
-    data: bytes, mime_type: str, filename: str, llm: LlmExtractor
+    data: bytes, mime_type: str, filename: str, recognizer: "Recognizer"
 ) -> ExtractedDocument:
     ext = file_extension(filename)
 
@@ -188,26 +173,15 @@ async def extract_text_from_document(
         docx_text = await extract_docx(data)
         if docx_text:
             return normalize_result(docx_text, "docx")
-        return normalize_result(await llm.file_attachment(data, filename), "llm-file")
+        # SotaOCR can't read .docx -> it skips itself and the LLM recognizer's
+        # file-attachment path handles it.
+        return await _recognize(recognizer, data, mime_type, filename)
 
     if is_doc(mime_type, ext):
         doc_text = await extract_doc(data)
         if doc_text:
             return normalize_result(doc_text, "doc")
-        return normalize_result(await llm.file_attachment(data, filename), "llm-file")
+        return await _recognize(recognizer, data, mime_type, filename)
 
-    if is_pdf(mime_type, ext):
-        pdf_text = await extract_pdf(data)
-        if pdf_text and len(pdf_text) >= MIN_TEXT_LENGTH_FOR_SUCCESS:
-            return normalize_result(pdf_text, "pdf")
-        # Scanned PDF (no text layer): split into pages and OCR them in parallel.
-        # Returns None -> fall back to a single file-attachment request.
-        per_page = await llm.pdf_per_page(data, filename)
-        if per_page:
-            return normalize_result(per_page, "pdf-pages")
-        return normalize_result(await llm.file_attachment(data, filename), "llm-file")
-
-    if is_image(mime_type, ext):
-        return normalize_result(await llm.vision(data, mime_type, filename), "vision")
-
-    return normalize_result(await llm.file_attachment(data, filename), "llm-file")
+    # PDFs, images, and anything else -> recognizer (no native PDF text parsing).
+    return await _recognize(recognizer, data, mime_type, filename)

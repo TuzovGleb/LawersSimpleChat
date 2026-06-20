@@ -39,18 +39,18 @@ class FakeRepo:
         self.touched = (project_id, user_id, now)
 
 
-class FakeExtractor:
+class FakeRecognizer:
+    """Recognizer test double: returns text, or raises if text is empty."""
+
     def __init__(self, text):
         self._text = text
 
-    async def vision(self, *a):
-        return self._text
+    async def recognize(self, data, mime_type, filename):
+        from app.rag_core.recognizers.base import RecognitionResult, RecognizerError
 
-    async def file_attachment(self, *a):
-        return self._text
-
-    async def pdf_per_page(self, *a):
-        return self._text or None
+        if not self._text:
+            raise RecognizerError("all recognizers failed (test)")
+        return RecognitionResult(text=self._text, strategy="sotaocr")
 
 
 @pytest.fixture
@@ -120,7 +120,7 @@ def test_extract_empty_text_422(client):
     repo = FakeRepo()
     client.app.state.repo = repo
     client.app.state.s3 = FakeS3(b"PKzipbytes")
-    client.app.state.doc_extractor = FakeExtractor("")  # LLM returns nothing
+    client.app.state.recognizer = FakeRecognizer("")  # every recognizer fails
     r = client.post(
         "/documents/extract",
         json=_payload(objectKey="uploads/proj-1/x/a.zip", filename="a.zip", mimeType="application/zip"),

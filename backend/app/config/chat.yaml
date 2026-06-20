@@ -43,10 +43,7 @@ chat:
         web_search:
           enabled: true
           max_results: 5
-      # Document text extraction / OCR (vision + per-page scanned PDF). Pinned to
-      # gemini-3.5-flash to match lib/model-config.ts — NOT the chat 'gemini' (2.5)
-      # entry, to avoid silently changing OCR quality. web_search stays disabled.
-      document_extraction:
-        name: "google/gemini-3.5-flash"
-        temperature: 0
-        max_tokens: 16384
+      # NB: document OCR/extraction moved to its own config-driven recognizer
+      # registry — see recognition.yaml (sotaocr -> llm fallback chain). The LLM
+      # recognizer pins google/gemini-3.5-flash there, so there is no longer a
+      # 'document_extraction' chat model here.

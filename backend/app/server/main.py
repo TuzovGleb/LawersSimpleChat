@@ -14,11 +14,12 @@ from app.config import CONFIG
 from app.pipelines.tools import handlers_of, load_tool_specs
 from app.pipelines.workflows import build_chat_graph
 from app.rag_core.llm import get_chat_registry
+from app.rag_core.recognizers.base import RecognizerError
+from app.rag_core.recognizers.factory import describe as describe_recognizer, get_recognizer
 from app.server.chat_stream import stream_chat
 from app.server.schema import ChatRequest, DocumentExtractRequest
 from app.server.security import verify_backend_secret
 from app.services.document_extraction import extract_text_from_document
-from app.services.llm_extractor import LlmDocumentExtractor
 from app.services.s3_client import S3Client
 from app.services.supabase_repo import SupabaseRepo, map_project_document
 from app.utils import RequestContextMiddleware, current_chat_id, current_request_id
@@ -52,9 +53,13 @@ async def lifespan(app: FastAPI):
     chat_params = config["chat"]["params"]
     registry = get_chat_registry(chat_params)
 
-    # Dedicated extraction model (gemini-3.5-flash) for document OCR/conversion.
-    _, extraction_llm = registry.resolve("document_extraction")
-    app.state.doc_extractor = LlmDocumentExtractor(extraction_llm)
+    # Document OCR/recognition: a config-driven recognizer chain (see
+    # recognition.yaml). Default is sotaocr -> llm fallback.
+    recognizer_cfg = config["recognition"]["recognizer"]
+    app.state.recognizer = get_recognizer(recognizer_cfg)
+    logger.info(
+        "Document recognizer ready", extra={"recognizer_chain": describe_recognizer(recognizer_cfg)}
+    )
 
     tool_specs = load_tool_specs(config["app"])
     app.state.tool_handlers = handlers_of(tool_specs)
@@ -128,7 +133,7 @@ async def post_chat_message(request: Request, chat_id: str, payload: ChatRequest
 async def extract_document(request: Request, payload: DocumentExtractRequest) -> JSONResponse:
     s3: S3Client | None = request.app.state.s3
     repo: SupabaseRepo | None = request.app.state.repo
-    extractor = request.app.state.doc_extractor
+    recognizer = request.app.state.recognizer
     if not s3:
         raise HTTPException(status_code=503, detail="S3 not configured")
     if not repo:
@@ -148,10 +153,11 @@ async def extract_document(request: Request, payload: DocumentExtractRequest) ->
         if not data:
             raise HTTPException(status_code=400, detail="Empty file cannot be processed")
 
-        # Wrap the whole extraction in ONE LangSmith run so the per-page OCR
-        # ChatOpenAI calls nest as children (one tree per document, no flooding).
-        # The nested calls auto-attach via langchain<->langsmith contextvar interop,
-        # which also propagates into the asyncio page tasks. No-op when tracing off.
+        # Wrap the whole extraction in ONE LangSmith run so the recognizer's calls
+        # (SotaOCR tool run / per-page OCR ChatOpenAI calls) nest as children (one
+        # tree per document, no flooding). Nested LangChain calls auto-attach via
+        # langchain<->langsmith contextvar interop, which also propagates into the
+        # asyncio page tasks. No-op when tracing off.
         chat_id = current_chat_id()  # bound from X-Chat-Id by RequestContextMiddleware
         with langsmith_trace(
             name="document_extraction",
@@ -166,9 +172,16 @@ async def extract_document(request: Request, payload: DocumentExtractRequest) ->
                 "chat_id": chat_id,
             },
         ):
-            extraction = await extract_text_from_document(
-                data, payload.mimeType, payload.filename, extractor
-            )
+            try:
+                extraction = await extract_text_from_document(
+                    data, payload.mimeType, payload.filename, recognizer
+                )
+            except RecognizerError as err:
+                # Every recognizer in the chain failed (or returned nothing).
+                logger.warning("Recognition failed", extra={**log_ctx, "reason": str(err)})
+                raise HTTPException(
+                    status_code=422, detail="Could not extract text from document"
+                ) from err
         if not extraction.text:
             raise HTTPException(status_code=422, detail="Could not extract text from document")
 

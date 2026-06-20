@@ -1,13 +1,15 @@
-"""LLM/vision document extraction via LangChain ChatOpenAI (OpenRouter).
+"""LLM/vision recognizer via LangChain ChatOpenAI (OpenRouter).
 
-Concrete ``LlmExtractor`` for app/services/document_extraction.py. Every call is
-a ChatOpenAI invocation so it auto-traces in LangSmith (no decorators). Faithful
-port of the vision / file-attachment / per-page paths from
-lib/document-processing.ts.
+The resilience fallback behind SotaOCR: when SotaOCR is unavailable (no key,
+out of balance, upstream down) or rejects a format, this recognizer extracts
+text with a vision-capable OpenRouter model. Every call is a ChatOpenAI
+invocation, so it auto-traces in LangSmith under the per-document parent run.
 
-Per-page scanned-PDF OCR sends each page as an OpenRouter ``type:'file'`` content
-part — verified to pass through langchain-openai 1.2.2 intact
-(see backend/experiments/spike_typefile/spike.py).
+Ported verbatim from the previous ``services/llm_extractor.py`` (vision /
+file-attachment / per-page scanned-PDF OCR), now exposing the unified
+:meth:`recognize` entry point. Per-page scanned-PDF OCR sends each page as an
+OpenRouter ``type:'file'`` content part — verified to pass through
+langchain-openai 1.2.2 intact (see backend/experiments/spike_typefile/spike.py).
 """
 from __future__ import annotations
 
@@ -15,14 +17,18 @@ import asyncio
 import base64
 import io
 import logging
+import random
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from app.rag_core.recognizers.base import RecognitionResult
 from app.services.document_extraction import (
     PDF_PAGE_CONCURRENCY,
     PDF_PAGE_MAX_RETRIES,
     file_extension,
+    is_image,
     is_image_ext,
+    is_pdf,
     mime_from_extension,
 )
 
@@ -79,10 +85,63 @@ def _split_pdf_pages_sync(data: bytes) -> list[bytes] | None:
         return None
 
 
-class LlmDocumentExtractor:
+# --- rate-limit (429) back-off for per-page OCR ---
+# ChatOpenAI already retries 429/5xx internally (max_retries=2, honouring
+# Retry-After); this adds an extra outer back-off so a burst of parallel page
+# requests (up to PDF_PAGE_CONCURRENCY) that all get throttled don't immediately
+# re-fire. Non-429 errors retry immediately, as before.
+_RATE_LIMIT_BASE_DELAY = 2.0   # seconds (exponential base when no Retry-After)
+_RATE_LIMIT_MAX_DELAY = 30.0
+
+
+def _is_rate_limit(err: Exception) -> bool:
+    if err.__class__.__name__ == "RateLimitError":
+        return True
+    if getattr(err, "status_code", None) == 429:
+        return True
+    msg = str(err).lower()
+    return "429" in msg or "too many requests" in msg or "rate limit" in msg
+
+
+def _retry_after_seconds(err: Exception) -> float | None:
+    headers = getattr(getattr(err, "response", None), "headers", None)
+    if not headers:
+        return None
+    val = headers.get("retry-after") or headers.get("Retry-After")
+    try:
+        return float(val) if val is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _rate_limit_delay(err: Exception, attempt: int) -> float:
+    """Retry-After if the server sent one, else exponential back-off with full jitter."""
+    retry_after = _retry_after_seconds(err)
+    if retry_after is not None:
+        return min(retry_after, _RATE_LIMIT_MAX_DELAY)
+    cap = min(_RATE_LIMIT_BASE_DELAY * (2 ** attempt), _RATE_LIMIT_MAX_DELAY)
+    return random.uniform(0, cap)
+
+
+class LlmRecognizer:
+    """Vision / file-attachment / per-page OCR via a pre-built ChatOpenAI."""
+
     def __init__(self, llm):
-        # A LangChain ChatOpenAI pre-built for the extraction model (gemini-3.5-flash).
+        # A LangChain ChatOpenAI pre-built for the OCR model (e.g. gemini-3.5-flash).
         self._llm = llm
+
+    async def recognize(self, data: bytes, mime_type: str, filename: str) -> RecognitionResult:
+        """Dispatch by format: images -> vision; PDFs -> per-page OCR (single
+        file-attachment fallback); everything else -> file-attachment."""
+        ext = file_extension(filename)
+        if is_image(mime_type, ext):
+            return RecognitionResult(await self.vision(data, mime_type, filename), "vision")
+        if is_pdf(mime_type, ext):
+            per_page = await self.pdf_per_page(data, filename)
+            if per_page:
+                return RecognitionResult(per_page, "pdf-pages")
+            return RecognitionResult(await self.file_attachment(data, filename), "llm-file")
+        return RecognitionResult(await self.file_attachment(data, filename), "llm-file")
 
     async def _run(self, content: list, system: str, *, run_name=None, metadata=None) -> str:
         # run_name/metadata land on the LangSmith child run (nested under the
@@ -149,7 +208,7 @@ class LlmDocumentExtractor:
             },
         ]
         last_error: Exception | None = None
-        for _attempt in range(PDF_PAGE_MAX_RETRIES + 1):
+        for attempt in range(PDF_PAGE_MAX_RETRIES + 1):
             try:
                 return await self._run(
                     content, _EXTRACTION_SYSTEM,
@@ -158,6 +217,16 @@ class LlmDocumentExtractor:
                 )
             except Exception as err:  # noqa: BLE001 - retried below
                 last_error = err
+                if attempt >= PDF_PAGE_MAX_RETRIES:
+                    break
+                if _is_rate_limit(err):
+                    delay = _rate_limit_delay(err, attempt)
+                    logger.warning(
+                        "OCR page rate-limited (429); backing off",
+                        extra={"page": page_no, "attempt": attempt + 1, "delay_s": round(delay, 2)},
+                    )
+                    await asyncio.sleep(delay)
+                # non-429 errors retry immediately (unchanged behaviour)
         raise last_error or RuntimeError(f"page {page_no} extraction failed")
 
     async def pdf_per_page(self, data: bytes, filename: str) -> str | None:
