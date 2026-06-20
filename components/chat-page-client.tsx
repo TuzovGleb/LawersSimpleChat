@@ -167,21 +167,16 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
       setIsPageVisible(visible);
       
       if (visible && pendingRequest) {
-        console.log('[Background Recovery] Страница стала видимой, восстанавливаем запрос');
-        // Если были прерванные запросы, показываем уведомление
-        toast({
-          title: "Возобновление запроса",
-          description: "Восстанавливаем соединение после возврата из фона",
-        });
+        console.log('[Background Recovery] Страница стала видимой, запрос продолжается в фоне');
       }
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    
+
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [pendingRequest, toast]);
+  }, [pendingRequest]);
 
   // Redirect to auth if not authenticated
   useEffect(() => {
@@ -1297,11 +1292,6 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
       
       if (isBackgroundError && !isPageVisible) {
         console.log('[Background Error] Запрос прерван в фоновом режиме, сохраняем для повтора');
-        toast({
-          title: "Соединение прервано",
-          description: "Запрос был прерван из-за перехода в фоновый режим. Вернитесь к приложению для повтора.",
-          variant: "destructive",
-        });
       } else {
         // Очищаем pending request при обычной ошибке
         setPendingRequest(null);
