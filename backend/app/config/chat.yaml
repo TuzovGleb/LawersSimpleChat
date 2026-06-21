@@ -11,11 +11,16 @@ chat:
 
     # selected_model (sent by the frontend) -> OpenRouter model configuration.
     # Mirrors lib/model-config.ts from the Next.js app.
+    # ``fallback`` lists other model keys to try, in order, if a model errors
+    # (transient API/5xx) or returns an empty response. Defaults below prefer a
+    # different provider first (to survive a single-provider outage) then the
+    # strongest model. Adjust freely.
     models:
       openai:
         name: "~anthropic/claude-sonnet-latest"
         temperature: 0.7
         max_tokens: 16000
+        fallback: [gemini, anthropic]
         web_search:
           enabled: true
           max_results: 5
@@ -23,6 +28,7 @@ chat:
         name: "anthropic/claude-opus-4.5"
         temperature: 0.7
         max_tokens: 16000
+        fallback: [gemini, openai]
         web_search:
           enabled: true
           max_results: 5
@@ -30,6 +36,7 @@ chat:
         name: "google/gemini-2.5-flash"
         temperature: 0.7
         max_tokens: 16000
+        fallback: [openai, anthropic]
         web_search:
           enabled: true
           max_results: 5
@@ -40,6 +47,8 @@ chat:
         name: "~anthropic/claude-sonnet-latest"
         reasoning_effort: high
         max_tokens: 32000
+        # Drop to plain (non-reasoning) Sonnet, then a different provider.
+        fallback: [openai, gemini]
         web_search:
           enabled: true
           max_results: 5

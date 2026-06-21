@@ -23,6 +23,9 @@ class ModelConfig(BaseModel):
     max_tokens: int | None = None
     reasoning_effort: Literal["low", "medium", "high"] | None = None
     web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
+    # Ordered list of other model keys to try if this one errors or returns an
+    # empty response. Unknown keys are ignored at resolve time.
+    fallback: list[str] = Field(default_factory=list)
 
 
 class ProviderConfig(BaseModel):
@@ -88,6 +91,20 @@ class ChatModelRegistry:
     def resolve(self, selected_model: str | None) -> tuple[str, ChatOpenAI]:
         name = selected_model if selected_model in self._llms else self._params.default_model
         return name, self._llms[name]
+
+    def resolve_chain(self, selected_model: str | None) -> list[tuple[str, ChatOpenAI]]:
+        """Resolve the primary model plus its configured fallbacks, in order.
+
+        The first entry is the selected model (or the default if unknown); the
+        rest are its ``fallback`` keys, de-duplicated and filtered to ones that
+        actually exist in the registry.
+        """
+        primary = selected_model if selected_model in self._llms else self._params.default_model
+        names = [primary]
+        for fb in self._params.models[primary].fallback:
+            if fb in self._llms and fb not in names:
+                names.append(fb)
+        return [(name, self._llms[name]) for name in names]
 
 
 @lru_cache(maxsize=1)

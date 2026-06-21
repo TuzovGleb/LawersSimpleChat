@@ -4,14 +4,21 @@ import time
 
 from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool
+from openai import APIError
 
 from app.pipelines.messages import rows_to_messages, text_of
 from app.pipelines.tools.base import ToolResultHandler
-from app.rag_core.llm import ChatModelRegistry
+from app.rag_core.llm import ChatModelRegistry, ChatOpenAI
 
 logger = logging.getLogger(__name__)
 
 MAX_TOOL_ROUNDS = 4
+
+# Number of extra attempts on the *same* model when it returns an empty
+# response (no content, no tool calls) before moving to the next model in the
+# fallback chain. Empty responses are often transient (e.g. a reasoning model
+# that returned only reasoning tokens), so a cheap re-ask frequently succeeds.
+EMPTY_RESPONSE_RETRIES = 1
 
 
 async def build_context(state: dict, *, handlers: dict[str, ToolResultHandler] | None = None) -> dict:
@@ -73,23 +80,82 @@ async def increment_tool_rounds(state: dict) -> dict:
     return {"tool_rounds": state.get("tool_rounds", 0) + 1}
 
 
+def _is_empty(response: AIMessage, tool_calls: list) -> bool:
+    """A response is empty when it has neither tool calls nor any text content."""
+    return not tool_calls and not text_of(response.content).strip()
+
+
+async def _invoke_with_fallback(
+    chain: list[tuple[str, ChatOpenAI]],
+    messages: list,
+    tools: list[BaseTool] | None,
+    tool_rounds: int,
+) -> tuple[str, AIMessage, list, int, bool]:
+    """Try each model in ``chain`` until one returns a usable response.
+
+    Mirrors the recognizer fallback (``recognizers/fallback.py``): a model that
+    raises a transient API error, or returns an empty response, is logged and
+    the next model is tried. An empty response triggers up to
+    ``EMPTY_RESPONSE_RETRIES`` re-asks of the *same* model first. If every model
+    fails, the accumulated reasons are raised as a ``RuntimeError``.
+
+    Returns ``(model_used, response, tool_calls, response_time_ms, fallback_occurred)``.
+    """
+    bind = bool(tools) and tool_rounds < MAX_TOOL_ROUNDS
+    reasons: list[str] = []
+
+    for index, (name, llm) in enumerate(chain):
+        llm_to_invoke = llm.bind_tools(tools) if bind else llm
+        for attempt in range(1 + EMPTY_RESPONSE_RETRIES):
+            try:
+                started = time.time()
+                response = await llm_to_invoke.ainvoke(messages)
+                response_time_ms = int((time.time() - started) * 1000)
+            except APIError as err:
+                logger.warning(
+                    "Model call failed; trying next in fallback chain",
+                    extra={"model": name, "error_type": type(err).__name__},
+                    exc_info=True,
+                )
+                reasons.append(f"{name}: {type(err).__name__}: {err}")
+                break  # don't retry the same model on a hard API error
+
+            tool_calls = getattr(response, "tool_calls", None) or []
+            if not _is_empty(response, tool_calls):
+                return name, response, tool_calls, response_time_ms, index > 0
+
+            if attempt < EMPTY_RESPONSE_RETRIES:
+                logger.warning(
+                    "Empty response; retrying same model",
+                    extra={"model": name, "attempt": attempt + 1},
+                )
+                continue
+
+            logger.warning(
+                "Empty response; trying next in fallback chain",
+                extra={"model": name},
+            )
+            reasons.append(f"{name}: empty response")
+
+    raise RuntimeError("All models failed: " + "; ".join(reasons))
+
+
 async def generate(state: dict, *, registry: ChatModelRegistry, tools: list[BaseTool] | None = None) -> dict:
-    """Call the selected OpenRouter model, with tools bound while rounds remain."""
-    model_used, llm = registry.resolve(state.get("selected_model"))
+    """Call the selected OpenRouter model, falling back across the configured chain.
+
+    Tools are bound while tool rounds remain. Transient API errors and empty
+    responses degrade to the next model in the chain (see ``_invoke_with_fallback``).
+    """
+    chain = registry.resolve_chain(state.get("selected_model"))
     tool_rounds = state.get("tool_rounds", 0)
-    llm_to_invoke = llm.bind_tools(tools) if tools and tool_rounds < MAX_TOOL_ROUNDS else llm
-    started = time.time()
 
-    response = await llm_to_invoke.ainvoke(state["messages"])
-    response_time_ms = int((time.time() - started) * 1000)
-
-    tool_calls = getattr(response, "tool_calls", None) or []
+    model_used, response, tool_calls, response_time_ms, fallback_occurred = await _invoke_with_fallback(
+        chain, state["messages"], tools, tool_rounds
+    )
     content = text_of(response.content)
 
-    if not tool_calls and (not content or not content.strip()):
-        raise RuntimeError("Empty response from model")
-
     metadata = _extract_metadata(model_used, response, response_time_ms, tool_rounds=tool_rounds)
+    metadata["fallbackOccurred"] = fallback_occurred
     logger.info(
         "Generation complete",
         extra={
@@ -99,6 +165,7 @@ async def generate(state: dict, *, registry: ChatModelRegistry, tools: list[Base
             "total_tokens": metadata["totalTokens"],
             "finish_reason": metadata["finishReason"],
             "response_time_ms": response_time_ms,
+            "fallback_occurred": fallback_occurred,
         },
     )
 
