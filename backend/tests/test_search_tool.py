@@ -79,7 +79,10 @@ def test_vs_crosscheck_uses_region_99_without_result_type(mock_searcher):
 
 
 def test_format_vs_crosscheck_empty_and_dedup():
-    assert "не найдена" in format_vs_crosscheck([])
+    empty = format_vs_crosscheck([])
+    assert "не найдена" in empty
+    # Must not point the model to external sources (would trigger web search).
+    assert "Пленум" not in empty and "проверить отдельно" not in empty
     doc = RankedDocument(
         doc_id="vs-9",
         source={"decision_id": "vs-9", "case_number": "5-КГ26-9", "result_type": "overturned"},
