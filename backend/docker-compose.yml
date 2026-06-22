@@ -17,7 +17,10 @@ services:
     environment:
       - discovery.type=single-node
       - DISABLE_SECURITY_PLUGIN=true
-      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+      # 1g heap on a 4 GB VM: stays at the 50%-of-RAM ceiling so the OS page
+      # cache keeps enough room for the ~15 GB on-disk index. Bumped from 512m
+      # to give bulk indexing more buffer/queue headroom.
+      - OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g
     ports:
       - "9200:9200"
     volumes:
