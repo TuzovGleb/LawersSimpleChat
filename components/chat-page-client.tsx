@@ -134,8 +134,17 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
   const [sessions, setSessions] = useState<LocalChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [input, setInput] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-  const [isThinking, setIsThinking] = useState(false); // Для reasoning модели
+  // Per-session in-flight streaming so concurrent chats don't clobber each
+  // other: switching/creating a chat never aborts another chat's request, and
+  // every chat keeps its own live draft + tool status. isLoading/isThinking
+  // below are derived for the *active* session only.
+  const [streamStates, setStreamStates] = useState<
+    Record<string, { phase: "thinking" | "streaming"; draft: string; toolLabel: string | null }>
+  >({});
+  const inflightSessionsRef = useRef<Set<string>>(new Set());
+  const activeStream = activeSessionId ? streamStates[activeSessionId] : undefined;
+  const isLoading = Boolean(activeStream);
+  const isThinking = activeStream?.phase === "thinking";
   const [hasInitialized, setHasInitialized] = useState(false);
   const [isUploadingDocument, setIsUploadingDocument] = useState(false);
   const [pendingMessageDocuments, setPendingMessageDocuments] = useState<SessionDocument[]>([]);
@@ -1039,7 +1048,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
     attachedDocuments: ChatMessage["attachedDocuments"];
     baseMessages: ChatMessage[];
   }) => {
-    if (!activeSession || isLoading || isLoadingMessages) return;
+    if (!activeSession || isLoadingMessages) return;
     if (!selectedProjectId) {
       toast({
         variant: "destructive",
@@ -1067,6 +1076,8 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
 
     const sessionLocalId = activeSession.id;
     const chatId = activeSession.backendSessionId ?? activeSession.id;
+    // Don't double-send the SAME chat, but never block a different chat.
+    if (inflightSessionsRef.current.has(sessionLocalId)) return;
     // После отправки локальная история становится актуальной — лениво перезагружать её не нужно
     loadedMessageSessionsRef.current.add(sessionLocalId);
     loadedMessageSessionsRef.current.add(chatId);
@@ -1091,10 +1102,11 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
       setInput("");
       setPendingMessageDocuments([]);
     }
-    setIsLoading(true);
-    
-    // Reasoning модель включена на постоянку - всегда показываем thinking indicator
-    setIsThinking(true);
+    inflightSessionsRef.current.add(sessionLocalId);
+    setStreamStates((prev) => ({
+      ...prev,
+      [sessionLocalId]: { phase: "thinking", draft: "", toolLabel: null },
+    }));
 
     // Сохраняем информацию о запросе для возможного восстановления
     setPendingRequest({
@@ -1129,11 +1141,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
       // Сервер настроен на 30 минут, добавляем запас
       // Теперь используем streaming для получения ответа с heartbeat
       const resolvedUrl = resolveApiUrl(`/api/chat/${encodeURIComponent(chatId)}/messages${utmQuery}`);
-      
-      // Создаем AbortController для возможности отмены запроса
-      const abortController = new AbortController();
-      let requestAborted = false;
-      
+
       // Если страница станет невидимой, не отменяем запрос сразу,
       // но отслеживаем это состояние
       const visibilityHandler = () => {
@@ -1187,92 +1195,117 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         buffer = lines.pop() || ''; // Оставляем неполную строку в буфере
         
         for (const line of lines) {
-          // Игнорируем heartbeat сообщения (строки начинающиеся с ':')
+          // Heartbeat comments (": …") keep the connection warm — skip them.
           if (line.trim() === '' || line.startsWith(':')) {
             continue;
           }
-          
-          if (line.startsWith('data: ')) {
-            try {
-              data = JSON.parse(line.slice(6));
-              
-              // Если это ошибка
-              if (data.error) {
-                throw new Error(data.details || data.error);
-              }
-              
-              // Если это финальный ответ (содержит message)
-              if (data.message) {
-                // Логируем метаданные AI ответа
-                if (data.metadata) {
-                  console.log('[AI Response]', {
-                    model: data.metadata.modelUsed,
-                    fallback: data.metadata.fallbackOccurred,
-                    chunks: data.metadata.chunksCount,
-                    tokens: data.metadata.totalTokens,
-                    time: `${data.metadata.responseTimeMs}ms`
-                  });
-                  
-                  // Показываем уведомление если было несколько chunks
-                  if (data.metadata.chunksCount > 1) {
-                    console.info(`✨ Ответ был сгенерирован в ${data.metadata.chunksCount} частей для обеспечения полноты`);
-                  }
-                  
-                  // Показываем уведомление если был fallback
-                  if (data.metadata.fallbackOccurred) {
-                    console.warn(`⚠️ Была использована резервная модель из-за: ${data.metadata.fallbackReason}`);
-                  }
-                }
-                
-                // Определяем была ли использована reasoning модель и время размышления
-                const wasReasoning = data.metadata?.modelUsed === 'reasoning' || 
-                  (data.metadata?.responseTimeMs && data.metadata.responseTimeMs > 5000);
-                const thinkingTimeSeconds = data.metadata?.responseTimeMs 
-                  ? Math.floor(data.metadata.responseTimeMs / 1000) 
-                  : undefined;
-                
-                const assistantMessage: ChatMessage = {
-                  role: "assistant",
-                  content: data.message,
-                  metadata: {
-                    modelUsed: data.metadata?.modelUsed,
-                    thinkingTimeSeconds,
-                    wasReasoning,
-                  },
-                };
+          if (!line.startsWith('data: ')) {
+            continue;
+          }
 
-                setIsThinking(false);
+          let event: any;
+          try {
+            event = JSON.parse(line.slice(6));
+          } catch (parseError) {
+            console.error('Error parsing SSE data:', parseError);
+            continue;
+          }
 
-                setSessions((prev) =>
-                  prev.map((session) => {
-                    if (session.id !== sessionLocalId) return session;
-                    return {
-                      ...session,
-                      backendSessionId: data.sessionId ?? session.backendSessionId ?? chatId,
-                      messages: [...session.messages, assistantMessage],
-                      projectId: data.projectId ?? session.projectId ?? selectedProjectId,
-                    };
-                  }),
-                );
+          // Error event (new {type:"error"} or legacy {error}).
+          if (event.type === 'error' || event.error) {
+            throw new Error(event.details || event.error || 'Ошибка генерации');
+          }
 
-                setProjects((prev) =>
-                  prev
-                    .map((project) =>
-                      project.id === (data.projectId ?? selectedProjectId)
-                        ? { ...project, updated_at: new Date().toISOString() }
-                        : project,
-                    )
-                    .sort(
-                      (a, b) =>
-                        new Date(b.updated_at ?? b.created_at).getTime() -
-                        new Date(a.updated_at ?? a.created_at).getTime(),
-                    ),
-                );
-              }
-            } catch (parseError) {
-              console.error('Error parsing SSE data:', parseError);
-              // Продолжаем обработку, возможно следующая строка будет валидной
+          // Token delta — grow this session's live draft.
+          if (event.type === 'token' && typeof event.delta === 'string') {
+            const delta = event.delta;
+            setStreamStates((prev) => {
+              const current = prev[sessionLocalId];
+              return {
+                ...prev,
+                [sessionLocalId]: {
+                  phase: 'streaming',
+                  draft: (current?.draft ?? '') + delta,
+                  toolLabel: null,
+                },
+              };
+            });
+            continue;
+          }
+
+          // A tool started — surface its status. The pre-tool preamble is
+          // ephemeral, so reset the draft and show the status line instead.
+          if (event.type === 'status') {
+            const label = event.label || 'Работаю с источниками…';
+            setStreamStates((prev) => ({
+              ...prev,
+              [sessionLocalId]: { phase: 'thinking', draft: '', toolLabel: label },
+            }));
+            continue;
+          }
+
+          // Final answer (new {type:"final"} or legacy {message}).
+          if (event.type === 'final' || event.message) {
+            data = event;
+
+            if (event.metadata) {
+              console.log('[AI Response]', {
+                model: event.metadata.modelUsed,
+                fallback: event.metadata.fallbackOccurred,
+                tokens: event.metadata.totalTokens,
+                time: `${event.metadata.responseTimeMs}ms`,
+              });
             }
+
+            const wasReasoning = event.metadata?.modelUsed === 'reasoning' ||
+              (event.metadata?.responseTimeMs && event.metadata.responseTimeMs > 5000);
+            const thinkingTimeSeconds = event.metadata?.responseTimeMs
+              ? Math.floor(event.metadata.responseTimeMs / 1000)
+              : undefined;
+
+            const assistantMessage: ChatMessage = {
+              role: "assistant",
+              content: event.message ?? '',
+              metadata: {
+                modelUsed: event.metadata?.modelUsed,
+                thinkingTimeSeconds,
+                wasReasoning,
+              },
+            };
+
+            // Commit the answer and drop this session's live draft in the same
+            // render so the bubble swaps cleanly (no duplicate-text frame).
+            setSessions((prev) =>
+              prev.map((session) => {
+                if (session.id !== sessionLocalId) return session;
+                return {
+                  ...session,
+                  backendSessionId: event.sessionId ?? session.backendSessionId ?? chatId,
+                  messages: [...session.messages, assistantMessage],
+                  projectId: event.projectId ?? session.projectId ?? selectedProjectId,
+                };
+              }),
+            );
+            setStreamStates((prev) => {
+              if (!(sessionLocalId in prev)) return prev;
+              const next = { ...prev };
+              delete next[sessionLocalId];
+              return next;
+            });
+
+            setProjects((prev) =>
+              prev
+                .map((project) =>
+                  project.id === (event.projectId ?? selectedProjectId)
+                    ? { ...project, updated_at: new Date().toISOString() }
+                    : project,
+                )
+                .sort(
+                  (a, b) =>
+                    new Date(b.updated_at ?? b.created_at).getTime() -
+                    new Date(a.updated_at ?? a.created_at).getTime(),
+                ),
+            );
           }
         }
       }
@@ -1313,10 +1346,15 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         }),
       );
     } finally {
-      setIsLoading(false);
-      setIsThinking(false);
+      inflightSessionsRef.current.delete(sessionLocalId);
+      setStreamStates((prev) => {
+        if (!(sessionLocalId in prev)) return prev;
+        const next = { ...prev };
+        delete next[sessionLocalId];
+        return next;
+      });
     }
-  }, [activeSession, input, isLoading, isLoadingMessages, isPageVisible, pendingMessageDocuments, selectedProjectId, selectedModel, toast, user?.id, utmQuery]);
+  }, [activeSession, input, isLoadingMessages, isPageVisible, pendingMessageDocuments, selectedProjectId, selectedModel, toast, user?.id, utmQuery]);
 
   // Retry a failed user turn: re-send its content/attachments with the history
   // that preceded it. The failed message is always the last one, but we slice
@@ -1398,6 +1436,8 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         input={input}
         isLoading={isLoading}
         isThinking={isThinking}
+        streamingDraft={activeStream?.draft ?? ""}
+        toolStatus={activeStream?.toolLabel ?? null}
         isUploadingDocument={isUploadingDocument}
         isLoadingChats={isLoadingChatsFromDB}
         isLoadingMessages={isLoadingMessages}

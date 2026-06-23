@@ -53,7 +53,16 @@ def build_chat_llm(provider: ProviderConfig, model: ModelConfig) -> ChatOpenAI:
         "api_key": provider.api_key,
         "base_url": provider.base_url,
         "max_retries": 2,
-        "timeout": 1800,
+        # Per-call ceiling (heavy legal queries can run long), but well under the
+        # Yandex Serverless Container --execution-timeout of 1800s so a stalled
+        # upstream errors out and closes its LangSmith run instead of hanging.
+        "timeout": 300,
+        # Stream tokens so the chat endpoint can forward them live over SSE.
+        # ainvoke still returns the aggregated AIMessage, so tool-call
+        # aggregation, the fallback chain and metadata in nodes.generate are all
+        # unchanged; the deltas surface via LangGraph stream_mode="messages".
+        "streaming": True,
+        "stream_usage": True,
     }
     if model.temperature is not None:
         kwargs["temperature"] = model.temperature

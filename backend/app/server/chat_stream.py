@@ -1,12 +1,26 @@
 """Chat orchestration + SSE streaming.
 
-Reproduces the exact wire contract the Next.js frontend expects:
-  - ``: heartbeat\\n\\n`` every 5s while the model is working (keeps proxies and
-    load balancers from closing the connection);
-  - a single final ``data: {message, sessionId, projectId, metadata}\\n\\n`` event;
-  - on failure, a single ``data: {error, details}\\n\\n`` event.
+Wire contract the Next.js frontend consumes:
+  - ``: heartbeat\\n\\n`` whenever the model is working but nothing new has been
+    produced for HEARTBEAT_INTERVAL_SECONDS (keeps proxies / load balancers from
+    closing the connection during a slow tool call);
+  - ``data: {"type": "status", "tool", "label"}`` when the agent starts a tool,
+    so the user sees "Ищу судебную практику…" instead of silence;
+  - ``data: {"type": "token", "delta"}`` for each chunk of the answer as it
+    streams from the model;
+  - a single ``data: {"type": "final", "message", "sessionId", "projectId",
+    "metadata"}`` event at the end (also carries ``message`` so an older client
+    that only looks at ``data.message`` still works);
+  - on failure, a single ``data: {"type": "error", "error", "details"}`` event.
+
+The graph is consumed INLINE via ``graph.astream`` rather than a detached
+``asyncio.shield``-ed background task: on a client disconnect the stream is
+cancelled, which lets LangChain emit the run-end events and close the LangSmith
+run instead of orphaning it ("spinner forever"). ``asyncio.shield`` is used only
+so a heartbeat timeout cannot cancel the in-flight model call.
 """
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -14,8 +28,9 @@ from typing import AsyncIterator
 
 from fastapi import Request
 from langchain_core.messages import AIMessage
+from langchain_core.tracers.langchain import wait_for_all_tracers
 
-from app.pipelines.messages import messages_to_rows, split_generated
+from app.pipelines.messages import messages_to_rows, split_generated, text_of
 from app.server.schema import ChatRequest
 from app.services.supabase_repo import SupabaseRepo, unique_document_ids
 
@@ -23,9 +38,33 @@ logger = logging.getLogger(__name__)
 
 HEARTBEAT_INTERVAL_SECONDS = 5
 
+# Tool name -> user-facing status shown while the tool runs. Unknown tools fall
+# back to DEFAULT_TOOL_STATUS so a newly added tool still surfaces *something*.
+TOOL_STATUS_LABELS = {
+    "search_court_practice": "Ищу судебную практику…",
+    "get_court_decision": "Открываю решение…",
+}
+DEFAULT_TOOL_STATUS = "Работаю с источниками…"
+
+# Sentinel so a StopAsyncIteration never has to cross an asyncio.wait_for / Task
+# boundary (which would otherwise surface as a confusing RuntimeError).
+_STREAM_DONE = object()
+
 
 def _sse(payload: dict) -> bytes:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+
+
+async def _anext_or_done(agen):
+    try:
+        return await agen.__anext__()
+    except StopAsyncIteration:
+        return _STREAM_DONE
+
+
+def _token_delta(chunk) -> str:
+    content = getattr(chunk, "content", None)
+    return text_of(content) if content else ""
 
 
 async def _assemble_history(
@@ -72,13 +111,14 @@ async def _assemble_history(
     return history, "server"
 
 
-async def _run_graph(
+async def _prepare_graph_run(
     request: Request,
     payload: ChatRequest,
     session_id: str,
     project_id: str | None,
     history: list[dict],
 ):
+    """Load attached documents and assemble (graph, state, config) for astream."""
     graph = request.app.state.chat_graph
     repo: SupabaseRepo | None = request.app.state.repo
 
@@ -102,7 +142,7 @@ async def _run_graph(
             "selected_model": payload.selectedModel,
         },
     }
-    return await graph.ainvoke(state, config=config)
+    return graph, state, config
 
 
 async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> AsyncIterator[bytes]:
@@ -146,17 +186,88 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
     # Initial heartbeat so the client sees data immediately.
     yield b": heartbeat\n\n"
 
-    task = asyncio.ensure_future(_run_graph(request, payload, chat_id, project_id, history))
+    graph, state, config = await _prepare_graph_run(request, payload, chat_id, project_id, history)
+
+    result: dict | None = None
+    announced_tool_calls: set[str] = set()
+    needs_flush = False
+
+    # stream_mode=["messages", "values"]:
+    #   - "messages" yields (AIMessageChunk, metadata) for token deltas;
+    #   - "values" yields the full state after each node — used to (a) announce
+    #     a tool BEFORE it runs (the generate snapshot carries the tool_calls)
+    #     and (b) capture the final state (== what graph.ainvoke would return).
+    agen = graph.astream(state, config=config, stream_mode=["messages", "values"])
+    pending = asyncio.ensure_future(_anext_or_done(agen))
     try:
         while True:
             try:
-                result = await asyncio.wait_for(asyncio.shield(task), timeout=HEARTBEAT_INTERVAL_SECONDS)
-                break
+                item = await asyncio.wait_for(
+                    asyncio.shield(pending), timeout=HEARTBEAT_INTERVAL_SECONDS
+                )
             except asyncio.TimeoutError:
+                # Still working (e.g. a slow OpenSearch tool); keep the connection
+                # warm WITHOUT cancelling the shielded in-flight step.
                 yield b": heartbeat\n\n"
+                continue
+
+            if item is _STREAM_DONE:
+                break
+
+            mode, data = item
+            if mode == "messages":
+                chunk, meta = data
+                if meta.get("langgraph_node") == "generate":
+                    delta = _token_delta(chunk)
+                    if delta:
+                        yield _sse({"type": "token", "delta": delta})
+            elif mode == "values":
+                result = data
+                messages = data.get("messages") or []
+                if messages:
+                    for call in getattr(messages[-1], "tool_calls", None) or []:
+                        key = call.get("id") or f"{call.get('name')}:{len(announced_tool_calls)}"
+                        if key in announced_tool_calls:
+                            continue
+                        announced_tool_calls.add(key)
+                        name = call.get("name", "")
+                        yield _sse(
+                            {
+                                "type": "status",
+                                "tool": name,
+                                "label": TOOL_STATUS_LABELS.get(name, DEFAULT_TOOL_STATUS),
+                            }
+                        )
+
+            pending = asyncio.ensure_future(_anext_or_done(agen))
+    except asyncio.CancelledError:
+        # Client disconnected (closed tab / network drop). Let the cancellation
+        # propagate into the model call so its run-end events are emitted, then
+        # flush below — instead of orphaning the LangSmith run.
+        needs_flush = True
+        logger.info("Chat stream cancelled (client disconnected)", extra={"session_id": session_id})
+        raise
     except Exception as error:  # noqa: BLE001 - surface any generation failure to the client
+        needs_flush = True
         logger.exception("Chat generation failed", extra={"session_id": session_id})
-        yield _sse({"error": "Internal server error", "details": str(error)})
+        yield _sse({"type": "error", "error": "Internal server error", "details": str(error)})
+        return
+    finally:
+        # Cancel/await the in-flight __anext__ so aclose() doesn't trip over a
+        # running generator, then finalize the graph stream.
+        if not pending.done():
+            pending.cancel()
+        with contextlib.suppress(BaseException):
+            await pending
+        with contextlib.suppress(Exception):
+            await agen.aclose()
+        if needs_flush:
+            # Force the LangSmith background queue to upload the (error / cancelled)
+            # run-end events before this serverless instance is frozen/reclaimed.
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(wait_for_all_tracers)
+
+    if result is None:
         return
 
     assistant_message = result.get("response", "")
@@ -211,6 +322,7 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
 
     yield _sse(
         {
+            "type": "final",
             "message": assistant_message,
             "sessionId": session_id,
             "projectId": project_id,

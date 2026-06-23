@@ -46,6 +46,8 @@ interface CaseWorkspaceProps {
   input: string;
   isLoading: boolean;
   isThinking: boolean;
+  streamingDraft?: string;
+  toolStatus?: string | null;
   isUploadingDocument: boolean;
   isLoadingChats: boolean;
   isLoadingMessages: boolean;
@@ -71,6 +73,8 @@ export function CaseWorkspace({
   input,
   isLoading,
   isThinking,
+  streamingDraft = "",
+  toolStatus = null,
   isUploadingDocument,
   isLoadingChats,
   isLoadingMessages,
@@ -109,7 +113,7 @@ export function CaseWorkspace({
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [activeSession?.messages]);
+  }, [activeSession?.messages, streamingDraft, toolStatus]);
 
   const resetDragState = useCallback(() => {
     dragCounterRef.current = 0;
@@ -815,7 +819,29 @@ export function CaseWorkspace({
                 {isLoading && (
                   <div className="flex justify-start">
                     <div className="max-w-full md:max-w-[80%]">
-                      {isThinking ? (
+                      {toolStatus ? (
+                        // A tool is running — show what the agent is doing.
+                        <div
+                          className="flex items-center gap-2 text-sm"
+                          style={{ color: "var(--text-secondary)" }}
+                        >
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          <span>{toolStatus}</span>
+                        </div>
+                      ) : streamingDraft ? (
+                        // The answer is streaming — render it live (plain text;
+                        // full markdown renders once the message is committed).
+                        <div
+                          className="whitespace-pre-wrap text-sm leading-relaxed"
+                          style={{ color: "var(--text-primary)" }}
+                        >
+                          {streamingDraft}
+                          <span
+                            className="ml-0.5 inline-block h-4 w-[2px] animate-pulse align-text-bottom"
+                            style={{ background: "var(--brand-accent)" }}
+                          />
+                        </div>
+                      ) : isThinking ? (
                         <ThinkingIndicator isThinking={true} />
                       ) : (
                         <div

@@ -1,5 +1,5 @@
 """FastAPI application for the legal chat backend."""
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 import logging
 import os
@@ -8,6 +8,7 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from langchain_core.tracers.langchain import wait_for_all_tracers
 from langsmith.run_helpers import trace as langsmith_trace
 
 from app.config import CONFIG
@@ -90,7 +91,14 @@ async def lifespan(app: FastAPI):
         logger.warning("S3 not configured; document extraction from object storage disabled")
 
     logger.info("Chat backend ready")
-    yield
+    try:
+        yield
+    finally:
+        # Flush queued LangSmith run events before the worker exits so traces
+        # aren't orphaned (left spinning) on a graceful shutdown / container
+        # recycle. Best-effort: a hard SIGKILL still can't be helped here.
+        with suppress(Exception):
+            wait_for_all_tracers()
 
 
 app = FastAPI(title="LawersSimpleChat Backend", lifespan=lifespan)
