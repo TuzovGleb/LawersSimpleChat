@@ -833,6 +833,10 @@ export function CaseWorkspace({
                       ) : streamingDraft ? (
                         // The answer is streaming — render it live (plain text;
                         // full markdown renders once the message is committed).
+                        // SERVERLESS NOTE: this typewriter only animates if the
+                        // backend response actually streams. On Yandex Serverless
+                        // it's buffered, so the draft appears all at once; on a
+                        // normal server / VM it types out token by token.
                         <div
                           className="whitespace-pre-wrap text-sm leading-relaxed"
                           style={{ color: "var(--text-primary)" }}

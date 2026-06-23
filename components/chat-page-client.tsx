@@ -1220,6 +1220,10 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
           }
 
           // Token delta — grow this session's live draft.
+          // SERVERLESS NOTE: the backend emits these per-token, but Yandex
+          // Serverless buffers the whole response, so in prod they all arrive in
+          // one burst at the end (draft jumps to full, then commits) instead of
+          // typing out. On a normal server / VM this animates live, no changes.
           if (event.type === 'token' && typeof event.delta === 'string') {
             const delta = event.delta;
             setStreamStates((prev) => {
@@ -1239,6 +1243,9 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
 
           // A tool started — surface its status. The pre-tool preamble is
           // ephemeral, so reset the draft and show the status line instead.
+          // SERVERLESS NOTE: like tokens, these statuses are buffered by Yandex
+          // Serverless and only land at the end, so "Ищу практику…" doesn't show
+          // live in prod (that's why we discussed polling). Live on a VM.
           if (event.type === 'status') {
             const label = event.label || 'Работаю с источниками…';
             setStreamStates((prev) => ({

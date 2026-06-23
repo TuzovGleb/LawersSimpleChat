@@ -97,6 +97,9 @@ async def lifespan(app: FastAPI):
         # Flush queued LangSmith run events before the worker exits so traces
         # aren't orphaned (left spinning) on a graceful shutdown / container
         # recycle. Best-effort: a hard SIGKILL still can't be helped here.
+        # SERVERLESS NOTE: needed because Yandex Serverless recycles instances
+        # aggressively; on a normal long-lived server the LangSmith background
+        # thread flushes on its own and this hook would be redundant.
         with suppress(Exception):
             wait_for_all_tracers()
 

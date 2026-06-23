@@ -18,6 +18,21 @@ The graph is consumed INLINE via ``graph.astream`` rather than a detached
 cancelled, which lets LangChain emit the run-end events and close the LangSmith
 run instead of orphaning it ("spinner forever"). ``asyncio.shield`` is used only
 so a heartbeat timeout cannot cancel the in-flight model call.
+
+SERVERLESS NOTE — why this whole file looks the way it does:
+We run on Yandex Serverless Containers, which (1) FREEZE/RECLAIM the instance's
+CPU the moment the HTTP response ends, and (2) BUFFER the entire response body
+(3.5 MB cap) instead of streaming it out. On a normal always-on server NONE of
+the gymnastics below would be needed:
+  * No frozen CPU -> the old fire-and-forget ``asyncio.shield``-ed ``ainvoke``
+    would simply finish on its own and close the LangSmith run, so the "trace
+    hangs forever" bug wouldn't exist and the cancel-then-flush dance here would
+    be pointless.
+  * No response buffering -> the ``token`` / ``status`` events below would reach
+    the browser LIVE (real typewriter + "Ищу практику…" statuses). On serverless
+    they're correct on the wire but the platform holds them until the turn ends,
+    so the client effectively only sees the final answer. Moving the backend to
+    a regular VM would make true streaming work with ZERO changes to this code.
 """
 import asyncio
 import contextlib
@@ -220,6 +235,10 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
                 if meta.get("langgraph_node") == "generate":
                     delta = _token_delta(chunk)
                     if delta:
+                        # SERVERLESS NOTE: on a normal server this delta reaches
+                        # the browser live (typewriter); on Yandex Serverless the
+                        # response is buffered, so the client only sees it flushed
+                        # at the end. Same code works fully on a VM.
                         yield _sse({"type": "token", "delta": delta})
             elif mode == "values":
                 result = data
@@ -244,6 +263,9 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
         # Client disconnected (closed tab / network drop). Let the cancellation
         # propagate into the model call so its run-end events are emitted, then
         # flush below — instead of orphaning the LangSmith run.
+        # SERVERLESS NOTE: this branch only matters because the serverless
+        # instance is frozen right after the response ends, so we must close +
+        # flush the trace NOW. On a normal server the run would close on its own.
         needs_flush = True
         logger.info("Chat stream cancelled (client disconnected)", extra={"session_id": session_id})
         raise

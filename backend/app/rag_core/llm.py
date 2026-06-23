@@ -56,11 +56,17 @@ def build_chat_llm(provider: ProviderConfig, model: ModelConfig) -> ChatOpenAI:
         # Per-call ceiling (heavy legal queries can run long), but well under the
         # Yandex Serverless Container --execution-timeout of 1800s so a stalled
         # upstream errors out and closes its LangSmith run instead of hanging.
+        # SERVERLESS NOTE: this "stay under the platform timeout" tuning only
+        # exists because of the serverless --execution-timeout; on a normal server
+        # we'd just pick a sane upstream timeout and be done.
         "timeout": 300,
         # Stream tokens so the chat endpoint can forward them live over SSE.
         # ainvoke still returns the aggregated AIMessage, so tool-call
         # aggregation, the fallback chain and metadata in nodes.generate are all
         # unchanged; the deltas surface via LangGraph stream_mode="messages".
+        # SERVERLESS NOTE: streaming is fully wired here, but Yandex Serverless
+        # buffers the HTTP response, so the deltas don't reach the browser live.
+        # On a regular VM this gives a true token-by-token stream, no code change.
         "streaming": True,
         "stream_usage": True,
     }
