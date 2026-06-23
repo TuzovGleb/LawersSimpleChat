@@ -5,26 +5,29 @@ import { Clock } from "lucide-react";
 
 interface ThinkingIndicatorProps {
   isThinking: boolean;
+  // Wall-clock start of THIS chat's in-flight turn. The elapsed time is derived
+  // from it (not from when this component mounted), so switching between chats
+  // shows each chat's own elapsed time instead of resetting or sharing a timer.
+  startedAt?: number | null;
   thinkingTime?: number; // Время размышления в секундах (показываем после завершения)
   modelName?: string;
 }
 
-export function ThinkingIndicator({ isThinking, thinkingTime, modelName }: ThinkingIndicatorProps) {
+export function ThinkingIndicator({ isThinking, startedAt, thinkingTime, modelName }: ThinkingIndicatorProps) {
   const [elapsedTime, setElapsedTime] = useState(0);
 
   useEffect(() => {
-    if (!isThinking) {
+    if (!isThinking || !startedAt) {
       setElapsedTime(0);
       return;
     }
 
-    const startTime = Date.now();
-    const interval = setInterval(() => {
-      setElapsedTime(Math.floor((Date.now() - startTime) / 1000));
-    }, 100);
+    const tick = () => setElapsedTime(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+    tick();
+    const interval = setInterval(tick, 250);
 
     return () => clearInterval(interval);
-  }, [isThinking]);
+  }, [isThinking, startedAt]);
 
   // Форматируем время
   const formatTime = (seconds: number) => {

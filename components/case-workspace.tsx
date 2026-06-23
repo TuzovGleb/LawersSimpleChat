@@ -48,6 +48,7 @@ interface CaseWorkspaceProps {
   isThinking: boolean;
   streamingDraft?: string;
   toolStatus?: string | null;
+  thinkingStartedAt?: number | null;
   isUploadingDocument: boolean;
   isLoadingChats: boolean;
   isLoadingMessages: boolean;
@@ -75,6 +76,7 @@ export function CaseWorkspace({
   isThinking,
   streamingDraft = "",
   toolStatus = null,
+  thinkingStartedAt = null,
   isUploadingDocument,
   isLoadingChats,
   isLoadingMessages,
@@ -842,7 +844,7 @@ export function CaseWorkspace({
                           />
                         </div>
                       ) : isThinking ? (
-                        <ThinkingIndicator isThinking={true} />
+                        <ThinkingIndicator isThinking={true} startedAt={thinkingStartedAt} />
                       ) : (
                         <div
                           className="flex items-center gap-2 text-sm"

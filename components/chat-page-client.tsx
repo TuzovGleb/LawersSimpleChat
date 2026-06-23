@@ -139,7 +139,10 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
   // every chat keeps its own live draft + tool status. isLoading/isThinking
   // below are derived for the *active* session only.
   const [streamStates, setStreamStates] = useState<
-    Record<string, { phase: "thinking" | "streaming"; draft: string; toolLabel: string | null }>
+    Record<
+      string,
+      { phase: "thinking" | "streaming"; draft: string; toolLabel: string | null; startedAt: number }
+    >
   >({});
   const inflightSessionsRef = useRef<Set<string>>(new Set());
   const activeStream = activeSessionId ? streamStates[activeSessionId] : undefined;
@@ -1105,7 +1108,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
     inflightSessionsRef.current.add(sessionLocalId);
     setStreamStates((prev) => ({
       ...prev,
-      [sessionLocalId]: { phase: "thinking", draft: "", toolLabel: null },
+      [sessionLocalId]: { phase: "thinking", draft: "", toolLabel: null, startedAt: Date.now() },
     }));
 
     // Сохраняем информацию о запросе для возможного восстановления
@@ -1227,6 +1230,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
                   phase: 'streaming',
                   draft: (current?.draft ?? '') + delta,
                   toolLabel: null,
+                  startedAt: current?.startedAt ?? Date.now(),
                 },
               };
             });
@@ -1239,7 +1243,12 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
             const label = event.label || 'Работаю с источниками…';
             setStreamStates((prev) => ({
               ...prev,
-              [sessionLocalId]: { phase: 'thinking', draft: '', toolLabel: label },
+              [sessionLocalId]: {
+                phase: 'thinking',
+                draft: '',
+                toolLabel: label,
+                startedAt: prev[sessionLocalId]?.startedAt ?? Date.now(),
+              },
             }));
             continue;
           }
@@ -1438,6 +1447,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         isThinking={isThinking}
         streamingDraft={activeStream?.draft ?? ""}
         toolStatus={activeStream?.toolLabel ?? null}
+        thinkingStartedAt={activeStream?.startedAt ?? null}
         isUploadingDocument={isUploadingDocument}
         isLoadingChats={isLoadingChatsFromDB}
         isLoadingMessages={isLoadingMessages}
