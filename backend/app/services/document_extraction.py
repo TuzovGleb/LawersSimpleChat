@@ -14,6 +14,7 @@ import asyncio
 import io
 import logging
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
@@ -117,8 +118,33 @@ async def extract_docx(data: bytes) -> str:
     return await asyncio.to_thread(_extract_docx_sync, data)
 
 
+def _extract_rtf_sync(data: bytes) -> str:
+    """RTF -> text. Many ``.doc`` files are actually RTF (``{\\rtf`` magic), which
+    antiword can't read. Codepage is taken from ``\\ansicpg`` (default cp1251 for
+    Russian docs)."""
+    try:
+        from striprtf.striprtf import rtf_to_text
+
+        m = re.search(rb"\\ansicpg(\d+)", data[:512])
+        encoding = f"cp{m.group(1).decode()}" if m else "cp1251"
+        # latin-1 keeps the RTF bytes 1:1; rtf_to_text decodes the \'xx escapes
+        # itself using `encoding`.
+        return rtf_to_text(data.decode("latin-1"), encoding=encoding, errors="ignore").strip()
+    except Exception:
+        logger.warning("RTF parse failed; will fall back", exc_info=True)
+        return ""
+
+
 async def extract_doc(data: bytes) -> str:
-    """Legacy .doc via antiword in a SEPARATE process (never blocks the loop)."""
+    """Legacy .doc -> text. Sniffs the real format (extension is unreliable):
+    RTF (mislabeled .doc) via striprtf, a zip via the .docx parser, else the
+    binary OLE .doc via antiword in a separate process (never blocks the loop)."""
+    head = data.lstrip()[:5]
+    if head == b"{\\rtf":
+        return await asyncio.to_thread(_extract_rtf_sync, data)
+    if data[:4] == b"PK\x03\x04":  # actually a .docx (OOXML zip) renamed .doc
+        return await extract_docx(data)
+
     tmp_path: str | None = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".doc", delete=False) as tmp:

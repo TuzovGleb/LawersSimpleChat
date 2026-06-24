@@ -104,6 +104,37 @@ async def test_route_doc_native_then_fallback(patch_natives):
     assert rec.calls == 1
 
 
+def test_extract_rtf_sync():
+    rtf = b"{\\rtf1\\ansi\\ansicpg1251 Hello RTF world}"
+    assert "Hello RTF world" in de._extract_rtf_sync(rtf)
+
+
+async def test_route_doc_rtf_parses_locally():
+    # A ".doc" that is actually RTF ({\rtf) must be parsed locally (striprtf),
+    # never handed to the recognizer (antiword can't read RTF -> used to 500).
+    rec = FakeRecognizer(strategy="llm-file")
+    rtf = b"{\\rtf1\\ansi\\ansicpg1251 RTFMARKER hello}"
+    r = await de.extract_text_from_document(rtf, "application/msword", "a.doc", rec)
+    assert r.strategy == "doc" and "RTFMARKER" in r.text
+    assert rec.calls == 0
+
+
+async def test_route_doc_zip_is_docx():
+    # A ".doc" that is actually a .docx (PK zip) routes to the docx parser.
+    import io as _io
+
+    from docx import Document
+
+    doc = Document()
+    doc.add_paragraph("ZIPDOCMARKER")
+    buf = _io.BytesIO()
+    doc.save(buf)
+    rec = FakeRecognizer(strategy="llm-file")
+    r = await de.extract_text_from_document(buf.getvalue(), "application/msword", "a.doc", rec)
+    assert r.strategy == "doc" and "ZIPDOCMARKER" in r.text
+    assert rec.calls == 0
+
+
 async def test_route_pdf_always_recognizer(patch_natives):
     # No native PDF parsing: even a "real" PDF goes through the recognizer.
     rec = FakeRecognizer(strategy="sotaocr", text="OCR TEXT")
