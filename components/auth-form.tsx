@@ -258,7 +258,7 @@ export function AuthForm() {
         <div className="auth-form-wrap">
           {isSignupEnabled ? (
             <>
-              <h1>{defaultTab === "registration" ? "Создайте аккаунт" : "Войти в Джейхелпер"}</h1>
+              <h1>Войти в Джейхелпер</h1>
               <p className="lede">Введите email и пароль</p>
 
               <Tabs defaultValue={defaultTab} className="w-full">
