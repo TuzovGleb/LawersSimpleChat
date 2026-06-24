@@ -27,7 +27,7 @@ export function AuthForm() {
   const { toast } = useToast();
 
   const isSignupEnabled = process.env.NEXT_PUBLIC_ENABLE_SIGNUP === "true";
-  const defaultTab = isSignupEnabled ? "registration" : "authorization";
+  const defaultTab = "authorization";
 
   useEffect(() => {
     if (!authLoading && user) {
@@ -166,12 +166,29 @@ export function AuthForm() {
       }
     } catch (error: any) {
       console.error("Signup error:", error);
-      toast({
-        variant: "destructive",
-        title: "Ошибка регистрации",
-        description:
-          error.message || "Проверьте введенные данные и попробуйте снова",
-      });
+
+      const rawMessage = (error?.message || "").toLowerCase();
+      const isUserExists =
+        rawMessage.includes("already registered") ||
+        rawMessage.includes("already exists") ||
+        rawMessage.includes("user already") ||
+        error?.code === "user_already_exists";
+
+      if (isUserExists) {
+        toast({
+          variant: "destructive",
+          title: "Пользователь уже существует",
+          description:
+            "Аккаунт с таким email уже зарегистрирован. Перейдите на вкладку «Авторизация», чтобы войти.",
+        });
+      } else {
+        toast({
+          variant: "destructive",
+          title: "Ошибка регистрации",
+          description:
+            error.message || "Проверьте введенные данные и попробуйте снова",
+        });
+      }
     } finally {
       setLoading(false);
     }
