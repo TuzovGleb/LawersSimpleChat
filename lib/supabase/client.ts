@@ -59,6 +59,25 @@ function lockWithTimeout(timeoutMs: number) {
  * Supabase URL (and thus the auth cookie name / project ref) is unchanged and
  * the server-side clients keep talking to Supabase directly.
  */
+// supabase-js sends `Authorization: Bearer <jwt>` on every call. Our proxy host
+// (Yandex Serverless Container) intercepts any `Authorization: Bearer …` and
+// tries to validate it as its own IAM token — the Supabase JWT isn't one, so the
+// platform rejects the request with 403 "Not authorized" BEFORE it reaches our
+// route. So on the browser->proxy hop we carry the token under a header the
+// platform ignores (x-sb-authorization); the proxy route restores it to
+// Authorization before forwarding to Supabase. The header name is shared with
+// app/api/supabase-proxy.
+const RELOCATED_AUTH_HEADER = 'x-sb-authorization';
+
+function relocateAuthHeader(headers: Headers): Headers {
+  const auth = headers.get('authorization');
+  if (auth) {
+    headers.delete('authorization');
+    headers.set(RELOCATED_AUTH_HEADER, auth);
+  }
+  return headers;
+}
+
 function proxiedFetch(supabaseUrl: string, proxyBase: string): typeof fetch {
   let origin = '';
   try {
@@ -76,9 +95,13 @@ function proxiedFetch(supabaseUrl: string, proxyBase: string): typeof fetch {
             : input.url;
       if (origin && reqUrl.startsWith(origin)) {
         const rewritten = proxyBase + reqUrl.slice(origin.length);
-        return typeof input === 'string' || input instanceof URL
-          ? fetch(rewritten, init)
-          : fetch(new Request(rewritten, input), init);
+        if (typeof input === 'string' || input instanceof URL) {
+          const headers = relocateAuthHeader(new Headers(init?.headers));
+          return fetch(rewritten, { ...init, headers });
+        }
+        // Request object (rare for supabase-js): override headers via init.
+        const headers = relocateAuthHeader(new Headers(input.headers));
+        return fetch(new Request(rewritten, input), { ...init, headers });
       }
     } catch {
       /* fall back to a direct fetch below */

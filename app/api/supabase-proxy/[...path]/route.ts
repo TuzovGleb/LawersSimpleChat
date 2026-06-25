@@ -24,12 +24,19 @@ const UPSTREAM = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_U
   '',
 );
 
+// The browser carries the Supabase token under this header (not `Authorization`)
+// so the Yandex Serverless Container platform doesn't intercept it as an IAM
+// token and 403 the request. We restore it to `Authorization` below. Shared name
+// with lib/supabase/client.ts.
+const RELOCATED_AUTH_HEADER = 'x-sb-authorization';
+
 // Headers we must not forward verbatim (host-specific / hop-by-hop / cookies).
 const STRIP_REQ = new Set([
   'host',
   'connection',
   'content-length',
   'cookie', // don't leak our site session cookie to Supabase; auth uses apikey/bearer headers
+  RELOCATED_AUTH_HEADER, // restored to `authorization` instead of forwarded as-is
 ]);
 // Response headers that would corrupt the relayed (already-decoded) body.
 const STRIP_RES = new Set(['content-encoding', 'content-length', 'transfer-encoding', 'connection']);
@@ -50,6 +57,10 @@ async function handle(
   req.headers.forEach((value, key) => {
     if (!STRIP_REQ.has(key.toLowerCase())) headers.set(key, value);
   });
+  // Restore the Supabase Authorization header the browser relocated to dodge the
+  // platform's IAM check (see RELOCATED_AUTH_HEADER).
+  const relocatedAuth = req.headers.get(RELOCATED_AUTH_HEADER);
+  if (relocatedAuth) headers.set('authorization', relocatedAuth);
 
   const method = req.method;
   const body = method === 'GET' || method === 'HEAD' ? undefined : await req.arrayBuffer();
