@@ -91,6 +91,54 @@ export function reportClientError(
   }
 }
 
+/**
+ * Ship a structured, non-error telemetry event to the same log pipeline as
+ * reportClientError (one JSON line, surface=client). Used for auth diagnostics
+ * (getSession/signIn timings, in-app-webview / Web-Locks flags) so a failing
+ * mobile session is observable even though we cannot reproduce it locally.
+ * NEVER throws.
+ */
+export function reportClientEvent(
+  event: string,
+  fields: Record<string, unknown> = {},
+  level: 'INFO' | 'WARN' | 'ERROR' = 'INFO',
+): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const payload = {
+      level,
+      surface: 'client',
+      message: event,
+      event,
+      chat_id: currentChatId,
+      request_id:
+        typeof fields.request_id === 'string' ? fields.request_id : newRequestId(),
+      url: window.location?.href,
+      userAgent: navigator?.userAgent,
+      ...fields,
+    };
+    const body = JSON.stringify(payload);
+
+    if (navigator?.sendBeacon) {
+      navigator.sendBeacon(
+        '/api/client-log',
+        new Blob([body], { type: 'application/json' }),
+      );
+    } else {
+      void fetch('/api/client-log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        keepalive: true,
+      }).catch(() => {
+        /* swallow: telemetry must never surface to the user */
+      });
+    }
+  } catch {
+    /* never throw from telemetry */
+  }
+}
+
 /** Install the global window error / unhandledrejection listeners (idempotent). */
 export function installGlobalErrorReporting(): void {
   if (installed || typeof window === 'undefined') return;

@@ -278,6 +278,10 @@ export function AuthForm() {
                         id="signup-email"
                         name="email"
                         type="email"
+                        inputMode="email"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
                         placeholder="name@example.com"
                         value={signupEmail}
                         onChange={(e) => setSignupEmail(e.target.value)}
@@ -537,6 +541,10 @@ function LoginForm({
           id="login-email"
           name="email"
           type="email"
+          inputMode="email"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
           placeholder="name@example.com"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
