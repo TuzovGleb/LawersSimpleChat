@@ -9,8 +9,8 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
-import { ToasterClient } from "@/components/toaster-client";
-import { Loader2, ShieldCheck, Lock, Server } from "lucide-react";
+import { AuthShell } from "@/components/auth-shell";
+import { Loader2 } from "lucide-react";
 
 const CALENDLY_URL =
   "https://calendly.com/glebtuzov/30-minute-call-with-tuzov-gleb-opencv?month=2025-12";
@@ -217,136 +217,87 @@ export function AuthForm() {
   }
 
   return (
-    <div className="auth-shell">
-      <aside className="auth-aside">
-        <Link href="/" className="logo" style={{ color: "#fff" }}>
-          Джейхелпер<span className="dot" style={{ color: "var(--brand-accent-bg)" }}>.</span>
+    <AuthShell
+      footer={
+        <Link href="/" style={{ color: "var(--text-muted)" }}>
+          На главную
         </Link>
-        <div className="aside-body">
-          <h2
-            style={{
-              color: "#fff",
-              fontFamily: "var(--font-serif-family)",
-              fontWeight: 500,
-              fontSize: 30,
-              lineHeight: 1.2,
-              margin: "0 0 24px",
-              maxWidth: 420,
-              letterSpacing: "-.012em",
-            }}
-          >
-            AI-помощник для российских юристов
-          </h2>
-          <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 14 }}>
-            <li style={{ display: "grid", gridTemplateColumns: "22px 1fr", gap: 12, fontSize: 15.5, color: "rgba(250,250,247,.85)", lineHeight: 1.45 }}>
-              <Server size={20} style={{ color: "var(--secondary-accent)", marginTop: 1 }} />
-              <span>Данные хранятся в России. Соответствие 152-ФЗ.</span>
-            </li>
-            <li style={{ display: "grid", gridTemplateColumns: "22px 1fr", gap: 12, fontSize: 15.5, color: "rgba(250,250,247,.85)", lineHeight: 1.45 }}>
-              <ShieldCheck size={20} style={{ color: "var(--secondary-accent)", marginTop: 1 }} />
-              <span>Содержимое дел не используется для обучения моделей.</span>
-            </li>
-            <li style={{ display: "grid", gridTemplateColumns: "22px 1fr", gap: 12, fontSize: 15.5, color: "rgba(250,250,247,.85)", lineHeight: 1.45 }}>
-              <Lock size={20} style={{ color: "var(--secondary-accent)", marginTop: 1 }} />
-              <span>Конфиденциальность — технически и юридически.</span>
-            </li>
-          </ul>
-        </div>
-      </aside>
+      }
+    >
+      {isSignupEnabled ? (
+        <>
+          <h1>Войти в Джейхелпер</h1>
+          <p className="lede">Введите email и пароль</p>
 
-      <main className="auth-main">
-        <div className="auth-form-wrap">
-          {isSignupEnabled ? (
-            <>
-              <h1>Войти в Джейхелпер</h1>
-              <p className="lede">Введите email и пароль</p>
+          <Tabs defaultValue={defaultTab} className="w-full">
+            <TabsList className="grid grid-cols-2 w-full" style={{ background: "var(--bg-soft)", borderRadius: 8, padding: 4, height: "auto" }}>
+              <TabsTrigger value="authorization" style={{ borderRadius: 6 }}>
+                Авторизация
+              </TabsTrigger>
+              <TabsTrigger value="registration" style={{ borderRadius: 6 }}>
+                Регистрация
+              </TabsTrigger>
+            </TabsList>
 
-              <Tabs defaultValue={defaultTab} className="w-full">
-                <TabsList className="grid grid-cols-2 w-full" style={{ background: "var(--bg-soft)", borderRadius: 8, padding: 4, height: "auto" }}>
-                  <TabsTrigger value="authorization" style={{ borderRadius: 6 }}>
-                    Авторизация
-                  </TabsTrigger>
-                  <TabsTrigger value="registration" style={{ borderRadius: 6 }}>
-                    Регистрация
-                  </TabsTrigger>
-                </TabsList>
-
-                <TabsContent value="registration" className="mt-6">
-                  <form onSubmit={handleSignUp} autoComplete="off" className="space-y-4">
-                    <FormField label="Email" id="signup-email">
-                      <Input
-                        id="signup-email"
-                        name="email"
-                        type="email"
-                        inputMode="email"
-                        autoCapitalize="none"
-                        autoCorrect="off"
-                        spellCheck={false}
-                        placeholder="name@example.com"
-                        value={signupEmail}
-                        onChange={(e) => setSignupEmail(e.target.value)}
-                        disabled={loading}
-                        required
-                        autoComplete="email"
-                      />
-                    </FormField>
-                    <FormField label="Пароль" id="signup-password">
-                      <Input
-                        id="signup-password"
-                        name="new-password"
-                        type="password"
-                        placeholder="Минимум 6 символов"
-                        value={signupPassword}
-                        onChange={(e) => setSignupPassword(e.target.value)}
-                        disabled={loading}
-                        required
-                        minLength={6}
-                        autoComplete="new-password"
-                      />
-                    </FormField>
-                    <FormField label="Подтвердите пароль" id="signup-confirm-password">
-                      <Input
-                        id="signup-confirm-password"
-                        name="confirm-password"
-                        type="password"
-                        placeholder="••••••••"
-                        value={confirmPassword}
-                        onChange={(e) => setConfirmPassword(e.target.value)}
-                        disabled={loading}
-                        required
-                        minLength={6}
-                        autoComplete="new-password"
-                      />
-                    </FormField>
-                    <Button
-                      type="submit"
-                      className="btn btn-primary w-full"
-                      disabled={loading || !isSignupFormValid}
-                    >
-                      {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                      Зарегистрироваться
-                    </Button>
-                  </form>
-                </TabsContent>
-
-                <TabsContent value="authorization" className="mt-6">
-                  <LoginForm
-                    email={loginEmail}
-                    password={loginPassword}
-                    setEmail={setLoginEmail}
-                    setPassword={setLoginPassword}
-                    loading={loading}
-                    isValid={isLoginFormValid}
-                    onSubmit={handleSubmit}
+            <TabsContent value="registration" className="mt-6">
+              <form onSubmit={handleSignUp} autoComplete="off" className="space-y-4">
+                <FormField label="Email" id="signup-email">
+                  <Input
+                    id="signup-email"
+                    name="email"
+                    type="email"
+                    inputMode="email"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    placeholder="name@example.com"
+                    value={signupEmail}
+                    onChange={(e) => setSignupEmail(e.target.value)}
+                    disabled={loading}
+                    required
+                    autoComplete="email"
                   />
-                </TabsContent>
-              </Tabs>
-            </>
-          ) : (
-            <>
-              <h1>Войти в Джейхелпер</h1>
-              <p className="lede">Введите email и пароль</p>
+                </FormField>
+                <FormField label="Пароль" id="signup-password">
+                  <Input
+                    id="signup-password"
+                    name="new-password"
+                    type="password"
+                    placeholder="Минимум 6 символов"
+                    value={signupPassword}
+                    onChange={(e) => setSignupPassword(e.target.value)}
+                    disabled={loading}
+                    required
+                    minLength={6}
+                    autoComplete="new-password"
+                  />
+                </FormField>
+                <FormField label="Подтвердите пароль" id="signup-confirm-password">
+                  <Input
+                    id="signup-confirm-password"
+                    name="confirm-password"
+                    type="password"
+                    placeholder="••••••••"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    disabled={loading}
+                    required
+                    minLength={6}
+                    autoComplete="new-password"
+                  />
+                </FormField>
+                <Button
+                  type="submit"
+                  className="btn btn-primary w-full"
+                  disabled={loading || !isSignupFormValid}
+                >
+                  {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  Зарегистрироваться
+                </Button>
+              </form>
+            </TabsContent>
 
+            <TabsContent value="authorization" className="mt-6">
               <LoginForm
                 email={loginEmail}
                 password={loginPassword}
@@ -356,145 +307,48 @@ export function AuthForm() {
                 isValid={isLoginFormValid}
                 onSubmit={handleSubmit}
               />
+            </TabsContent>
+          </Tabs>
+        </>
+      ) : (
+        <>
+          <h1>Войти в Джейхелпер</h1>
+          <p className="lede">Введите email и пароль</p>
 
-              <div
-                className="mt-6 rounded-lg p-5"
-                style={{
-                  background: "var(--bg-soft)",
-                  border: "1px solid var(--border-soft)",
-                }}
-              >
-                <p
-                  className="text-sm text-center mb-3"
-                  style={{ color: "var(--text-secondary)" }}
-                >
-                  Регистрация доступна только после звонка
-                </p>
-                <button
-                  type="button"
-                  onClick={handleCalendlyClick}
-                  className="btn btn-outline-accent w-full btn-sm"
-                >
-                  Записаться на звонок
-                </button>
-              </div>
-            </>
-          )}
-        </div>
+          <LoginForm
+            email={loginEmail}
+            password={loginPassword}
+            setEmail={setLoginEmail}
+            setPassword={setLoginPassword}
+            loading={loading}
+            isValid={isLoginFormValid}
+            onSubmit={handleSubmit}
+          />
 
-        <div
-          style={{
-            display: "flex",
-            flexWrap: "wrap",
-            gap: 18,
-            fontSize: 13,
-            color: "var(--text-muted)",
-            marginTop: 32,
-            paddingTop: 24,
-            borderTop: "1px solid var(--border-strong)",
-          }}
-        >
-          <Link href="/" style={{ color: "var(--text-muted)" }}>На главную</Link>
-        </div>
-      </main>
-
-      <ToasterClient />
-
-      <style jsx>{`
-        .auth-shell {
-          min-height: 100vh;
-          display: grid;
-          grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
-          background: var(--bg);
-        }
-        .auth-aside {
-          background: var(--bg-dark);
-          color: var(--text-on-dark);
-          padding: 48px 56px;
-          display: flex;
-          flex-direction: column;
-          position: relative;
-          overflow: hidden;
-        }
-        .auth-aside::after {
-          content: "";
-          position: absolute;
-          inset: 0;
-          background:
-            radial-gradient(800px 360px at 80% 10%, rgba(168, 118, 62, 0.1), transparent 60%),
-            radial-gradient(700px 300px at 10% 90%, rgba(122, 46, 46, 0.18), transparent 65%);
-          pointer-events: none;
-        }
-        .auth-aside > * {
-          position: relative;
-          z-index: 1;
-        }
-        .auth-aside .logo {
-          font-family: var(--font-serif-family);
-          font-weight: 600;
-          font-size: 24px;
-          color: #fff;
-          letter-spacing: -0.01em;
-          display: inline-flex;
-          align-items: baseline;
-          margin-bottom: auto;
-        }
-        .aside-body {
-          margin-top: auto;
-        }
-        .auth-main {
-          display: flex;
-          flex-direction: column;
-          padding: 28px 56px 40px;
-          background: var(--bg);
-          min-height: 100vh;
-        }
-        .auth-form-wrap {
-          width: 100%;
-          max-width: 420px;
-          margin: auto;
-          padding: 32px 0;
-        }
-        .auth-form-wrap h1 {
-          font-family: var(--font-serif-family);
-          font-size: 32px;
-          font-weight: 500;
-          letter-spacing: -0.012em;
-          margin: 0 0 8px;
-          color: var(--text-primary);
-        }
-        .auth-form-wrap .lede {
-          color: var(--text-secondary);
-          font-size: 15.5px;
-          margin: 0 0 28px;
-          line-height: 1.5;
-        }
-        @media (max-width: 900px) {
-          .auth-shell {
-            grid-template-columns: minmax(0, 1fr);
-          }
-          .auth-aside {
-            padding: 28px 22px 26px;
-            min-height: auto;
-          }
-          .auth-aside .logo {
-            margin-bottom: 20px;
-            font-size: 22px;
-          }
-          .auth-main {
-            padding: 20px 18px 28px;
-            min-height: auto;
-          }
-          .auth-form-wrap {
-            padding: 8px 0;
-            max-width: none;
-          }
-          .auth-form-wrap h1 {
-            font-size: 26px;
-          }
-        }
-      `}</style>
-    </div>
+          <div
+            className="mt-6 rounded-lg p-5"
+            style={{
+              background: "var(--bg-soft)",
+              border: "1px solid var(--border-soft)",
+            }}
+          >
+            <p
+              className="text-sm text-center mb-3"
+              style={{ color: "var(--text-secondary)" }}
+            >
+              Регистрация доступна только после звонка
+            </p>
+            <button
+              type="button"
+              onClick={handleCalendlyClick}
+              className="btn btn-outline-accent w-full btn-sm"
+            >
+              Записаться на звонок
+            </button>
+          </div>
+        </>
+      )}
+    </AuthShell>
   );
 }
 
@@ -567,6 +421,14 @@ function LoginForm({
           autoComplete="current-password"
         />
       </FormField>
+      <div style={{ marginTop: 8, textAlign: "right" }}>
+        <Link
+          href="/auth/forgot-password"
+          style={{ fontSize: 13.5, color: "var(--text-secondary)" }}
+        >
+          Забыли пароль?
+        </Link>
+      </div>
       <Button
         type="submit"
         className="btn btn-primary w-full"

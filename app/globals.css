@@ -307,6 +307,114 @@
   .info-box-muted {
     @apply rounded-lg border border-border/60 bg-muted/30 text-card-foreground shadow-sm transition-all;
   }
+
+  /* Auth screens (login / forgot-password / reset-password) share one layout
+     shell so they stay visually identical. See components/auth-shell.tsx. */
+  .auth-shell {
+    min-height: 100vh;
+    display: grid;
+    grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+    background: var(--bg);
+  }
+  .auth-aside {
+    background: var(--bg-dark);
+    color: var(--text-on-dark);
+    padding: 48px 56px;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    overflow: hidden;
+  }
+  .auth-aside::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(800px 360px at 80% 10%, rgba(168, 118, 62, 0.1), transparent 60%),
+      radial-gradient(700px 300px at 10% 90%, rgba(122, 46, 46, 0.18), transparent 65%);
+    pointer-events: none;
+  }
+  .auth-aside > * {
+    position: relative;
+    z-index: 1;
+  }
+  .auth-aside .logo {
+    font-family: var(--font-serif-family);
+    font-weight: 600;
+    font-size: 24px;
+    color: #fff;
+    letter-spacing: -0.01em;
+    display: inline-flex;
+    align-items: baseline;
+    margin-bottom: auto;
+  }
+  .aside-body {
+    margin-top: auto;
+  }
+  .auth-main {
+    display: flex;
+    flex-direction: column;
+    padding: 28px 56px 40px;
+    background: var(--bg);
+    min-height: 100vh;
+  }
+  .auth-form-wrap {
+    width: 100%;
+    max-width: 420px;
+    margin: auto;
+    padding: 32px 0;
+  }
+  .auth-form-wrap h1 {
+    font-family: var(--font-serif-family);
+    font-size: 32px;
+    font-weight: 500;
+    letter-spacing: -0.012em;
+    margin: 0 0 8px;
+    color: var(--text-primary);
+  }
+  .auth-form-wrap .lede {
+    color: var(--text-secondary);
+    font-size: 15.5px;
+    margin: 0 0 28px;
+    line-height: 1.5;
+  }
+  .auth-footer {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px;
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-top: 32px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border-strong);
+  }
+  .auth-footer a {
+    color: var(--text-muted);
+  }
+  @media (max-width: 900px) {
+    .auth-shell {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .auth-aside {
+      padding: 28px 22px 26px;
+      min-height: auto;
+    }
+    .auth-aside .logo {
+      margin-bottom: 20px;
+      font-size: 22px;
+    }
+    .auth-main {
+      padding: 20px 18px 28px;
+      min-height: auto;
+    }
+    .auth-form-wrap {
+      padding: 8px 0;
+      max-width: none;
+    }
+    .auth-form-wrap h1 {
+      font-size: 26px;
+    }
+  }
 }
 
 @layer utilities {

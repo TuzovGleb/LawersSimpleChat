@@ -229,14 +229,81 @@ export function useAuth() {
     return { error }
   }
 
+  // Send the password-recovery email. Wrapped in withTimeout for the same
+  // reason as signIn: on a throttled/blocked mobile network the underlying
+  // resetPasswordForEmail call has no timeout of its own and would hang the
+  // form forever. resetPasswordForEmail never reveals whether the email exists
+  // (POST /recover), so the caller always shows a generic success.
   const resetPassword = async (email: string) => {
     if (!supabase) {
       return { data: null, error: new Error('Supabase client is not available') };
     }
-    const { data, error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
-      redirectTo: `${window.location.origin}/auth/reset-password`,
-    })
-    return { data, error }
+    const normalizedEmail = email.trim().toLowerCase()
+    const t0 = now()
+    reportClientEvent('auth_reset_password_start', { request_id: authRequestId, is_inapp_webview: isInAppWebview() })
+    try {
+      const { data, error } = await withTimeout(
+        supabase.auth.resetPasswordForEmail(normalizedEmail, {
+          redirectTo: `${window.location.origin}/auth/reset-password`,
+        }),
+        SIGN_IN_TIMEOUT_MS,
+        'resetPassword',
+      )
+      reportClientEvent(
+        error ? 'auth_reset_password_rejected' : 'auth_reset_password_resolved',
+        {
+          request_id: authRequestId,
+          elapsed_ms: elapsedMsSince(t0),
+          ...(error ? { error_type: error.name, message: error.message, auth_status: (error as { status?: number }).status, error_code: (error as { code?: string }).code } : {}),
+        },
+        error ? 'WARN' : 'INFO',
+      )
+      return { data, error }
+    } catch (timeoutOrNetwork) {
+      reportClientEvent(
+        'auth_reset_password_timeout',
+        { request_id: authRequestId, elapsed_ms: elapsedMsSince(t0), error_type: (timeoutOrNetwork as Error)?.name, message: (timeoutOrNetwork as Error)?.message, ...envContext() },
+        'ERROR',
+      )
+      return { data: null, error: timeoutOrNetwork as Error }
+    }
+  }
+
+  // Set a new password for the currently-authenticated user. On the reset-password
+  // page the "current user" is the recovery session the PKCE ?code= callback
+  // established. updateUser has no built-in timeout either, so the same wrapper
+  // applies — an unbounded hang here is the worst case (user clicked "save" and
+  // the spinner never stops).
+  const updatePassword = async (newPassword: string) => {
+    if (!supabase) {
+      return { data: null, error: new Error('Supabase client is not available') };
+    }
+    const t0 = now()
+    reportClientEvent('auth_password_update_start', { request_id: authRequestId, is_inapp_webview: isInAppWebview() })
+    try {
+      const { data, error } = await withTimeout(
+        supabase.auth.updateUser({ password: newPassword }),
+        SIGN_IN_TIMEOUT_MS,
+        'updatePassword',
+      )
+      reportClientEvent(
+        error ? 'auth_password_update_rejected' : 'auth_password_update_resolved',
+        {
+          request_id: authRequestId,
+          elapsed_ms: elapsedMsSince(t0),
+          ...(error ? { error_type: error.name, message: error.message, auth_status: (error as { status?: number }).status, error_code: (error as { code?: string }).code } : {}),
+        },
+        error ? 'WARN' : 'INFO',
+      )
+      return { data, error }
+    } catch (timeoutOrNetwork) {
+      reportClientEvent(
+        'auth_password_update_timeout',
+        { request_id: authRequestId, elapsed_ms: elapsedMsSince(t0), error_type: (timeoutOrNetwork as Error)?.name, message: (timeoutOrNetwork as Error)?.message, ...envContext() },
+        'ERROR',
+      )
+      return { data: null, error: timeoutOrNetwork as Error }
+    }
   }
 
   return {
@@ -246,5 +313,6 @@ export function useAuth() {
     signUp,
     signOut,
     resetPassword,
+    updatePassword,
   }
 }
