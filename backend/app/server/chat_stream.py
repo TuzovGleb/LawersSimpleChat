@@ -206,6 +206,8 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
     result: dict | None = None
     announced_tool_calls: set[str] = set()
     needs_flush = False
+    tokens_sent = 0  # how far the answer got — used to make a 499/cancel diagnosable
+    last_tool: str | None = None
 
     # stream_mode=["messages", "values"]:
     #   - "messages" yields (AIMessageChunk, metadata) for token deltas;
@@ -240,6 +242,7 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
                         # response is buffered, so the client only sees it flushed
                         # at the end. Same code works fully on a VM.
                         yield _sse({"type": "token", "delta": delta})
+                        tokens_sent += 1
             elif mode == "values":
                 result = data
                 messages = data.get("messages") or []
@@ -250,6 +253,7 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
                             continue
                         announced_tool_calls.add(key)
                         name = call.get("name", "")
+                        last_tool = name
                         yield _sse(
                             {
                                 "type": "status",
@@ -267,7 +271,26 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
         # instance is frozen right after the response ends, so we must close +
         # flush the trace NOW. On a normal server the run would close on its own.
         needs_flush = True
-        logger.info("Chat stream cancelled (client disconnected)", extra={"session_id": session_id})
+        # Make the 499/cancel diagnosable: how long the turn ran and where it was
+        # when the client vanished (request_id/chat_id are already attached by
+        # RequestContextMiddleware). Big elapsed_s with tokens_sent>0 ⇒ a long
+        # turn likely dropped by an idle timeout on the buffered connection;
+        # near-zero elapsed_s ⇒ the user just navigated away.
+        phase = (
+            "streaming_answer" if tokens_sent
+            else f"tool:{last_tool}" if last_tool
+            else "thinking"
+        )
+        logger.info(
+            "Chat stream cancelled (client disconnected)",
+            extra={
+                "session_id": session_id,
+                "elapsed_s": round(time.time() - started, 1),
+                "phase": phase,
+                "tokens_sent": tokens_sent,
+                "tool_rounds": (result or {}).get("tool_rounds", 0),
+            },
+        )
         raise
     except Exception as error:  # noqa: BLE001 - surface any generation failure to the client
         needs_flush = True
