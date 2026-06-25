@@ -87,11 +87,24 @@ function proxiedFetch(supabaseUrl: string, proxyBase: string): typeof fetch {
   }) as typeof fetch;
 }
 
+// The browser routes its Supabase calls through our same-origin proxy by
+// DEFAULT — RU mobile carriers block *.supabase.co directly, so a direct call
+// hangs on cellular. This path ships with the app (app/api/supabase-proxy), so
+// it needs no env/infra. Override via NEXT_PUBLIC_SUPABASE_PROXY_URL to point at
+// a different proxy, or set it to "direct"/"off" to talk to Supabase straight.
+const DEFAULT_PROXY_BASE = '/api/supabase-proxy';
+
+function resolveProxyBase(): string {
+  const env = (process.env.NEXT_PUBLIC_SUPABASE_PROXY_URL || '').trim();
+  if (env.toLowerCase() === 'direct' || env.toLowerCase() === 'off') return '';
+  return (env || DEFAULT_PROXY_BASE).replace(/\/$/, '');
+}
+
 export function createClient() {
   // Проверяем наличие переменных окружения (могут отсутствовать во время сборки)
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
-  const proxyBase = (process.env.NEXT_PUBLIC_SUPABASE_PROXY_URL || '').replace(/\/$/, '');
+  const proxyBase = resolveProxyBase();
 
   // Если переменные отсутствуют, используем пустые строки
   // createBrowserClient все равно выбросит ошибку, но это произойдет во время выполнения,
