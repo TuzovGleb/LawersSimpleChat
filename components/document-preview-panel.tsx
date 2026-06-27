@@ -72,8 +72,15 @@ export function DocumentPreviewPanel({
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       <div className="absolute inset-0 bg-black/30" onClick={onClose} aria-hidden />
+      {/* Tame docx-preview's defaults: kill auto-hyphenation (Word doesn't do it),
+          drop the bulky gray wrapper padding, let the A4 sheet sit flush. */}
+      <style>{`
+        .docx-host .docx-wrapper { padding: 12px 0 0 0 !important; background: transparent !important; }
+        .docx-host .docx-wrapper > section.docx { margin: 0 auto 14px auto !important; }
+        .docx-host, .docx-host * { -webkit-hyphens: none !important; hyphens: none !important; }
+      `}</style>
       <aside
-        className="relative flex h-full w-full flex-col bg-white shadow-2xl md:w-[800px]"
+        className="relative flex h-full w-full max-w-full flex-col bg-white shadow-2xl md:w-[840px]"
         style={{ borderLeft: "1px solid var(--border-strong)" }}
         role="dialog"
         aria-label={`Предпросмотр документа ${fileName}`}
@@ -130,7 +137,11 @@ export function DocumentPreviewPanel({
               Не удалось загрузить документ
             </div>
           )}
-          <div ref={containerRef} style={{ display: status === "ready" ? "block" : "none" }} />
+          <div
+            ref={containerRef}
+            className="docx-host"
+            style={{ display: status === "ready" ? "block" : "none" }}
+          />
         </div>
       </aside>
     </div>
