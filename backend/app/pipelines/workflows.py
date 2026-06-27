@@ -14,9 +14,10 @@ from app.pipelines.nodes import (
     generate,
     increment_tool_rounds,
     route_after_generate,
+    route_after_tools,
 )
 from app.pipelines.state import ChatState
-from app.pipelines.tools.base import ToolSpec, handlers_of, tools_of
+from app.pipelines.tools.base import ToolSpec, handlers_of, terminal_tool_names, tools_of
 from app.rag_core.llm import ChatModelRegistry
 
 
@@ -34,6 +35,7 @@ def build_chat_graph(registry: ChatModelRegistry, specs: list[ToolSpec] | None =
     workflow.add_edge("build_context", "generate")
 
     if tools:
+        terminal_names = terminal_tool_names(specs)
         workflow.add_node("increment_tool_rounds", increment_tool_rounds)
         workflow.add_node("tools", ToolNode(tools))
         workflow.add_conditional_edges(
@@ -42,7 +44,12 @@ def build_chat_graph(registry: ChatModelRegistry, specs: list[ToolSpec] | None =
             {"tools": "increment_tool_rounds", "end": END},
         )
         workflow.add_edge("increment_tool_rounds", "tools")
-        workflow.add_edge("tools", "generate")
+        # A terminal tool ends the turn; everything else loops back to generate.
+        workflow.add_conditional_edges(
+            "tools",
+            partial(route_after_tools, terminal_names=terminal_names),
+            {"generate": "generate", "end": END},
+        )
     else:
         workflow.add_edge("generate", END)
 

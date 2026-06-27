@@ -42,10 +42,11 @@ import time
 from typing import AsyncIterator
 
 from fastapi import Request
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tracers.langchain import wait_for_all_tracers
 
 from app.pipelines.messages import messages_to_rows, split_generated, text_of
+from app.pipelines.tools.drafting import DRAFT_TOOL_NAME
 from app.server.schema import ChatRequest
 from app.services.supabase_repo import SupabaseRepo, unique_document_ids
 
@@ -82,6 +83,38 @@ def _token_delta(chunk) -> str:
     return text_of(content) if content else ""
 
 
+def _draft_artifacts(messages: list) -> list[dict]:
+    """Build downloadable-document artifacts from a turn's draft_document calls.
+
+    Mirrors the reload path (SupabaseRepo.get_messages): the frontend turns
+    ``id`` into the download URL; we carry only display fields. Status/file_name
+    come from the tool's JSON result (the same payload DraftHandler persists).
+    """
+    draft_call_ids = {
+        call.get("id")
+        for message in messages
+        if isinstance(message, AIMessage)
+        for call in (getattr(message, "tool_calls", None) or [])
+        if call.get("name") == DRAFT_TOOL_NAME and call.get("id")
+    }
+    artifacts: list[dict] = []
+    for message in messages:
+        if isinstance(message, ToolMessage) and message.tool_call_id in draft_call_ids:
+            try:
+                data = json.loads(text_of(message.content))
+            except (json.JSONDecodeError, TypeError):
+                data = {}
+            artifacts.append(
+                {
+                    "id": message.tool_call_id,
+                    "kind": "docx",
+                    "fileName": data.get("file_name") or "Документ",
+                    "status": data.get("status") or "failed",
+                }
+            )
+    return artifacts
+
+
 async def _assemble_history(
     repo: SupabaseRepo | None,
     payload: ChatRequest,
@@ -106,14 +139,21 @@ async def _assemble_history(
     last_user = next((m for m in reversed(client_messages) if m.get("role") == "user"), None)
     history = stored + ([last_user] if last_user else [])
 
-    # Compare only user-facing rows; tool rows and intermediate assistant
-    # messages exist server-side but the client never sees them.
-    stored_display = sum(
-        1
-        for row in stored
-        if row.get("role") == "user"
-        or (row.get("role") == "assistant" and not row.get("tool_calls"))
-    )
+    # Compare only user-facing rows. Tool rows and intermediate assistant
+    # messages are context-only, BUT a draft turn's note (an assistant row that
+    # carries a draft_document call) IS shown — count it like get_messages does,
+    # else this diagnostic logs spurious "history differs" warnings.
+    def _is_displayed(row: dict) -> bool:
+        if row.get("role") == "user":
+            return True
+        if row.get("role") != "assistant":
+            return False
+        calls = row.get("tool_calls") or []
+        if not calls:
+            return True
+        return any(isinstance(c, dict) and c.get("name") == DRAFT_TOOL_NAME for c in calls)
+
+    stored_display = sum(1 for row in stored if _is_displayed(row))
     if stored_display != len(client_messages) - 1:
         logger.warning(
             "Server history differs from client history",
@@ -372,5 +412,6 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
             "sessionId": session_id,
             "projectId": project_id,
             "metadata": metadata,
+            "artifacts": _draft_artifacts(result.get("messages") or []),
         }
     )

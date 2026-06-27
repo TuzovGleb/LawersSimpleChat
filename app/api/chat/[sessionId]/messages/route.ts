@@ -33,6 +33,10 @@ function extractUtm(url: URL): UTMData {
   return utm;
 }
 
+// Reload path. The backend owns message serialization (one source of truth:
+// user-facing filtering, attached-document enrichment, and draft-document
+// artifacts). We authorize the user here, then proxy to the backend's
+// GET /chats/{id}/messages.
 export async function GET(req: NextRequest) {
   const sessionId = getSessionIdFromRequest(req);
   const requestId = requestIdFrom(req);
@@ -40,6 +44,15 @@ export async function GET(req: NextRequest) {
 
   if (!sessionId) {
     return NextResponse.json({ error: 'sessionId is required' }, { status: 400 });
+  }
+
+  const backendUrl = process.env.BACKEND_URL;
+  if (!backendUrl) {
+    logger.error('Chat backend is not configured (missing BACKEND_URL)', { chat_id: sessionId, request_id: requestId, event: 'config_error' });
+    return NextResponse.json(
+      { error: 'Chat backend is not configured', details: 'Missing BACKEND_URL' },
+      { status: 503 },
+    );
   }
 
   try {
@@ -50,84 +63,44 @@ export async function GET(req: NextRequest) {
     if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
-
     const session = await getAuthorizedChatSession(supabase, sessionId, user.id);
     if (!session) {
       return NextResponse.json({ error: 'Чат не найден или нет доступа.' }, { status: 404 });
     }
-
-    const { data, error } = await supabase
-      .from('chat_messages')
-      .select('*')
-      .eq('session_id', sessionId)
-      .order('seq', { ascending: true })
-      .order('created_at', { ascending: true });
-
-    if (error) {
-      logger.error('Failed to load chat messages', { chat_id: sessionId, request_id: requestId, event: 'supabase_error', err: error });
-      return NextResponse.json({ error: 'Не удалось загрузить сообщения.' }, { status: 500 });
-    }
-
-    // Show only user-facing rows. The chat log also stores tool rows and
-    // intermediate assistant messages (those carrying tool_calls) for the LLM
-    // context; those are not rendered in the UI.
-    const messages = (data ?? []).filter(
-      (m: any) => m.role === 'user' || (m.role === 'assistant' && !m.tool_calls),
-    );
-    const attachedIds = Array.from(
-      new Set(
-        messages.flatMap((message: any) =>
-          Array.isArray(message.attached_document_ids) ? message.attached_document_ids : [],
-        ),
-      ),
-    ).filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
-
-    let documentsById = new Map<string, { id: string; name: string; mimeType: string; size: number }>();
-    if (attachedIds.length > 0) {
-      if (session.project_id) {
-        const { data: documentsData, error: documentsError } = await supabase
-          .from('project_documents')
-          .select('id, name, mime_type, size')
-          .eq('project_id', session.project_id)
-          .in('id', attachedIds);
-
-        if (documentsError) {
-          logger.error('Attached documents lookup failed', { chat_id: sessionId, request_id: requestId, event: 'documents_lookup_error', err: documentsError });
-        } else {
-          documentsById = new Map(
-            (documentsData ?? []).map((document: any) => [
-              document.id,
-              {
-                id: document.id,
-                name: document.name,
-                mimeType: document.mime_type,
-                size: Number(document.size) || 0,
-              },
-            ]),
-          );
-        }
-      }
-    }
-
-    logger.info('Chat history loaded', { chat_id: sessionId, request_id: requestId, event: 'history_loaded', message_count: messages.length, duration_ms: Date.now() - startedAt });
-    return NextResponse.json({
-      messages: messages.map((message: any) => {
-        const messageAttachedIds = Array.isArray(message.attached_document_ids)
-          ? message.attached_document_ids.filter((id: unknown): id is string => typeof id === 'string')
-          : [];
-
-        return {
-          ...message,
-          attachedDocumentIds: messageAttachedIds,
-          attachedDocuments: messageAttachedIds
-            .map((id: string) => documentsById.get(id))
-            .filter(Boolean),
-        };
-      }),
-    });
   } catch (error) {
-    logger.error('Unexpected error loading chat messages', { chat_id: sessionId, request_id: requestId, event: 'unexpected_error', err: error });
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    logger.error('Auth check failed', { chat_id: sessionId, request_id: requestId, event: 'auth_failed', err: error });
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  try {
+    const upstream = await fetch(
+      `${backendUrl.replace(/\/$/, '')}/chats/${encodeURIComponent(sessionId)}/messages`,
+      {
+        method: 'GET',
+        headers: {
+          'X-Backend-Secret': process.env.BACKEND_SHARED_SECRET ?? '',
+          'X-Chat-Id': sessionId,
+          'X-Request-Id': requestId,
+        },
+        signal: AbortSignal.timeout(30000),
+      },
+    );
+
+    if (!upstream.ok) {
+      const details = await upstream.text().catch(() => '');
+      logger.error('Chat backend returned an error loading messages', { chat_id: sessionId, request_id: requestId, event: 'backend_error', status: upstream.status, details });
+      return NextResponse.json(
+        { error: 'Не удалось загрузить сообщения.', details: details || `HTTP ${upstream.status}` },
+        { status: 502 },
+      );
+    }
+
+    const data = await upstream.json();
+    logger.info('Chat history loaded via backend', { chat_id: sessionId, request_id: requestId, event: 'history_loaded', message_count: Array.isArray(data?.messages) ? data.messages.length : 0, duration_ms: Date.now() - startedAt });
+    return NextResponse.json(data);
+  } catch (error) {
+    logger.error('Failed to reach chat backend for messages', { chat_id: sessionId, request_id: requestId, event: 'backend_unreachable', err: error });
+    return NextResponse.json({ error: 'Не удалось загрузить сообщения.' }, { status: 502 });
   }
 }
 

@@ -1,8 +1,21 @@
+/**
+ * Скачиваемый артефакт, прикреплённый к ответу помощника (например .docx,
+ * собранный инструментом draft_document). Рендерится чипом под сообщением;
+ * файл собирается по требованию по адресу /api/chat/{sessionId}/documents/{id}.
+ */
+export interface MessageArtifact {
+  id: string;
+  kind: 'docx';
+  fileName: string;
+  status: 'ready' | 'failed';
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   attachedDocumentIds?: string[];
   attachedDocuments?: ChatMessageDocument[];
+  artifacts?: MessageArtifact[];
   metadata?: {
     modelUsed?: string;
     thinkingTimeSeconds?: number;

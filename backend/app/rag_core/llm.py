@@ -103,6 +103,10 @@ class ChatModelRegistry:
     def default_model(self) -> str:
         return self._params.default_model
 
+    @property
+    def params(self) -> ChatProviderParams:
+        return self._params
+
     def resolve(self, selected_model: str | None) -> tuple[str, ChatOpenAI]:
         name = selected_model if selected_model in self._llms else self._params.default_model
         return name, self._llms[name]

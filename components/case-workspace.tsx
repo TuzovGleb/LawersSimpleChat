@@ -62,7 +62,6 @@ interface CaseWorkspaceProps {
   onSendMessage: () => void;
   onAttachDocument: (files: FileList | null) => void;
   onRemovePendingDocument: (documentId: string) => void;
-  onExportMessage?: (messageIndex: number) => void;
   onRetryMessage?: (messageIndex: number) => void;
   onSignOut: () => void;
 }
@@ -90,7 +89,6 @@ export function CaseWorkspace({
   onSendMessage,
   onAttachDocument,
   onRemovePendingDocument,
-  onExportMessage,
   onRetryMessage,
   onSignOut,
 }: CaseWorkspaceProps) {
@@ -104,6 +102,9 @@ export function CaseWorkspace({
     () => sessions.find((s) => s.id === activeSessionId) ?? null,
     [sessions, activeSessionId],
   );
+
+  // Persisted chat id used to route artifact downloads (matches the messages API).
+  const chatId = activeSession?.backendSessionId ?? activeSession?.id ?? "";
 
   const sortedSessions = useMemo(
     () =>
@@ -801,17 +802,45 @@ export function CaseWorkspace({
                             {message.content}
                           </ReactMarkdown>
                         </div>
-                        {onExportMessage && (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="absolute -right-10 top-0 h-8 w-8 opacity-0 transition-opacity group-hover:opacity-100"
-                            onClick={() => onExportMessage(index)}
-                            title="Скачать ответ в формате DOCX"
-                          >
-                            <Download className="h-4 w-4" />
-                            <span className="sr-only">Скачать ответ</span>
-                          </Button>
+                        {Array.isArray(message.artifacts) && message.artifacts.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {message.artifacts.map((artifact) =>
+                              artifact.status === "ready" ? (
+                                <a
+                                  key={artifact.id}
+                                  href={`/api/chat/${encodeURIComponent(chatId)}/documents/${encodeURIComponent(artifact.id)}`}
+                                  className="inline-flex max-w-[280px] items-center gap-1.5 rounded-full border px-3 py-1 text-[12px] transition-colors hover:bg-[var(--bg-soft)]"
+                                  style={{
+                                    border: "1px solid var(--border-strong)",
+                                    background: "#fff",
+                                    color: "var(--text-secondary)",
+                                  }}
+                                  title={`Скачать ${artifact.fileName}.docx`}
+                                >
+                                  <FileText
+                                    className="h-3.5 w-3.5 shrink-0"
+                                    style={{ color: "var(--brand-accent)" }}
+                                  />
+                                  <span className="truncate">{artifact.fileName}.docx</span>
+                                  <Download className="h-3.5 w-3.5 shrink-0" />
+                                </a>
+                              ) : (
+                                <span
+                                  key={artifact.id}
+                                  className="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[12px] opacity-70"
+                                  style={{
+                                    border: "1px solid var(--border-strong)",
+                                    background: "#fff",
+                                    color: "var(--text-secondary)",
+                                  }}
+                                  title="Документ не удалось оформить"
+                                >
+                                  <FileText className="h-3.5 w-3.5 shrink-0" />
+                                  <span className="truncate">Не удалось оформить документ</span>
+                                </span>
+                              ),
+                            )}
+                          </div>
                         )}
                       </div>
                     )}
