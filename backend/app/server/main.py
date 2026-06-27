@@ -22,7 +22,7 @@ from app.server.chat_stream import stream_chat
 from app.server.schema import ChatRequest, DocumentExtractRequest
 from app.server.security import verify_backend_secret
 from app.services.docx_builder import render_docx
-from app.services.docx_drafting import build_segmenter_llm
+from app.services.docx_drafting import build_segmenter_llm, segment_to_blocks
 from app.services.document_extraction import extract_text_from_document
 from app.services.s3_client import S3Client
 from app.services.supabase_repo import SupabaseRepo, map_project_document
@@ -65,12 +65,12 @@ async def lifespan(app: FastAPI):
         "Document recognizer ready", extra={"recognizer_chain": describe_recognizer(recognizer_cfg)}
     )
 
-    # The drafting tool segments a document into typed blocks via structured
-    # output; it needs a deterministic LLM (temp 0, no web-search). Built here
-    # because tool builders only see config["app"], not the chat model params.
+    # Document formatting (chip click -> render endpoint) segments the message
+    # text into typed blocks via structured output; needs a deterministic LLM
+    # (temp 0, no web-search). The draft_document tool itself is just a marker.
     app.state.segmenter_llm = build_segmenter_llm(registry.params)
 
-    tool_specs = load_tool_specs(config["app"]) + drafting_tool_specs(app.state.segmenter_llm)
+    tool_specs = load_tool_specs(config["app"]) + drafting_tool_specs()
     app.state.tool_handlers = handlers_of(tool_specs)
     app.state.chat_graph = build_chat_graph(registry, tool_specs)
 
@@ -245,24 +245,38 @@ def _content_disposition(file_name: str) -> str:
     dependencies=[Depends(verify_backend_secret)],
 )
 async def render_document(request: Request, chat_id: str, draft_id: str) -> Response:
-    """Render-on-demand: rebuild the .docx from the blocks stored in the draft
-    tool's ``tool_state`` (no LLM, deterministic). ``draft_id`` is the drafting
-    tool call id persisted on the tool row."""
+    """Render-on-demand: take the text of the assistant message that issued the
+    draft_document marker (``draft_id`` = that tool call id), segment it into
+    typed blocks (stage 1, LLM) and render the .docx (stage 2). Generated fresh
+    each click; nothing is pre-stored."""
     repo: SupabaseRepo | None = request.app.state.repo
+    segmenter = request.app.state.segmenter_llm
     if not repo:
         raise HTTPException(status_code=503, detail="Persistence not configured")
 
-    state = await repo.get_draft_state(chat_id, draft_id)
-    if not state or state.get("status") != "ready":
+    text = await repo.get_draft_message_text(chat_id, draft_id)
+    if not text or not text.strip():
         raise HTTPException(status_code=404, detail="Документ не найден")
 
-    data = render_docx(state.get("blocks") or [])
+    chat_id_ctx = current_chat_id()
+    with langsmith_trace(
+        name="document_render",
+        run_type="chain",
+        tags=["document_render", chat_id_ctx] if chat_id_ctx else ["document_render"],
+        metadata={"request_id": current_request_id(), "chat_id": chat_id_ctx, "text_length": len(text)},
+    ):
+        drafted = await segment_to_blocks(segmenter, text)
 
-    base_name = (state.get("file_name") or "Документ").strip() or "Документ"
+    data = render_docx([block.model_dump() for block in drafted.blocks])
+
+    base_name = (drafted.file_name or "Документ").strip() or "Документ"
     base_name = "".join(c for c in base_name if c not in '<>:"/\\|?*').strip()[:80] or "Документ"
     file_name = f"{base_name}.docx"
 
-    logger.info("Document rendered", extra={"doc_filename": file_name, "size": len(data)})
+    logger.info(
+        "Document rendered",
+        extra={"doc_filename": file_name, "block_count": len(drafted.blocks), "size": len(data)},
+    )
     return Response(
         content=data,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",

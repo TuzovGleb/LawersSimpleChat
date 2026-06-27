@@ -55,18 +55,20 @@ _DRAFT_TOOL_NAME = "draft_document"
 
 
 def _draft_artifact(draft_call: dict, draft_states: dict[str, dict]) -> dict:
-    """Build the frontend Artifact from a draft_document tool call + its state.
+    """Build the frontend Artifact from a draft_document marker call + its state.
 
-    The frontend turns ``id`` into the download URL
+    The marker stores only a title (the document is rendered on demand from the
+    message text). The frontend turns ``id`` into the download URL
     (/api/chat/{sessionId}/documents/{id}); we only carry the display fields.
     """
     call_id = draft_call.get("id") or ""
     state = draft_states.get(call_id) or {}
+    title = state.get("title") or (draft_call.get("args") or {}).get("title") or "Документ"
     return {
         "id": call_id,
         "kind": "docx",
-        "fileName": state.get("file_name") or "Документ",
-        "status": state.get("status") or "failed",
+        "fileName": title,
+        "status": "ready",
     }
 
 
@@ -184,24 +186,31 @@ class SupabaseRepo:
             logger.exception("Failed to load chat messages", extra={"session_id": session_id})
             return []
 
-    async def get_draft_state(self, session_id: str, draft_id: str) -> dict | None:
-        """Load a draft document's stored state ({status, file_name, blocks}) by
-        the drafting tool's call id, for render-on-demand."""
+    async def get_draft_message_text(self, session_id: str, draft_id: str) -> str | None:
+        """Text of the assistant message that issued the draft_document marker
+        (``draft_id`` = that tool call id), for render-on-demand. The document
+        lives in the assistant answer; the tool only marked it."""
         try:
             res = (
                 await self._client.table("chat_messages")
-                .select("tool_state")
+                .select("content, tool_calls")
                 .eq("session_id", session_id)
-                .eq("tool_call_id", draft_id)
-                .eq("tool_name", _DRAFT_TOOL_NAME)
-                .limit(1)
+                .eq("role", "assistant")
+                .order("seq")
                 .execute()
             )
-            data = res.data or []
-            return (data[0].get("tool_state") or {}) if data else None
+            for row in res.data or []:
+                for call in row.get("tool_calls") or []:
+                    if (
+                        isinstance(call, dict)
+                        and call.get("name") == _DRAFT_TOOL_NAME
+                        and call.get("id") == draft_id
+                    ):
+                        return row.get("content") or ""
+            return None
         except Exception:
             logger.exception(
-                "Failed to load draft state",
+                "Failed to load draft message text",
                 extra={"session_id": session_id, "draft_id": draft_id},
             )
             return None
