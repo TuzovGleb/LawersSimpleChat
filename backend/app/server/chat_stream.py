@@ -356,24 +356,27 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
     if result is None:
         return
 
+    # Only THIS turn's generated messages (after the last human). Crucial: a
+    # terminal tool can leave an empty-content assistant message; falling back
+    # over the full rebuilt history would surface the PREVIOUS turn's answer
+    # (the "duplicated message" bug).
+    generated = split_generated(result.get("messages") or [])
+    artifacts = _draft_artifacts(generated)
+
     assistant_message = result.get("response", "")
     if not assistant_message:
-        for message in reversed(result.get("messages") or []):
+        for message in reversed(generated):
             if isinstance(message, AIMessage):
-                content = message.content
-                if isinstance(content, str) and content.strip():
+                content = text_of(message.content).strip()
+                if content:
                     assistant_message = content
                     break
-                if isinstance(content, list):
-                    text_parts = [
-                        part.get("text", "")
-                        for part in content
-                        if isinstance(part, dict) and part.get("type") == "text"
-                    ]
-                    joined = "".join(text_parts).strip()
-                    if joined:
-                        assistant_message = joined
-                        break
+
+    # A drafting turn usually has NO assistant text (the model just calls the
+    # tool). Synthesize a short note so the bubble isn't empty / cross-turn.
+    if not assistant_message.strip() and artifacts:
+        file_name = artifacts[0].get("fileName") or "документ"
+        assistant_message = f"Готово — подготовил «{file_name}». Скачать можно по кнопке ниже."
 
     metadata = result.get("metadata", {}) or {}
     if "toolCallsCount" not in metadata:
@@ -382,19 +385,31 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
     last_user = next((m for m in reversed(payload.messages) if m.role == "user"), None)
     last_user_content = last_user.content if last_user else ""
 
-    if repo:
-        if session_id:
-            handlers = getattr(request.app.state, "tool_handlers", {}) or {}
-            generated = split_generated(result.get("messages") or [])
-            user_row = {
-                "role": "user",
-                "content": last_user_content,
-                "attached_document_ids": unique_document_ids(
-                    last_user.model_dump() if last_user else None
-                ),
-            }
-            rows = [user_row] + await messages_to_rows(generated, handlers)
-            await repo.save_messages(session_id, rows)
+    if repo and session_id:
+        handlers = getattr(request.app.state, "tool_handlers", {}) or {}
+        user_row = {
+            "role": "user",
+            "content": last_user_content,
+            "attached_document_ids": unique_document_ids(
+                last_user.model_dump() if last_user else None
+            ),
+        }
+        rows = [user_row] + await messages_to_rows(generated, handlers)
+        # Persist the synthesized note onto the (empty) drafting assistant row so
+        # reload shows it too — not an empty bubble.
+        if artifacts:
+            for row in rows:
+                if (
+                    row.get("role") == "assistant"
+                    and not (row.get("content") or "").strip()
+                    and any(
+                        isinstance(c, dict) and c.get("name") == DRAFT_TOOL_NAME
+                        for c in (row.get("tool_calls") or [])
+                    )
+                ):
+                    row["content"] = assistant_message
+                    break
+        await repo.save_messages(session_id, rows)
 
     logger.info(
         "Chat response sent",
@@ -413,6 +428,6 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
             "sessionId": session_id,
             "projectId": project_id,
             "metadata": metadata,
-            "artifacts": _draft_artifacts(result.get("messages") or []),
+            "artifacts": artifacts,
         }
     )
