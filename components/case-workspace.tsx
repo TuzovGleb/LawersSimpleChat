@@ -7,12 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ThinkingIndicator } from "@/components/thinking-indicator";
+import { DocumentPreviewPanel } from "@/components/document-preview-panel";
 import { cn } from "@/lib/utils";
 import type { ChatMessage, Project, SessionDocument, SelectedModel } from "@/lib/types";
 import {
   AlertCircle,
   ArrowLeft,
-  Download,
+  Eye,
   FileText,
   Loader2,
   LogOut,
@@ -94,6 +95,8 @@ export function CaseWorkspace({
 }: CaseWorkspaceProps) {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  // Drafted document currently open in the right-side preview panel.
+  const [preview, setPreview] = useState<{ id: string; fileName: string } | null>(null);
   const dragCounterRef = useRef(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -219,6 +222,14 @@ export function CaseWorkspace({
       onDragOver={(e) => e.preventDefault()}
       onDrop={handlePageDrop}
     >
+      {preview && chatId && (
+        <DocumentPreviewPanel
+          chatId={chatId}
+          artifactId={preview.id}
+          fileName={preview.fileName}
+          onClose={() => setPreview(null)}
+        />
+      )}
       {isDragging && (
         <div
           className="pointer-events-none absolute inset-0 z-50 flex flex-col items-center justify-center gap-3 rounded-none border-4 border-dashed"
@@ -806,24 +817,27 @@ export function CaseWorkspace({
                           <div className="mt-2 flex flex-wrap gap-1.5">
                             {message.artifacts.map((artifact) =>
                               artifact.status === "ready" ? (
-                                <a
+                                <button
                                   key={artifact.id}
-                                  href={`/api/chat/${encodeURIComponent(chatId)}/documents/${encodeURIComponent(artifact.id)}`}
+                                  type="button"
+                                  onClick={() =>
+                                    setPreview({ id: artifact.id, fileName: artifact.fileName })
+                                  }
                                   className="inline-flex max-w-[280px] items-center gap-1.5 rounded-full border px-3 py-1 text-[12px] transition-colors hover:bg-[var(--bg-soft)]"
                                   style={{
                                     border: "1px solid var(--border-strong)",
                                     background: "#fff",
                                     color: "var(--text-secondary)",
                                   }}
-                                  title={`Скачать ${artifact.fileName}.docx`}
+                                  title={`Открыть «${artifact.fileName}.docx»`}
                                 >
                                   <FileText
                                     className="h-3.5 w-3.5 shrink-0"
                                     style={{ color: "var(--brand-accent)" }}
                                   />
                                   <span className="truncate">{artifact.fileName}.docx</span>
-                                  <Download className="h-3.5 w-3.5 shrink-0" />
-                                </a>
+                                  <Eye className="h-3.5 w-3.5 shrink-0" />
+                                </button>
                               ) : (
                                 <span
                                   key={artifact.id}
