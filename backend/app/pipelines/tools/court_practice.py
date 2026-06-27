@@ -15,6 +15,7 @@ from langchain_core.tools import tool
 
 from app.pipelines.tools.base import InlineResultHandler, ToolResultHandler, ToolSpec
 from app.search import CourtPracticeSearcher, OpenSearchConfig, build_opensearch_client
+from app.search.case_types import CASE_TYPE_REFERENCE
 from app.search.regions import REGION_REFERENCE
 from app.search.search import format_decision_document, format_search_results, format_vs_crosscheck
 
@@ -30,6 +31,16 @@ _REGIONS_PARAM_DOC = (
     "search to, e.g. [52] for Нижегородская область or [77, 50] for Москва + "
     "Московская область. Omit (None) to search the whole country. Pass only "
     "numbers from this reference: " + REGION_REFERENCE
+)
+
+# Same cohesion principle for the `case_types` argument (вид судопроизводства):
+# the value vocabulary lives next to the parameter, the high-level SELECTION
+# logic stays in the system prompt. Codes come from app.search.case_types.
+_CASE_TYPES_PARAM_DOC = (
+    "Optional list of proceeding-type codes (вид судопроизводства) to restrict "
+    "the search to, e.g. ['criminal'] for уголовные дела or ['civil'] for "
+    "гражданские. Omit (None) to search across all proceeding types. Pass only "
+    "codes from this reference: " + CASE_TYPE_REFERENCE
 )
 
 
@@ -60,6 +71,7 @@ def court_practice_tool_specs(searcher: CourtPracticeSearcher) -> list[ToolSpec]
         date_to: str | None = None,
         result_type: Literal["granted", "denied", "partial", "other"] | None = None,
         regions: Annotated[list[int] | None, _REGIONS_PARAM_DOC] = None,
+        case_types: Annotated[list[str] | None, _CASE_TYPES_PARAM_DOC] = None,
     ) -> str:
         """Search court decisions (суды общей юрисдикции) by full text.
 
@@ -73,7 +85,9 @@ def court_practice_tool_specs(searcher: CourtPracticeSearcher) -> list[ToolSpec]
         Use date_from/date_to as YYYY-MM-DD. result_type filters outcome.
         Use regions to restrict to specific subjects of the RF (see the
         parameter reference); the rules for choosing a region are in the system
-        prompt.
+        prompt. Use case_types to restrict to a вид судопроизводства
+        (civil/criminal/...) when the question is clearly about one (see the
+        parameter reference); the selection rules are in the system prompt.
         Returns compact snippets; call get_court_decision for full act text.
         """
         if not queries:
@@ -89,11 +103,13 @@ def court_practice_tool_specs(searcher: CourtPracticeSearcher) -> list[ToolSpec]
             date_to=date_to,
             result_type=result_type,
             regions=regions,
+            case_types=case_types,
         )
         # Always append a Верховный Суд РФ cross-check (independent of the
         # lawyer's region filter) so the model can spot overturning/contradictory
-        # higher-court positions before relying on the main results.
-        vs_results = await searcher.vs_crosscheck(cleaned)
+        # higher-court positions before relying on the main results. The case_type
+        # filter IS forwarded — a criminal query cross-checks criminal ВС practice.
+        vs_results = await searcher.vs_crosscheck(cleaned, case_types=case_types)
         primary_ids = {(r.source.get("decision_id") or r.doc_id) for r in results}
         return format_search_results(results) + format_vs_crosscheck(vs_results, primary_ids)
 

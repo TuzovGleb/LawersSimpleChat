@@ -46,6 +46,12 @@ def test_build_query_body_no_region_filter_by_default(mock_searcher):
     assert "filter" not in body["query"]["bool"]
 
 
+def test_build_query_body_case_type_filter(mock_searcher):
+    body = mock_searcher._build_query_body("кража", case_types=["criminal"])
+    filters = body["query"]["bool"]["filter"]
+    assert {"terms": {"case_type": ["criminal"]}} in filters
+
+
 def test_search_tool_regions_param_carries_region_reference(mock_searcher):
     tool = court_practice_tool_specs(mock_searcher)[0].tool
     regions_doc = tool.args["regions"].get("description", "")
@@ -54,10 +60,23 @@ def test_search_tool_regions_param_carries_region_reference(mock_searcher):
     assert "91 Крым" in regions_doc
 
 
+def test_search_tool_case_types_param_carries_reference(mock_searcher):
+    tool = court_practice_tool_specs(mock_searcher)[0].tool
+    case_types_doc = tool.args["case_types"].get("description", "")
+    # The proceeding-type vocabulary lives on the tool parameter, not the prompt.
+    assert "criminal (уголовные)" in case_types_doc
+    assert "civil (гражданские)" in case_types_doc
+
+
 def test_system_prompt_keeps_region_logic_without_the_table():
     prompt = get_system_prompt()
     assert "Как определять регион" in prompt  # selection logic stays in the prompt
     assert "Справка по номерам регионов" not in prompt  # number table moved to the tool
+
+
+def test_system_prompt_keeps_case_type_selection_logic():
+    prompt = get_system_prompt()
+    assert "Как определять вид судопроизводства" in prompt
 
 
 def test_vs_crosscheck_uses_region_99_without_result_type(mock_searcher):
@@ -76,6 +95,17 @@ def test_vs_crosscheck_uses_region_99_without_result_type(mock_searcher):
     filters = body[1]["query"]["bool"]["filter"]
     assert {"terms": {"region_code": [99]}} in filters
     assert all("result_type" not in (f.get("term") or {}) for f in filters)
+
+
+def test_vs_crosscheck_forwards_case_type(mock_searcher):
+    # case_type is subject matter, not geography: a criminal query must
+    # cross-check criminal ВС practice, so the filter IS forwarded (alongside 99).
+    mock_searcher._client.msearch.return_value = {"responses": [{"hits": {"hits": []}}]}
+    mock_searcher.vs_crosscheck_sync(["хищение"], case_types=["criminal"])
+    body = mock_searcher._client.msearch.call_args.kwargs["body"]
+    filters = body[1]["query"]["bool"]["filter"]
+    assert {"terms": {"region_code": [99]}} in filters
+    assert {"terms": {"case_type": ["criminal"]}} in filters
 
 
 def test_format_vs_crosscheck_empty_and_dedup():
@@ -100,7 +130,7 @@ async def test_search_court_practice_appends_vs_crosscheck(mock_searcher, monkey
         return [RankedDocument(doc_id="reg-1", source={"decision_id": "reg-1", "case_number": "2-1/2026",
                                                        "court_name": "Райсуд"}, highlights=["рег фрагмент"])]
 
-    async def fake_vs(queries):
+    async def fake_vs(queries, *, case_types=None):
         return [RankedDocument(doc_id="vs-1", source={"decision_id": "vs-1", "case_number": "5-КГ26-1",
                                                       "result_type": "overturned"}, highlights=["позиция ВС"])]
 

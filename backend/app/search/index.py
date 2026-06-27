@@ -51,6 +51,9 @@ INDEX_BODY = {
             "act_url": {"type": "keyword", "index": False},
             "case_details_url": {"type": "keyword", "index": False},
             "region_code": {"type": "integer"},
+            # Вид судопроизводства (civil/criminal/...): dataset-level, resolved
+            # from the catalog at index time. See app.search.case_types.
+            "case_type": {"type": "keyword"},
         }
     },
 }
@@ -140,6 +143,10 @@ def normalize_case(case: dict, page_meta: dict) -> dict | None:
         "act_url": case.get("actUrl") or "",
         "case_details_url": case.get("caseDetailsUrl") or "",
         "region_code": region_code,
+        # Dataset-level вид судопроизводства, resolved from the catalog by the
+        # indexer and threaded through page_meta. None when the catalog gives no
+        # marker (then it just won't match a case_type filter).
+        "case_type": page_meta.get("case_type"),
     }
 
 

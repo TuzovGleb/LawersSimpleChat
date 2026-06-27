@@ -23,19 +23,22 @@ from app.search.index import (
     parallel_index_documents,
     set_index_refresh,
 )
+from app.search.case_types import CASE_TYPE_CODE_TO_NAME, case_type_from_catalog
 from app.search.regions import region_code_from_catalog
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 
-def iter_cases_from_page(page: dict, region_code: int | None = None):
+def iter_cases_from_page(page: dict, region_code: int | None = None, case_type: str | None = None):
     page_meta = {
         "courtName": page.get("courtName"),
         "vnkod": page.get("vnkod"),
         # Dataset-level region from the catalog; normalize_case prefers it and
         # falls back to the court's vnkod prefix when it is None.
         "region_code": region_code,
+        # Dataset-level вид судопроизводства (civil/criminal/...) from the catalog.
+        "case_type": case_type,
     }
     for case in page.get("cases") or []:
         document = normalize_case(case, page_meta)
@@ -59,6 +62,35 @@ def _directory_region_code(directory: Path) -> int | None:
     return None
 
 
+def _directory_case_type(directory: Path) -> str | None:
+    """Resolve a dataset's case type from its _catalog.json (root first)."""
+    root = directory / "_catalog.json"
+    candidates = [root] if root.is_file() else sorted(directory.rglob("_catalog.json"))
+    for path in candidates:
+        try:
+            with path.open(encoding="utf-8") as handle:
+                catalog = json.load(handle)
+        except (OSError, ValueError):
+            continue
+        code = case_type_from_catalog(catalog)
+        if code is not None:
+            return code
+    return None
+
+
+def _zip_case_type(archive: zipfile.ZipFile) -> str | None:
+    for name in sorted(n for n in archive.namelist() if n.endswith("_catalog.json")):
+        try:
+            with archive.open(name) as handle:
+                catalog = json.load(handle)
+        except (KeyError, ValueError):
+            continue
+        code = case_type_from_catalog(catalog)
+        if code is not None:
+            return code
+    return None
+
+
 def _zip_region_code(archive: zipfile.ZipFile) -> int | None:
     for name in sorted(n for n in archive.namelist() if n.endswith("_catalog.json")):
         try:
@@ -72,25 +104,33 @@ def _zip_region_code(archive: zipfile.ZipFile) -> int | None:
     return None
 
 
-def iter_cases_from_zip(zip_path: Path):
+def iter_cases_from_zip(zip_path: Path, case_type: str | None = None):
     with zipfile.ZipFile(zip_path) as archive:
         region_code = _zip_region_code(archive)
+        case_type = case_type or _zip_case_type(archive)
         json_names = sorted(name for name in archive.namelist() if name.endswith(".json") and not name.endswith("/"))
-        logger.info("Found %s JSON files in archive (region_code=%s)", len(json_names), region_code)
+        logger.info(
+            "Found %s JSON files in archive (region_code=%s case_type=%s)",
+            len(json_names), region_code, case_type,
+        )
         for name in json_names:
             with archive.open(name) as handle:
                 page = json.load(handle)
-            yield from iter_cases_from_page(page, region_code)
+            yield from iter_cases_from_page(page, region_code, case_type)
 
 
-def iter_cases_from_directory(directory: Path):
+def iter_cases_from_directory(directory: Path, case_type: str | None = None):
     region_code = _directory_region_code(directory)
+    case_type = case_type or _directory_case_type(directory)
     json_paths = sorted(path for path in directory.rglob("*.json") if path.is_file())
-    logger.info("Found %s JSON files under %s (region_code=%s)", len(json_paths), directory, region_code)
+    logger.info(
+        "Found %s JSON files under %s (region_code=%s case_type=%s)",
+        len(json_paths), directory, region_code, case_type,
+    )
     for path in json_paths:
         with path.open(encoding="utf-8") as handle:
             page = json.load(handle)
-        yield from iter_cases_from_page(page, region_code)
+        yield from iter_cases_from_page(page, region_code, case_type)
 
 
 def load_existing_ids(client, index_name: str) -> set[str]:
@@ -132,6 +172,14 @@ def main() -> int:
         default=1,
         help="Concurrent bulk requests. >1 streams via parallel_bulk; 2-4 suits a small VM.",
     )
+    parser.add_argument(
+        "--case-type",
+        choices=sorted(CASE_TYPE_CODE_TO_NAME),
+        default=None,
+        help="Override the dataset's вид судопроизводства. Normally auto-resolved "
+        "from the catalog (deloFilter.delo_table / category); pass this only when "
+        "the catalog lacks a marker.",
+    )
     parser.add_argument("--skip-existing", action="store_true", help="Skip documents already present in the index")
     parser.add_argument(
         "--no-refresh-tune",
@@ -161,9 +209,9 @@ def main() -> int:
         logger.info("Found %s existing documents", len(existing_ids))
 
     if source_path.is_dir():
-        case_iter = iter_cases_from_directory(source_path)
+        case_iter = iter_cases_from_directory(source_path, case_type=args.case_type)
     else:
-        case_iter = iter_cases_from_zip(source_path)
+        case_iter = iter_cases_from_zip(source_path, case_type=args.case_type)
 
     indexed = 0
     skipped = 0
