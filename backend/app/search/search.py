@@ -40,6 +40,7 @@ class CourtPracticeSearcher:
         date_to: str | None = None,
         result_type: str | None = None,
         regions: list[int] | None = None,
+        case_types: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         filters: list[dict[str, Any]] = []
         if date_from or date_to:
@@ -54,6 +55,9 @@ class CourtPracticeSearcher:
         if regions:
             # Exact-match on the numeric СУДРФ region code stored at index time.
             filters.append({"terms": {"region_code": regions}})
+        if case_types:
+            # Вид судопроизводства (civil/criminal/...) stored at index time.
+            filters.append({"terms": {"case_type": case_types}})
         return filters
 
     def _build_query_body(
@@ -64,10 +68,15 @@ class CourtPracticeSearcher:
         date_to: str | None = None,
         result_type: str | None = None,
         regions: list[int] | None = None,
+        case_types: list[str] | None = None,
         size: int | None = None,
     ) -> dict[str, Any]:
         filters = self._build_filters(
-            date_from=date_from, date_to=date_to, result_type=result_type, regions=regions
+            date_from=date_from,
+            date_to=date_to,
+            result_type=result_type,
+            regions=regions,
+            case_types=case_types,
         )
         bool_query: dict[str, Any] = {
             "must": [
@@ -131,6 +140,7 @@ class CourtPracticeSearcher:
         date_to: str | None = None,
         result_type: str | None = None,
         regions: list[int] | None = None,
+        case_types: list[str] | None = None,
     ) -> list[RankedDocument]:
         cleaned_queries = [q.strip() for q in queries if isinstance(q, str) and q.strip()]
         if not cleaned_queries:
@@ -143,6 +153,7 @@ class CourtPracticeSearcher:
                 date_to=date_to,
                 result_type=result_type,
                 regions=regions,
+                case_types=case_types,
             )
             response = self._client.search(index=self._config.index_alias, body=body)
             return self._hits_to_ranked(response.get("hits", {}).get("hits", []))[: self._config.top_k]
@@ -158,6 +169,7 @@ class CourtPracticeSearcher:
                     date_to=date_to,
                     result_type=result_type,
                     regions=regions,
+                    case_types=case_types,
                 )
             )
 
@@ -184,6 +196,7 @@ class CourtPracticeSearcher:
         date_to: str | None = None,
         result_type: str | None = None,
         regions: list[int] | None = None,
+        case_types: list[str] | None = None,
     ) -> list[RankedDocument]:
         return await asyncio.to_thread(
             self.search_sync,
@@ -192,16 +205,22 @@ class CourtPracticeSearcher:
             date_to=date_to,
             result_type=result_type,
             regions=regions,
+            case_types=case_types,
         )
 
-    def vs_crosscheck_sync(self, queries: list[str]) -> list[RankedDocument]:
+    def vs_crosscheck_sync(
+        self, queries: list[str], *, case_types: list[str] | None = None
+    ) -> list[RankedDocument]:
         """Always-on Верховный Суд РФ (region 99) cross-check.
 
         Runs the same topical queries against ВС practice only. The caller's
         region/result_type/date filters are intentionally NOT applied: a ВС
         position is the highest authority regardless of which region the lawyer
         searched, and ВС result_type values are outside the tool's vocabulary.
-        No RRF — just the few most relevant ВС acts, deduped by decision_id.
+        The case_type filter IS forwarded, though: it is subject matter, not
+        geography — a criminal query must cross-check against criminal ВС
+        practice, not civil. No RRF — just the few most relevant ВС acts,
+        deduped by decision_id.
         """
         cleaned = [q.strip() for q in queries if isinstance(q, str) and q.strip()]
         if not cleaned:
@@ -212,7 +231,12 @@ class CourtPracticeSearcher:
         for query in cleaned:
             msearch_body.append(header)
             msearch_body.append(
-                self._build_query_body(query, regions=[VS_REGION_CODE], size=VS_CROSSCHECK_SIZE)
+                self._build_query_body(
+                    query,
+                    regions=[VS_REGION_CODE],
+                    case_types=case_types,
+                    size=VS_CROSSCHECK_SIZE,
+                )
             )
 
         response = self._client.msearch(body=msearch_body)
@@ -231,8 +255,10 @@ class CourtPracticeSearcher:
                     return collected
         return collected
 
-    async def vs_crosscheck(self, queries: list[str]) -> list[RankedDocument]:
-        return await asyncio.to_thread(self.vs_crosscheck_sync, queries)
+    async def vs_crosscheck(
+        self, queries: list[str], *, case_types: list[str] | None = None
+    ) -> list[RankedDocument]:
+        return await asyncio.to_thread(self.vs_crosscheck_sync, queries, case_types=case_types)
 
     def get_decision_sync(self, decision_id: str) -> dict | None:
         try:

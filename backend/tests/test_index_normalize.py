@@ -96,6 +96,17 @@ def test_normalize_case_uses_catalog_region_when_vnkod_empty():
     assert doc["region_code"] == 52
 
 
+def test_normalize_case_carries_case_type_from_page_meta():
+    case = {"caseNumber": "1-66/2024", "actText": "Приговор"}
+    doc = normalize_case(case, {"vnkod": "52RS0001", "case_type": "criminal"})
+    assert doc["case_type"] == "criminal"
+
+
+def test_normalize_case_case_type_none_when_absent():
+    case = {"caseNumber": "2-1/2026", "actText": "Решение суда"}
+    assert normalize_case(case, {"vnkod": "52RS0001"})["case_type"] is None
+
+
 def test_delete_superseded_indices_keeps_current_and_aliased():
     client = MagicMock()
     client.indices.exists_alias.return_value = True
