@@ -42,7 +42,7 @@ import time
 from typing import AsyncIterator
 
 from fastapi import Request
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tracers.langchain import wait_for_all_tracers
 
 from app.pipelines.messages import messages_to_rows, split_generated, text_of
@@ -59,6 +59,7 @@ HEARTBEAT_INTERVAL_SECONDS = 5
 TOOL_STATUS_LABELS = {
     "search_court_practice": "Ищу судебную практику…",
     "get_court_decision": "Открываю решение…",
+    "draft_document": "Готовлю документ…",
 }
 DEFAULT_TOOL_STATUS = "Работаю с источниками…"
 
@@ -84,22 +85,34 @@ def _token_delta(chunk) -> str:
 
 
 def _draft_artifacts(messages: list) -> list[dict]:
-    """Build downloadable-document artifacts from a turn's draft_document markers.
+    """Build downloadable-document artifacts from a turn's draft_document calls.
 
-    Mirrors the reload path (SupabaseRepo._draft_artifact): the marker carries
-    only a title; the .docx is rendered on demand from the message text. The
-    frontend turns ``id`` into the download URL.
+    Mirrors the reload path (SupabaseRepo._draft_artifact): file_name/status come
+    from the tool's JSON result (the same {status, file_name, blocks} payload
+    DraftHandler persists). The frontend turns ``id`` into the download URL.
     """
+    draft_call_ids = {
+        call.get("id")
+        for message in messages
+        if isinstance(message, AIMessage)
+        for call in (getattr(message, "tool_calls", None) or [])
+        if call.get("name") == DRAFT_TOOL_NAME and call.get("id")
+    }
     artifacts: list[dict] = []
     for message in messages:
-        if not isinstance(message, AIMessage):
-            continue
-        for call in getattr(message, "tool_calls", None) or []:
-            if call.get("name") == DRAFT_TOOL_NAME and call.get("id"):
-                title = (call.get("args") or {}).get("title") or "Документ"
-                artifacts.append(
-                    {"id": call["id"], "kind": "docx", "fileName": title, "status": "ready"}
-                )
+        if isinstance(message, ToolMessage) and message.tool_call_id in draft_call_ids:
+            try:
+                data = json.loads(text_of(message.content))
+            except (json.JSONDecodeError, TypeError):
+                data = {}
+            artifacts.append(
+                {
+                    "id": message.tool_call_id,
+                    "kind": "docx",
+                    "fileName": data.get("file_name") or "Документ",
+                    "status": data.get("status") or "failed",
+                }
+            )
     return artifacts
 
 

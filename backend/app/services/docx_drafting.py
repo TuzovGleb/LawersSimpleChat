@@ -37,6 +37,22 @@ def build_segmenter_llm(params: ChatProviderParams) -> ChatOpenAI:
         ),
     )
 
+
+def build_drafting_llm(params: ChatProviderParams) -> ChatOpenAI:
+    """LLM for drafting a full procedural document from chat context: default
+    model, low temperature for precise legal prose, large output budget, no
+    web-search (it drafts from the supplied context, not the internet)."""
+    base = params.models[params.default_model]
+    return build_chat_llm(
+        params.provider,
+        ModelConfig(
+            name=base.name,
+            temperature=0.2,
+            max_tokens=32000,
+            web_search=WebSearchConfig(enabled=False),
+        ),
+    )
+
 BlockType = Literal[
     "header", "title", "subtitle", "h1", "body", "quote", "proshu",
     "item", "annex_h", "annex_item", "sign_left", "sign_right", "spacer", "table",

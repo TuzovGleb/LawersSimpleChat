@@ -1,58 +1,146 @@
-"""Document drafting tool — a terminal MARKER that attaches a downloadable .docx
-chip to the assistant's answer.
+"""Document drafting tool — drafts a full procedural document from the chat
+context and attaches it as a downloadable .docx artifact.
 
-For now this tool is a stub: it does NOT format anything. Its only job is to
-signal "this answer is a procedural document the lawyer may want as a file", so
-the frontend shows a download chip. The model writes the document in its answer
-text as usual; the .docx is built render-on-demand when the chip is clicked —
-the render endpoint reads that message's text, segments it and renders it
-(see GET /chats/{id}/documents/{draft_id}). Later this tool can become the real
-drafter (producing the structured document itself).
+The model calls ``draft_document(request)`` when the lawyer wants a document as a
+file. The tool receives the WHOLE conversation (via ``InjectedState``), drafts
+the complete text under a focused drafting system prompt (separate from the main
+assistant prompt), then segments it into typed blocks and stores them in
+``tool_state``. The .docx is rebuilt render-on-demand from those stored blocks
+(deterministic, no LLM) when the chip is clicked — drafting runs ONCE per turn,
+never per click.
 
-Being **terminal** (``ToolSpec.terminal=True``) keeps the answer text as the
-turn's final message: the agent loop ends after the marker instead of looping
-back to generate.
+Being **terminal** (``ToolSpec.terminal=True``) ends the turn after drafting: the
+document is the deliverable, and the visible bubble is the short note the model
+writes alongside the call (the document itself is NOT echoed into the chat).
 """
+import json
 import logging
+from typing import Annotated
 
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
+from langgraph.prebuilt import InjectedState
 
 from app.pipelines.tools.base import ToolResultHandler, ToolSpec
+from app.rag_core.prompt import get_drafting_prompt
+from app.services.docx_drafting import segment_to_blocks
 
 logger = logging.getLogger(__name__)
 
 DRAFT_TOOL_NAME = "draft_document"
 
 
+def _text(content) -> str:
+    """Flatten message content (str or list of content parts) to text. Local copy
+    to avoid importing app.pipelines.messages (would create an import cycle:
+    messages -> tools.base -> tools/__init__ -> drafting)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            part.get("text", "")
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return str(content or "")
+
+
+def _failure() -> str:
+    return json.dumps({"status": "failed", "file_name": "Документ", "blocks": []}, ensure_ascii=False)
+
+
+def _conversation_for_drafting(messages: list) -> list:
+    """Clean message list for the drafting LLM: keep human/assistant text and
+    tool results (as context), drop the main system prompt and tool-call
+    metadata so the focused drafting prompt fully governs the call."""
+    convo: list = []
+    for msg in messages:
+        if isinstance(msg, HumanMessage):
+            content = _text(msg.content).strip()
+            if content:
+                convo.append(HumanMessage(content=content))
+        elif isinstance(msg, AIMessage):
+            content = _text(msg.content).strip()
+            if content:
+                convo.append(AIMessage(content=content))
+        elif isinstance(msg, ToolMessage):
+            content = _text(msg.content).strip()
+            if content:
+                convo.append(HumanMessage(content=f"[Материалы по делу]\n{content}"))
+    return convo
+
+
 class DraftHandler(ToolResultHandler):
-    """Persist only the document title (for the chip label / file name). The
-    marker itself is the assistant row's tool call; nothing heavy is stored."""
+    """Persist the drafted document (status/file_name/blocks) for render-on-demand.
+
+    ``capture`` stores the full draft; ``run`` replays only a compact note into
+    future-turn context so the whole document doesn't bloat history (capture-rich
+    / replay-cheap, like CourtDecisionHandler)."""
 
     async def capture(self, *, args: dict, content: str) -> dict:
-        return {"title": (args.get("title") or "Документ").strip() or "Документ"}
+        try:
+            data = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            return {"status": "failed", "file_name": "Документ", "blocks": []}
+        return {
+            "status": data.get("status", "failed"),
+            "file_name": data.get("file_name") or "Документ",
+            "blocks": data.get("blocks") or [],
+        }
 
     async def run(self, *, args: dict, state: dict) -> str:
-        title = state.get("title") or "документ"
-        return f"[К ответу приложен документ «{title}» для скачивания.]"
+        file_name = state.get("file_name") or "документ"
+        if state.get("status") != "ready":
+            return f"[Не удалось оформить документ «{file_name}».]"
+        return f"[Документ «{file_name}» подготовлен и доступен пользователю для скачивания.]"
 
 
-def drafting_tool_specs() -> list[ToolSpec]:
-    """Build the terminal drafting marker tool. No LLM/segmenter needed: the
-    actual formatting happens on chip click in the render endpoint."""
+def drafting_tool_specs(drafting_llm: ChatOpenAI, segmenter: ChatOpenAI) -> list[ToolSpec]:
+    """Build the terminal drafting tool, closing over the drafting + segmenter LLMs."""
 
     @tool
-    async def draft_document(title: str) -> str:
-        """Прикрепить к ответу скачиваемый файл .docx с подготовленным документом.
+    async def draft_document(request: str, state: Annotated[dict, InjectedState]) -> str:
+        """Составить полный процессуальный документ и приложить его файлом .docx.
 
-        Вызывай этот инструмент, когда твой ответ содержит ГОТОВЫЙ процессуальный
-        документ (иск, возражения, ходатайство, пояснения, жалобу), который юрист
-        захочет получить файлом для подачи в суд. Сам текст документа изложи в
-        тексте ответа как обычно — инструмент лишь добавит к ответу кнопку
-        скачивания .docx, свёрстанного по стандарту для суда.
+        Вызывай, когда юрист хочет получить процессуальный документ (иск,
+        возражения, ходатайство, пояснения, жалобу) ФАЙЛОМ для подачи в суд.
+        Инструмент сам напишет полный текст документа, опираясь на весь контекст
+        переписки (запрос юриста, приложенные материалы, найденную практику, твой
+        анализ), и приложит готовый .docx.
 
-        title — краткое название документа (для имени файла и подписи кнопки),
-        например «Возражения на исковое заявление».
+        request — кратко: какой документ нужен и его ключевые требования
+        (например «Возражения на заявление о пропуске срока исковой давности»).
+        Полный текст документа в свой ответ НЕ пиши — его готовит инструмент.
         """
-        return f"ok:{(title or 'Документ').strip()}"
+        convo = _conversation_for_drafting(state.get("messages") or [])
+        draft_input = (
+            [SystemMessage(content=get_drafting_prompt())]
+            + convo
+            + [HumanMessage(content=f"Составь полный текст процессуального документа. Что нужно: {request}")]
+        )
+        try:
+            response = await drafting_llm.ainvoke(draft_input)
+            doc_text = _text(response.content).strip()
+        except Exception:  # noqa: BLE001 - any drafting failure -> failed artifact
+            logger.exception("draft_document drafting failed")
+            return _failure()
+        if not doc_text:
+            return _failure()
+
+        try:
+            drafted = await segment_to_blocks(segmenter, doc_text)
+        except Exception:  # noqa: BLE001 - any segmentation failure -> failed artifact
+            logger.exception("draft_document segmentation failed")
+            return _failure()
+
+        return json.dumps(
+            {
+                "status": "ready",
+                "file_name": drafted.file_name,
+                "blocks": [block.model_dump() for block in drafted.blocks],
+            },
+            ensure_ascii=False,
+        )
 
     return [ToolSpec(draft_document, DraftHandler(), terminal=True)]
