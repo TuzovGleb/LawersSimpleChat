@@ -5,9 +5,20 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sys
 import zipfile
 from pathlib import Path
+
+# Week-paginated datasets (e.g. mos_gorsud) name pages "page-WWWNNN.json", where
+# the first 3 digits are the scrape week and the last 3 are the page within it.
+# Used by the optional --week-from/--week-to filter; the week is not in the JSON.
+_WEEK_RE = re.compile(r"page-(\d{3})\d{3}\.json$")
+
+
+def _file_week(path: Path) -> int | None:
+    match = _WEEK_RE.search(path.name)
+    return int(match.group(1)) if match else None
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR))
@@ -119,10 +130,23 @@ def iter_cases_from_zip(zip_path: Path, case_type: str | None = None):
             yield from iter_cases_from_page(page, region_code, case_type)
 
 
-def iter_cases_from_directory(directory: Path, case_type: str | None = None):
+def iter_cases_from_directory(
+    directory: Path,
+    case_type: str | None = None,
+    week_from: int | None = None,
+    week_to: int | None = None,
+):
     region_code = _directory_region_code(directory)
     case_type = case_type or _directory_case_type(directory)
     json_paths = sorted(path for path in directory.rglob("*.json") if path.is_file())
+    if week_from is not None or week_to is not None:
+        lo = week_from if week_from is not None else -1
+        hi = week_to if week_to is not None else 10**9
+        before = len(json_paths)
+        # Keep only week-paginated pages within range; this also drops files that
+        # carry no week (e.g. legacy page-0001.json), which is intended.
+        json_paths = [p for p in json_paths if (w := _file_week(p)) is not None and lo <= w <= hi]
+        logger.info("Week filter [%s..%s]: kept %s of %s files", week_from, week_to, len(json_paths), before)
     logger.info(
         "Found %s JSON files under %s (region_code=%s case_type=%s)",
         len(json_paths), directory, region_code, case_type,
@@ -180,6 +204,19 @@ def main() -> int:
         "from the catalog (deloFilter.delo_table / category); pass this only when "
         "the catalog lacks a marker.",
     )
+    parser.add_argument(
+        "--week-from",
+        type=int,
+        default=None,
+        help="For week-paginated datasets (mos_gorsud, page-WWWNNN.json): index only "
+        "files whose scrape week >= this. Files without a week are skipped while filtering.",
+    )
+    parser.add_argument(
+        "--week-to",
+        type=int,
+        default=None,
+        help="Upper bound (inclusive) for the --week-from filter.",
+    )
     parser.add_argument("--skip-existing", action="store_true", help="Skip documents already present in the index")
     parser.add_argument(
         "--no-refresh-tune",
@@ -209,8 +246,12 @@ def main() -> int:
         logger.info("Found %s existing documents", len(existing_ids))
 
     if source_path.is_dir():
-        case_iter = iter_cases_from_directory(source_path, case_type=args.case_type)
+        case_iter = iter_cases_from_directory(
+            source_path, case_type=args.case_type, week_from=args.week_from, week_to=args.week_to
+        )
     else:
+        if args.week_from is not None or args.week_to is not None:
+            logger.warning("--week-from/--week-to is only applied to directory sources; ignoring for zip")
         case_iter = iter_cases_from_zip(source_path, case_type=args.case_type)
 
     indexed = 0

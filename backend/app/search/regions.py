@@ -128,8 +128,12 @@ def region_code_from_catalog(catalog: dict | None) -> int | None:
     if not isinstance(catalog, dict):
         return None
     subj = catalog.get("subj")
-    if isinstance(subj, int) and not isinstance(subj, bool):
+    # subj is a positive субъект code; 0 (or non-positive) is a sentinel for
+    # multi-region datasets — e.g. the cassation courts (КСОЮ) span many
+    # subjects, so their catalog carries subj=0 and we fall through to per-case
+    # resolution from each act's vnkod prefix at index time.
+    if isinstance(subj, int) and not isinstance(subj, bool) and subj > 0:
         return subj
-    if isinstance(subj, str) and subj.strip().isdigit():
+    if isinstance(subj, str) and subj.strip().isdigit() and int(subj.strip()) > 0:
         return int(subj.strip())
     return region_code_from_name(catalog.get("region"))
