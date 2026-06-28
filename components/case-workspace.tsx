@@ -26,6 +26,9 @@ import {
   X,
 } from "lucide-react";
 
+// Max height of the auto-growing composer textarea before it starts scrolling.
+const COMPOSER_MAX_HEIGHT = 160;
+
 type LocalChatSession = {
   id: string;
   title: string;
@@ -100,6 +103,7 @@ export function CaseWorkspace({
   const dragCounterRef = useRef(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const activeSession = useMemo(
     () => sessions.find((s) => s.id === activeSessionId) ?? null,
@@ -120,6 +124,17 @@ export function CaseWorkspace({
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [activeSession?.messages, streamingDraft, toolStatus]);
+
+  // Grow the composer textarea to fit its content, up to a max height (then scroll).
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) {
+      return;
+    }
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX_HEIGHT)}px`;
+    el.style.overflowY = el.scrollHeight > COMPOSER_MAX_HEIGHT ? "auto" : "hidden";
+  }, [input]);
 
   const resetDragState = useCallback(() => {
     dragCounterRef.current = 0;
@@ -968,7 +983,7 @@ export function CaseWorkspace({
                 className="composer-row"
                 style={{
                   display: "flex",
-                  alignItems: "center",
+                  alignItems: "flex-end",
                   gap: 10,
                   background: "#fff",
                   border: "1px solid var(--border-strong)",
@@ -978,18 +993,22 @@ export function CaseWorkspace({
                 }}
               >
                 <Textarea
+                  ref={textareaRef}
                   value={input}
                   onChange={(event) => onInputChange(event.target.value)}
                   onKeyDown={handleInputKeyDown}
+                  rows={1}
                   placeholder="Опишите ситуацию, вопрос или запрос…"
                   className="flex-1 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 focus:outline-none outline-none min-h-0"
                   style={{
                     minHeight: 24,
-                    maxHeight: 160,
+                    maxHeight: COMPOSER_MAX_HEIGHT,
                     padding: 4,
                     fontSize: 15,
+                    lineHeight: 1.5,
                     color: "var(--text-primary)",
                     background: "transparent",
+                    overflowY: "hidden",
                   }}
                   disabled={isLoading || isLoadingChats}
                 />
