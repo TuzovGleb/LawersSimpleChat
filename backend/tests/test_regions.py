@@ -30,6 +30,15 @@ def test_region_code_from_catalog_unknown_returns_none():
     assert region_code_from_catalog(None) is None
 
 
+def test_region_code_from_catalog_subj_zero_is_multiregion_sentinel():
+    # Cassation courts (КСОЮ) span many subjects: subj=0 must NOT resolve to a
+    # bogus region 0 — fall through so the per-case vnkod prefix decides.
+    assert region_code_from_catalog(
+        {"subj": 0, "region": "Кассационные суды общей юрисдикции"}
+    ) is None
+    assert region_code_from_catalog({"subj": "0"}) is None
+
+
 def test_region_reference_lists_codes_with_names():
     assert "52 Нижегородская область" in REGION_REFERENCE
     assert "24 Красноярский край" in REGION_REFERENCE
