@@ -24,7 +24,7 @@ from langgraph.prebuilt import InjectedState
 
 from app.pipelines.tools.base import ToolResultHandler, ToolSpec
 from app.rag_core.prompt import get_drafting_prompt
-from app.services.docx_drafting import segment_to_blocks
+from app.services.docx_drafting import assemble_blocks, classify_lines, tokenize_draft
 
 logger = logging.getLogger(__name__)
 
@@ -128,18 +128,25 @@ def drafting_tool_specs(drafting_llm: ChatOpenAI, segmenter: ChatOpenAI) -> list
         if not doc_text:
             return _failure()
 
-        try:
-            drafted = await segment_to_blocks(segmenter, doc_text)
-        except Exception:  # noqa: BLE001 - any segmentation failure -> failed artifact
-            logger.exception("draft_document segmentation failed")
+        # Deterministic tokenizer -> cheap line classifier -> reassemble. The
+        # classifier returns TYPES only (no document text), so its output stays
+        # tiny. Spacers and tables are detected in code, never re-emitted.
+        units = tokenize_draft(doc_text)
+        content_units = [u for u in units if u["kind"] == "content"]
+        if not content_units:
             return _failure()
+        try:
+            classified = await classify_lines(segmenter, content_units)
+            types_by_id = {line.id: line.type for line in classified.lines}
+            file_name = classified.file_name or "Документ"
+        except Exception:  # noqa: BLE001 - classification failed -> render as plain body
+            logger.exception("draft_document classification failed; rendering as plain body")
+            types_by_id = {}
+            file_name = "Документ"
 
+        blocks = assemble_blocks(units, types_by_id)
         return json.dumps(
-            {
-                "status": "ready",
-                "file_name": drafted.file_name,
-                "blocks": [block.model_dump() for block in drafted.blocks],
-            },
+            {"status": "ready", "file_name": file_name, "blocks": blocks},
             ensure_ascii=False,
         )
 
