@@ -50,25 +50,29 @@ def _failure() -> str:
     return json.dumps({"status": "failed", "file_name": "Документ", "blocks": []}, ensure_ascii=False)
 
 
-def _conversation_for_drafting(messages: list) -> list:
-    """Clean message list for the drafting LLM: keep human/assistant text and
-    tool results (as context), drop the main system prompt and tool-call
-    metadata so the focused drafting prompt fully governs the call."""
-    convo: list = []
+def _serialize_history(messages: list) -> str:
+    """Serialize the chat history to JSON for the drafting system prompt.
+
+    Keeps human/assistant text and tool results (court practice, etc.) as the
+    case context; drops the main assistant SystemMessage and empty/tool-call-only
+    messages. The drafting LLM reads this as the single source of what to draft.
+    """
+    items: list[dict] = []
     for msg in messages:
         if isinstance(msg, HumanMessage):
             content = _text(msg.content).strip()
             if content:
-                convo.append(HumanMessage(content=content))
+                items.append({"role": "Юрист", "content": content})
         elif isinstance(msg, AIMessage):
             content = _text(msg.content).strip()
             if content:
-                convo.append(AIMessage(content=content))
+                items.append({"role": "Ассистент", "content": content})
         elif isinstance(msg, ToolMessage):
             content = _text(msg.content).strip()
             if content:
-                convo.append(HumanMessage(content=f"[Материалы по делу]\n{content}"))
-    return convo
+                items.append({"role": "Материалы (результат инструмента)", "content": content})
+        # SystemMessage (the main assistant prompt) is intentionally skipped.
+    return json.dumps(items, ensure_ascii=False, indent=2)
 
 
 class DraftHandler(ToolResultHandler):
@@ -100,25 +104,29 @@ def drafting_tool_specs(drafting_llm: ChatOpenAI, segmenter: ChatOpenAI) -> list
     """Build the terminal drafting tool, closing over the drafting + segmenter LLMs."""
 
     @tool
-    async def draft_document(request: str, state: Annotated[dict, InjectedState]) -> str:
+    async def draft_document(state: Annotated[dict, InjectedState]) -> str:
         """Составить полный процессуальный документ и приложить его файлом .docx.
 
-        Вызывай, когда юрист хочет получить процессуальный документ (иск,
-        возражения, ходатайство, пояснения, жалобу) ФАЙЛОМ для подачи в суд.
-        Инструмент сам напишет полный текст документа, опираясь на весь контекст
-        переписки (запрос юриста, приложенные материалы, найденную практику, твой
-        анализ), и приложит готовый .docx.
-
-        request — кратко: какой документ нужен и его ключевые требования
-        (например «Возражения на заявление о пропуске срока исковой давности»).
+        Вызывай этот инструмент БЕЗ ПАРАМЕТРОВ, когда юрист хочет получить
+        процессуальный документ (иск, возражения, ходатайство, пояснения, жалобу)
+        ФАЙЛОМ для подачи в суд. Инструмент сам прочитает всю переписку и напишет
+        полный текст документа, опираясь на весь контекст (запрос юриста,
+        приложенные материалы, найденную практику, твой анализ), и приложит .docx.
         Полный текст документа в свой ответ НЕ пиши — его готовит инструмент.
         """
-        convo = _conversation_for_drafting(state.get("messages") or [])
-        draft_input = (
-            [SystemMessage(content=get_drafting_prompt())]
-            + convo
-            + [HumanMessage(content=f"Составь полный текст процессуального документа. Что нужно: {request}")]
+        history_json = _serialize_history(state.get("messages") or [])
+        system = (
+            get_drafting_prompt()
+            + "\n\n# КОНТЕКСТ: полная история переписки с юристом\n"
+            + "Ниже — вся переписка юриста с ассистентом в формате JSON. Именно из "
+            + "неё вытекает, какой документ нужен, и все факты, реквизиты и "
+            + "материалы дела. Опирайся ТОЛЬКО на этот контекст:\n\n"
+            + history_json
         )
+        draft_input = [
+            SystemMessage(content=system),
+            HumanMessage(content="Составь полный текст процессуального документа по контексту выше."),
+        ]
         try:
             response = await drafting_llm.ainvoke(draft_input)
             doc_text = _text(response.content).strip()
