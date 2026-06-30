@@ -49,6 +49,28 @@ def map_project_document(row: dict) -> dict:
     }
 
 
+# Kept in sync with DRAFT_TOOL_NAME in app.pipelines.tools.drafting. Duplicated
+# as a plain string so the services layer doesn't import the pipelines/LLM stack.
+_DRAFT_TOOL_NAME = "draft_document"
+
+
+def _draft_artifact(draft_call: dict, draft_states: dict[str, dict]) -> dict:
+    """Build the frontend Artifact from a draft_document tool call + its state.
+
+    The tool drafted + segmented the document and stored {status, file_name,
+    blocks} in tool_state; the .docx is rendered on demand from those blocks. The
+    frontend turns ``id`` into the download URL (/api/chat/{sessionId}/documents/{id}).
+    """
+    call_id = draft_call.get("id") or ""
+    state = draft_states.get(call_id) or {}
+    return {
+        "id": call_id,
+        "kind": "docx",
+        "fileName": state.get("file_name") or "Документ",
+        "status": state.get("status") or "failed",
+    }
+
+
 class SupabaseRepo:
     def __init__(self, client: AsyncClient):
         self._client = client
@@ -90,14 +112,43 @@ class SupabaseRepo:
                 .order("created_at")
                 .execute()
             )
-            # Show only user-facing rows: tool rows and intermediate assistant
-            # messages (those carrying tool_calls) are context-only.
-            messages = [
-                row
-                for row in (res.data or [])
-                if row.get("role") == "user"
-                or (row.get("role") == "assistant" and not row.get("tool_calls"))
-            ]
+            rows = res.data or []
+            # Draft documents are first-class artifacts: their blocks live in the
+            # draft_document tool row's tool_state. Index those by call id so the
+            # owning assistant message can carry a downloadable chip.
+            draft_states = {
+                row.get("tool_call_id"): (row.get("tool_state") or {})
+                for row in rows
+                if row.get("role") == "tool"
+                and row.get("tool_name") == _DRAFT_TOOL_NAME
+                and row.get("tool_call_id")
+            }
+
+            # User-facing rows: user messages, plain assistant answers, and the
+            # short note of a draft turn (assistant row carrying a draft_document
+            # call). Intermediate assistant messages (other tool calls) and tool
+            # rows stay context-only.
+            messages = []
+            artifacts_by_index: dict[int, list[dict]] = {}
+            for row in rows:
+                role = row.get("role")
+                if role == "user":
+                    messages.append(row)
+                    continue
+                if role != "assistant":
+                    continue
+                calls = row.get("tool_calls") or []
+                draft_call = next(
+                    (c for c in calls if isinstance(c, dict) and c.get("name") == _DRAFT_TOOL_NAME),
+                    None,
+                )
+                if not calls:
+                    messages.append(row)
+                elif draft_call:
+                    artifacts_by_index[len(messages)] = [_draft_artifact(draft_call, draft_states)]
+                    messages.append(row)
+                # else: intermediate tool-call message (e.g. search) -> skip
+
             attached_ids: dict[str, None] = {}
             for message in messages:
                 for doc_id in message.get("attached_document_ids") or []:
@@ -126,12 +177,35 @@ class SupabaseRepo:
                         for doc_id in (message.get("attached_document_ids") or [])
                         if isinstance(doc_id, str) and doc_id in documents_by_id
                     ],
+                    "artifacts": artifacts_by_index.get(index, []),
                 }
-                for message in messages
+                for index, message in enumerate(messages)
             ]
         except Exception:
             logger.exception("Failed to load chat messages", extra={"session_id": session_id})
             return []
+
+    async def get_draft_state(self, session_id: str, draft_id: str) -> dict | None:
+        """Load a drafted document's stored state ({status, file_name, blocks}) by
+        the drafting tool's call id, for render-on-demand."""
+        try:
+            res = (
+                await self._client.table("chat_messages")
+                .select("tool_state")
+                .eq("session_id", session_id)
+                .eq("tool_call_id", draft_id)
+                .eq("tool_name", _DRAFT_TOOL_NAME)
+                .limit(1)
+                .execute()
+            )
+            data = res.data or []
+            return (data[0].get("tool_state") or {}) if data else None
+        except Exception:
+            logger.exception(
+                "Failed to load draft state",
+                extra={"session_id": session_id, "draft_id": draft_id},
+            )
+            return None
 
     async def load_history(self, session_id: str) -> list[dict] | None:
         """Ordered history (user/assistant/tool) for LLM context assembly.

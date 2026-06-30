@@ -42,10 +42,11 @@ import time
 from typing import AsyncIterator
 
 from fastapi import Request
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tracers.langchain import wait_for_all_tracers
 
 from app.pipelines.messages import messages_to_rows, split_generated, text_of
+from app.pipelines.tools.drafting import DRAFT_TOOL_NAME
 from app.server.schema import ChatRequest
 from app.services.supabase_repo import SupabaseRepo, unique_document_ids
 
@@ -58,6 +59,7 @@ HEARTBEAT_INTERVAL_SECONDS = 5
 TOOL_STATUS_LABELS = {
     "search_court_practice": "Ищу судебную практику…",
     "get_court_decision": "Открываю решение…",
+    "draft_document": "Готовлю документ…",
 }
 DEFAULT_TOOL_STATUS = "Работаю с источниками…"
 
@@ -80,6 +82,38 @@ async def _anext_or_done(agen):
 def _token_delta(chunk) -> str:
     content = getattr(chunk, "content", None)
     return text_of(content) if content else ""
+
+
+def _draft_artifacts(messages: list) -> list[dict]:
+    """Build downloadable-document artifacts from a turn's draft_document calls.
+
+    Mirrors the reload path (SupabaseRepo._draft_artifact): file_name/status come
+    from the tool's JSON result (the same {status, file_name, blocks} payload
+    DraftHandler persists). The frontend turns ``id`` into the download URL.
+    """
+    draft_call_ids = {
+        call.get("id")
+        for message in messages
+        if isinstance(message, AIMessage)
+        for call in (getattr(message, "tool_calls", None) or [])
+        if call.get("name") == DRAFT_TOOL_NAME and call.get("id")
+    }
+    artifacts: list[dict] = []
+    for message in messages:
+        if isinstance(message, ToolMessage) and message.tool_call_id in draft_call_ids:
+            try:
+                data = json.loads(text_of(message.content))
+            except (json.JSONDecodeError, TypeError):
+                data = {}
+            artifacts.append(
+                {
+                    "id": message.tool_call_id,
+                    "kind": "docx",
+                    "fileName": data.get("file_name") or "Документ",
+                    "status": data.get("status") or "failed",
+                }
+            )
+    return artifacts
 
 
 async def _assemble_history(
@@ -106,14 +140,21 @@ async def _assemble_history(
     last_user = next((m for m in reversed(client_messages) if m.get("role") == "user"), None)
     history = stored + ([last_user] if last_user else [])
 
-    # Compare only user-facing rows; tool rows and intermediate assistant
-    # messages exist server-side but the client never sees them.
-    stored_display = sum(
-        1
-        for row in stored
-        if row.get("role") == "user"
-        or (row.get("role") == "assistant" and not row.get("tool_calls"))
-    )
+    # Compare only user-facing rows. Tool rows and intermediate assistant
+    # messages are context-only, BUT a draft turn's note (an assistant row that
+    # carries a draft_document call) IS shown — count it like get_messages does,
+    # else this diagnostic logs spurious "history differs" warnings.
+    def _is_displayed(row: dict) -> bool:
+        if row.get("role") == "user":
+            return True
+        if row.get("role") != "assistant":
+            return False
+        calls = row.get("tool_calls") or []
+        if not calls:
+            return True
+        return any(isinstance(c, dict) and c.get("name") == DRAFT_TOOL_NAME for c in calls)
+
+    stored_display = sum(1 for row in stored if _is_displayed(row))
     if stored_display != len(client_messages) - 1:
         logger.warning(
             "Server history differs from client history",
@@ -315,24 +356,27 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
     if result is None:
         return
 
+    # Only THIS turn's generated messages (after the last human). Crucial: a
+    # terminal tool can leave an empty-content assistant message; falling back
+    # over the full rebuilt history would surface the PREVIOUS turn's answer
+    # (the "duplicated message" bug).
+    generated = split_generated(result.get("messages") or [])
+    artifacts = _draft_artifacts(generated)
+
     assistant_message = result.get("response", "")
     if not assistant_message:
-        for message in reversed(result.get("messages") or []):
+        for message in reversed(generated):
             if isinstance(message, AIMessage):
-                content = message.content
-                if isinstance(content, str) and content.strip():
+                content = text_of(message.content).strip()
+                if content:
                     assistant_message = content
                     break
-                if isinstance(content, list):
-                    text_parts = [
-                        part.get("text", "")
-                        for part in content
-                        if isinstance(part, dict) and part.get("type") == "text"
-                    ]
-                    joined = "".join(text_parts).strip()
-                    if joined:
-                        assistant_message = joined
-                        break
+
+    # A drafting turn usually has NO assistant text (the model just calls the
+    # tool). Synthesize a short note so the bubble isn't empty / cross-turn.
+    if not assistant_message.strip() and artifacts:
+        file_name = artifacts[0].get("fileName") or "документ"
+        assistant_message = f"Готово — подготовил «{file_name}». Скачать можно по кнопке ниже."
 
     metadata = result.get("metadata", {}) or {}
     if "toolCallsCount" not in metadata:
@@ -341,19 +385,31 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
     last_user = next((m for m in reversed(payload.messages) if m.role == "user"), None)
     last_user_content = last_user.content if last_user else ""
 
-    if repo:
-        if session_id:
-            handlers = getattr(request.app.state, "tool_handlers", {}) or {}
-            generated = split_generated(result.get("messages") or [])
-            user_row = {
-                "role": "user",
-                "content": last_user_content,
-                "attached_document_ids": unique_document_ids(
-                    last_user.model_dump() if last_user else None
-                ),
-            }
-            rows = [user_row] + await messages_to_rows(generated, handlers)
-            await repo.save_messages(session_id, rows)
+    if repo and session_id:
+        handlers = getattr(request.app.state, "tool_handlers", {}) or {}
+        user_row = {
+            "role": "user",
+            "content": last_user_content,
+            "attached_document_ids": unique_document_ids(
+                last_user.model_dump() if last_user else None
+            ),
+        }
+        rows = [user_row] + await messages_to_rows(generated, handlers)
+        # Persist the synthesized note onto the (empty) drafting assistant row so
+        # reload shows it too — not an empty bubble.
+        if artifacts:
+            for row in rows:
+                if (
+                    row.get("role") == "assistant"
+                    and not (row.get("content") or "").strip()
+                    and any(
+                        isinstance(c, dict) and c.get("name") == DRAFT_TOOL_NAME
+                        for c in (row.get("tool_calls") or [])
+                    )
+                ):
+                    row["content"] = assistant_message
+                    break
+        await repo.save_messages(session_id, rows)
 
     logger.info(
         "Chat response sent",
@@ -372,5 +428,6 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
             "sessionId": session_id,
             "projectId": project_id,
             "metadata": metadata,
+            "artifacts": artifacts,
         }
     )

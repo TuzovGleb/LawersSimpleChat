@@ -3,16 +3,17 @@ from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 import logging
 import os
+from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from langchain_core.tracers.langchain import wait_for_all_tracers
 from langsmith.run_helpers import trace as langsmith_trace
 
 from app.config import CONFIG
-from app.pipelines.tools import handlers_of, load_tool_specs
+from app.pipelines.tools import drafting_tool_specs, handlers_of, load_tool_specs
 from app.pipelines.workflows import build_chat_graph
 from app.rag_core.llm import get_chat_registry
 from app.rag_core.recognizers.base import RecognizerError
@@ -20,6 +21,8 @@ from app.rag_core.recognizers.factory import describe as describe_recognizer, ge
 from app.server.chat_stream import stream_chat
 from app.server.schema import ChatRequest, DocumentExtractRequest
 from app.server.security import verify_backend_secret
+from app.services.docx_builder import render_docx
+from app.services.docx_drafting import build_drafting_llm, build_segmenter_llm
 from app.services.document_extraction import extract_text_from_document
 from app.services.s3_client import S3Client
 from app.services.supabase_repo import SupabaseRepo, map_project_document
@@ -62,7 +65,16 @@ async def lifespan(app: FastAPI):
         "Document recognizer ready", extra={"recognizer_chain": describe_recognizer(recognizer_cfg)}
     )
 
-    tool_specs = load_tool_specs(config["app"])
+    # The draft_document tool drafts a full document from chat context (drafting
+    # LLM) and segments it into typed blocks (segmenter LLM) — both deterministic
+    # and built here because tool builders only see config["app"], not the chat
+    # model params. The .docx is then rendered on demand from the stored blocks.
+    app.state.segmenter_llm = build_segmenter_llm(registry.params)
+    drafting_llm = build_drafting_llm(registry.params)
+
+    tool_specs = load_tool_specs(config["app"]) + drafting_tool_specs(
+        drafting_llm, app.state.segmenter_llm
+    )
     app.state.tool_handlers = handlers_of(tool_specs)
     app.state.chat_graph = build_chat_graph(registry, tool_specs)
 
@@ -224,6 +236,42 @@ async def extract_document(request: Request, payload: DocumentExtractRequest) ->
             },
         )
         return JSONResponse(status_code=201, content={"document": map_project_document(row)})
+
+
+def _content_disposition(file_name: str) -> str:
+    """attachment header with an ASCII fallback + RFC 5987 UTF-8 name (Cyrillic)."""
+    ascii_fallback = file_name.encode("ascii", "ignore").decode("ascii").strip() or "document.docx"
+    return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(file_name)}"
+
+
+@app.get(
+    "/chats/{chat_id}/documents/{draft_id}",
+    dependencies=[Depends(verify_backend_secret)],
+)
+async def render_document(request: Request, chat_id: str, draft_id: str) -> Response:
+    """Render-on-demand: rebuild the .docx from the blocks the draft_document tool
+    stored in ``tool_state`` (deterministic, no LLM). ``draft_id`` is the drafting
+    tool call id. Drafting itself ran once, during the chat turn."""
+    repo: SupabaseRepo | None = request.app.state.repo
+    if not repo:
+        raise HTTPException(status_code=503, detail="Persistence not configured")
+
+    state = await repo.get_draft_state(chat_id, draft_id)
+    if not state or state.get("status") != "ready":
+        raise HTTPException(status_code=404, detail="Документ не найден")
+
+    data = render_docx(state.get("blocks") or [])
+
+    base_name = (state.get("file_name") or "Документ").strip() or "Документ"
+    base_name = "".join(c for c in base_name if c not in '<>:"/\\|?*').strip()[:80] or "Документ"
+    file_name = f"{base_name}.docx"
+
+    logger.info("Document rendered", extra={"doc_filename": file_name, "size": len(data)})
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": _content_disposition(file_name)},
+    )
 
 
 def get_app() -> FastAPI:

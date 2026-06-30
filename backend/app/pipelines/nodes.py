@@ -2,7 +2,7 @@
 import logging
 import time
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from openai import APIError
 
@@ -78,6 +78,24 @@ def route_after_generate(state: dict) -> str:
 
 async def increment_tool_rounds(state: dict) -> dict:
     return {"tool_rounds": state.get("tool_rounds", 0) + 1}
+
+
+def route_after_tools(state: dict, *, terminal_names: frozenset[str]) -> str:
+    """After the tool node: END if a terminal tool ran, else loop to generate.
+
+    Terminal-ness is a hardcoded tool property (see ``ToolSpec.terminal``), not a
+    model decision. We inspect the trailing run of ``ToolMessage``s appended this
+    round (one per tool call) and end the turn if any came from a terminal tool.
+    """
+    if not terminal_names:
+        return "generate"
+    for message in reversed(state.get("messages") or []):
+        if isinstance(message, ToolMessage):
+            if getattr(message, "name", None) in terminal_names:
+                return "end"
+            continue
+        break  # reached the AIMessage that issued the calls; stop scanning
+    return "generate"
 
 
 def _is_empty(response: AIMessage, tool_calls: list) -> bool:

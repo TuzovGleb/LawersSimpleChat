@@ -7,12 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ThinkingIndicator } from "@/components/thinking-indicator";
+import { DocumentPreviewPanel } from "@/components/document-preview-panel";
 import { cn } from "@/lib/utils";
 import type { ChatMessage, Project, SessionDocument, SelectedModel } from "@/lib/types";
 import {
   AlertCircle,
   ArrowLeft,
-  Download,
+  Eye,
   FileText,
   Loader2,
   LogOut,
@@ -24,6 +25,9 @@ import {
   Send,
   X,
 } from "lucide-react";
+
+// Max height of the auto-growing composer textarea before it starts scrolling.
+const COMPOSER_MAX_HEIGHT = 160;
 
 type LocalChatSession = {
   id: string;
@@ -62,7 +66,6 @@ interface CaseWorkspaceProps {
   onSendMessage: () => void;
   onAttachDocument: (files: FileList | null) => void;
   onRemovePendingDocument: (documentId: string) => void;
-  onExportMessage?: (messageIndex: number) => void;
   onRetryMessage?: (messageIndex: number) => void;
   onSignOut: () => void;
 }
@@ -90,20 +93,25 @@ export function CaseWorkspace({
   onSendMessage,
   onAttachDocument,
   onRemovePendingDocument,
-  onExportMessage,
   onRetryMessage,
   onSignOut,
 }: CaseWorkspaceProps) {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  // Drafted document currently open in the right-side preview panel.
+  const [preview, setPreview] = useState<{ id: string; fileName: string } | null>(null);
   const dragCounterRef = useRef(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const activeSession = useMemo(
     () => sessions.find((s) => s.id === activeSessionId) ?? null,
     [sessions, activeSessionId],
   );
+
+  // Persisted chat id used to route artifact downloads (matches the messages API).
+  const chatId = activeSession?.backendSessionId ?? activeSession?.id ?? "";
 
   const sortedSessions = useMemo(
     () =>
@@ -116,6 +124,17 @@ export function CaseWorkspace({
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [activeSession?.messages, streamingDraft, toolStatus]);
+
+  // Grow the composer textarea to fit its content, up to a max height (then scroll).
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) {
+      return;
+    }
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX_HEIGHT)}px`;
+    el.style.overflowY = el.scrollHeight > COMPOSER_MAX_HEIGHT ? "auto" : "hidden";
+  }, [input]);
 
   const resetDragState = useCallback(() => {
     dragCounterRef.current = 0;
@@ -218,6 +237,14 @@ export function CaseWorkspace({
       onDragOver={(e) => e.preventDefault()}
       onDrop={handlePageDrop}
     >
+      {preview && chatId && (
+        <DocumentPreviewPanel
+          chatId={chatId}
+          artifactId={preview.id}
+          fileName={preview.fileName}
+          onClose={() => setPreview(null)}
+        />
+      )}
       {isDragging && (
         <div
           className="pointer-events-none absolute inset-0 z-50 flex flex-col items-center justify-center gap-3 rounded-none border-4 border-dashed"
@@ -801,17 +828,48 @@ export function CaseWorkspace({
                             {message.content}
                           </ReactMarkdown>
                         </div>
-                        {onExportMessage && (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="absolute -right-10 top-0 h-8 w-8 opacity-0 transition-opacity group-hover:opacity-100"
-                            onClick={() => onExportMessage(index)}
-                            title="Скачать ответ в формате DOCX"
-                          >
-                            <Download className="h-4 w-4" />
-                            <span className="sr-only">Скачать ответ</span>
-                          </Button>
+                        {Array.isArray(message.artifacts) && message.artifacts.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {message.artifacts.map((artifact) =>
+                              artifact.status === "ready" ? (
+                                <button
+                                  key={artifact.id}
+                                  type="button"
+                                  onClick={() =>
+                                    setPreview({ id: artifact.id, fileName: artifact.fileName })
+                                  }
+                                  className="inline-flex max-w-[280px] items-center gap-1.5 rounded-full border px-3 py-1 text-[12px] transition-colors hover:bg-[var(--bg-soft)]"
+                                  style={{
+                                    border: "1px solid var(--border-strong)",
+                                    background: "#fff",
+                                    color: "var(--text-secondary)",
+                                  }}
+                                  title={`Открыть «${artifact.fileName}.docx»`}
+                                >
+                                  <FileText
+                                    className="h-3.5 w-3.5 shrink-0"
+                                    style={{ color: "var(--brand-accent)" }}
+                                  />
+                                  <span className="truncate">{artifact.fileName}.docx</span>
+                                  <Eye className="h-3.5 w-3.5 shrink-0" />
+                                </button>
+                              ) : (
+                                <span
+                                  key={artifact.id}
+                                  className="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[12px] opacity-70"
+                                  style={{
+                                    border: "1px solid var(--border-strong)",
+                                    background: "#fff",
+                                    color: "var(--text-secondary)",
+                                  }}
+                                  title="Документ не удалось оформить"
+                                >
+                                  <FileText className="h-3.5 w-3.5 shrink-0" />
+                                  <span className="truncate">Не удалось оформить документ</span>
+                                </span>
+                              ),
+                            )}
+                          </div>
                         )}
                       </div>
                     )}
@@ -925,7 +983,7 @@ export function CaseWorkspace({
                 className="composer-row"
                 style={{
                   display: "flex",
-                  alignItems: "center",
+                  alignItems: "flex-end",
                   gap: 10,
                   background: "#fff",
                   border: "1px solid var(--border-strong)",
@@ -935,18 +993,22 @@ export function CaseWorkspace({
                 }}
               >
                 <Textarea
+                  ref={textareaRef}
                   value={input}
                   onChange={(event) => onInputChange(event.target.value)}
                   onKeyDown={handleInputKeyDown}
+                  rows={1}
                   placeholder="Опишите ситуацию, вопрос или запрос…"
                   className="flex-1 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 focus:outline-none outline-none min-h-0"
                   style={{
                     minHeight: 24,
-                    maxHeight: 160,
+                    maxHeight: COMPOSER_MAX_HEIGHT,
                     padding: 4,
                     fontSize: 15,
+                    lineHeight: 1.5,
                     color: "var(--text-primary)",
                     background: "transparent",
+                    overflowY: "hidden",
                   }}
                   disabled={isLoading || isLoadingChats}
                 />

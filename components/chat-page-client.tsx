@@ -7,7 +7,6 @@ import { CaseSelectionScreen } from "@/components/case-selection-screen";
 import { CaseWorkspace } from "@/components/case-workspace";
 import type { ChatMessage, ChatMessageDocument, Project, SessionDocument, SelectedModel } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
-import { useExportMessage } from "@/hooks/use-export-message";
 import { useAuth } from "@/hooks/use-auth";
 import { ToasterClient } from "@/components/toaster-client";
 import { fetchWithRetry, safeJsonResponse, resolveApiUrl } from "@/lib/utils";
@@ -109,6 +108,7 @@ function normalizeDbMessages(raw: unknown): ChatMessage[] {
       : Array.isArray(msg.attached_documents)
         ? msg.attached_documents
         : undefined,
+    artifacts: Array.isArray(msg.artifacts) ? msg.artifacts : undefined,
   }));
 }
 
@@ -170,7 +170,6 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
     trimmedMessage: string;
   } | null>(null);
   const { toast } = useToast();
-  const { exportMessage } = useExportMessage();
 
   // Отслеживание видимости страницы для восстановления соединений
   useEffect(() => {
@@ -1008,43 +1007,6 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
     setPendingMessageDocuments((prev) => prev.filter((document) => document.id !== documentId));
   }, []);
 
-  const handleExportMessage = useCallback(
-    async (messageIndex: number) => {
-      if (!activeSession || !activeProject) return;
-
-      const message = activeSession.messages[messageIndex];
-      if (!message || message.role !== "assistant") {
-        toast({
-          variant: "destructive",
-          title: "Ошибка экспорта",
-          description: "Можно экспортировать только ответы помощника.",
-        });
-        return;
-      }
-
-      const result = await exportMessage({
-        projectName: activeProject.name,
-        sessionTitle: activeSession.title,
-        aiResponse: message.content,
-        timestamp: new Date(),
-      });
-
-      if (result.success) {
-        toast({
-          title: "Документ создан",
-          description: "Ответ успешно экспортирован в формате DOCX.",
-        });
-      } else {
-        toast({
-          variant: "destructive",
-          title: "Ошибка экспорта",
-          description: result.error || "Не удалось создать документ.",
-        });
-      }
-    },
-    [activeSession, activeProject, exportMessage, toast]
-  );
-
   const handleSendMessage = useCallback(async (override?: {
     content: string;
     attachedDocumentIds: string[];
@@ -1282,6 +1244,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
             const assistantMessage: ChatMessage = {
               role: "assistant",
               content: event.message ?? '',
+              artifacts: Array.isArray(event.artifacts) ? event.artifacts : undefined,
               metadata: {
                 modelUsed: event.metadata?.modelUsed,
                 thinkingTimeSeconds,
@@ -1468,7 +1431,6 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         onSendMessage={handleSendMessage}
         onAttachDocument={processDocumentFiles}
         onRemovePendingDocument={handleRemovePendingDocument}
-        onExportMessage={handleExportMessage}
         onRetryMessage={handleRetryMessage}
         onSignOut={signOut}
       />

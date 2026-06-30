@@ -46,10 +46,18 @@ class InlineResultHandler(ToolResultHandler):
 
 @dataclass(frozen=True)
 class ToolSpec:
-    """A tool plus the handler that governs its persistence/replay."""
+    """A tool plus the handler that governs its persistence/replay.
+
+    ``terminal`` makes the agent loop END after this tool runs instead of
+    looping back to ``generate``. Terminal-ness is a hardcoded property of the
+    tool (not a per-call model decision): a terminal tool *is* the turn's answer
+    (e.g. it produces a downloadable document), so there is nothing for the model
+    to summarize afterwards.
+    """
 
     tool: BaseTool
     handler: ToolResultHandler = field(default_factory=InlineResultHandler)
+    terminal: bool = False
 
 
 def tools_of(specs: list[ToolSpec]) -> list[BaseTool]:
@@ -58,3 +66,8 @@ def tools_of(specs: list[ToolSpec]) -> list[BaseTool]:
 
 def handlers_of(specs: list[ToolSpec]) -> dict[str, ToolResultHandler]:
     return {spec.tool.name: spec.handler for spec in specs}
+
+
+def terminal_tool_names(specs: list[ToolSpec]) -> frozenset[str]:
+    """Names of tools that end the turn instead of looping back to generate."""
+    return frozenset(spec.tool.name for spec in specs if spec.terminal)
