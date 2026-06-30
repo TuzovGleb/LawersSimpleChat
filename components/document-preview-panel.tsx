@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { AlertCircle, Download, Loader2, X } from "lucide-react";
+import { AlertCircle, Download, FileText, Loader2, X } from "lucide-react";
 
 interface DocumentPreviewPanelProps {
   /** Persisted/backend chat id used to route the document request. */
@@ -70,37 +70,84 @@ export function DocumentPreviewPanel({
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end">
-      <div className="absolute inset-0 bg-black/30" onClick={onClose} aria-hidden />
-      {/* Tame docx-preview's defaults: kill auto-hyphenation (Word doesn't do it),
-          drop the bulky gray wrapper padding, let the A4 sheet sit flush. */}
+    <div className="docpreview fixed inset-0 z-50 flex justify-end">
+      {/* Signature treatment: the panel reads like a legal document laid on a
+          warm desk — A4 sheet with a soft paper shadow, an oxblood spine in the
+          header, the filename set in the serif display face. Plus the entrance
+          choreography (scrim fades, sheet slides in) under reduced-motion guard.
+          We also tame docx-preview's defaults: no auto-hyphenation (Word's off),
+          no bulky gray wrapper padding. */}
       <style>{`
-        .docx-host .docx-wrapper { padding: 12px 0 0 0 !important; background: transparent !important; }
-        .docx-host .docx-wrapper > section.docx { margin: 0 auto 14px auto !important; }
+        .docpreview .docpreview-scrim { animation: docpreview-fade .22s ease-out both; }
+        .docpreview .docpreview-panel { animation: docpreview-slide .28s cubic-bezier(.22,.61,.36,1) both; }
+        @keyframes docpreview-fade { from { opacity: 0 } to { opacity: 1 } }
+        @keyframes docpreview-slide { from { transform: translateX(24px); opacity: 0 } to { transform: none; opacity: 1 } }
+        @media (prefers-reduced-motion: reduce) {
+          .docpreview .docpreview-scrim, .docpreview .docpreview-panel { animation: none; }
+        }
+        .docx-host .docx-wrapper { padding: 20px 0 4px 0 !important; background: transparent !important; }
+        .docx-host .docx-wrapper > section.docx {
+          margin: 0 auto 18px auto !important;
+          border-radius: 2px;
+          box-shadow: var(--shadow-md);
+        }
         .docx-host, .docx-host * { -webkit-hyphens: none !important; hyphens: none !important; }
       `}</style>
+      <div
+        className="docpreview-scrim absolute inset-0"
+        style={{ background: "rgba(20, 24, 31, .32)", backdropFilter: "blur(2px)" }}
+        onClick={onClose}
+        aria-hidden
+      />
       <aside
-        className="relative flex h-full w-full max-w-full flex-col bg-white shadow-2xl md:w-[840px]"
-        style={{ borderLeft: "1px solid var(--border-strong)" }}
+        className="docpreview-panel relative flex h-full w-full max-w-full flex-col md:w-[840px]"
+        style={{
+          background: "var(--bg-elevated)",
+          borderLeft: "1px solid var(--border-strong)",
+          boxShadow: "var(--shadow-lg)",
+        }}
         role="dialog"
         aria-label={`Предпросмотр документа ${fileName}`}
       >
         <header
-          className="flex items-center justify-between gap-2 px-4 py-3"
-          style={{ borderBottom: "1px solid var(--border-soft)" }}
+          className="flex items-center justify-between gap-3 px-5 py-3.5"
+          style={{
+            borderBottom: "1px solid var(--border-soft)",
+            borderTop: "2px solid var(--brand-accent)",
+          }}
         >
-          <span
-            className="truncate text-sm font-medium"
-            style={{ color: "var(--text-primary)" }}
-            title={`${fileName}.docx`}
-          >
-            {fileName}.docx
-          </span>
-          <div className="flex items-center gap-1.5">
+          <div className="flex min-w-0 items-center gap-3">
+            <span
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px]"
+              style={{ background: "var(--brand-accent-bg)", color: "var(--brand-accent)" }}
+              aria-hidden
+            >
+              <FileText className="h-[18px] w-[18px]" />
+            </span>
+            <span className="flex min-w-0 flex-col">
+              <span
+                className="text-[10px] font-semibold uppercase leading-none tracking-[0.14em]"
+                style={{ color: "var(--text-muted)" }}
+              >
+                Предпросмотр документа
+              </span>
+              <span
+                className="mt-1 truncate text-[15px] leading-snug"
+                style={{ color: "var(--text-primary)", fontFamily: "var(--font-serif-family)" }}
+                title={`${fileName}.docx`}
+              >
+                {fileName}
+                <span style={{ color: "var(--text-muted)" }}>.docx</span>
+              </span>
+            </span>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
             <a
               href={downloadUrl}
-              className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs transition-colors hover:bg-[var(--bg-soft)]"
-              style={{ border: "1px solid var(--border-strong)", color: "var(--text-secondary)" }}
+              className="inline-flex items-center gap-1.5 rounded-[8px] px-3 py-1.5 text-xs font-medium text-white transition-colors"
+              style={{ background: "var(--brand-accent)" }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "var(--brand-accent-hover)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "var(--brand-accent)")}
               title="Скачать .docx"
             >
               <Download className="h-3.5 w-3.5" />
@@ -109,7 +156,7 @@ export function DocumentPreviewPanel({
             <button
               type="button"
               onClick={onClose}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-[var(--bg-soft)]"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] transition-colors hover:bg-[var(--bg-soft)]"
               style={{ color: "var(--text-secondary)" }}
               aria-label="Закрыть"
             >
@@ -118,7 +165,7 @@ export function DocumentPreviewPanel({
           </div>
         </header>
 
-        <div className="relative flex-1 overflow-auto" style={{ background: "#f3f3f1" }}>
+        <div className="relative flex-1 overflow-auto" style={{ background: "var(--bg-soft)" }}>
           {status === "loading" && (
             <div
               className="absolute inset-0 flex items-center justify-center gap-2 text-sm"
@@ -130,11 +177,19 @@ export function DocumentPreviewPanel({
           )}
           {status === "error" && (
             <div
-              className="absolute inset-0 flex items-center justify-center gap-2 text-sm"
-              style={{ color: "#DC2626" }}
+              className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center"
             >
-              <AlertCircle className="h-5 w-5" />
-              Не удалось загрузить документ
+              <AlertCircle className="h-6 w-6" style={{ color: "var(--brand-accent)" }} />
+              <p className="text-sm" style={{ color: "var(--text-primary)" }}>
+                Не удалось открыть предпросмотр
+              </p>
+              <a
+                href={downloadUrl}
+                className="text-xs font-medium underline-offset-2 hover:underline"
+                style={{ color: "var(--brand-accent)" }}
+              >
+                Скачать файл
+              </a>
             </div>
           )}
           <div
