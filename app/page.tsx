@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/use-auth";
+import { Button } from "@/components/ui/button";
 import { features, useCases, security } from "@/lib/landing-content";
 
 export const dynamic = 'force-dynamic';
@@ -55,8 +56,8 @@ export default function HomePage() {
             <a href="#features" className="hidden md:inline text-sm font-medium" style={{ color: 'var(--text-primary)', opacity: .82 }}>Возможности</a>
             <a href="#use-cases" className="hidden md:inline text-sm font-medium" style={{ color: 'var(--text-primary)', opacity: .82 }}>Сценарии</a>
             <a href="#security" className="hidden md:inline text-sm font-medium" style={{ color: 'var(--text-primary)', opacity: .82 }}>Безопасность</a>
-            <button onClick={handleLogin} className="btn btn-secondary btn-sm">Войти</button>
-            <button onClick={handleStart} className="btn btn-primary btn-sm">Записаться на звонок</button>
+            <Button onClick={handleLogin} variant="outlineMuted" size="ctaSm">Войти</Button>
+            <Button onClick={handleStart} variant="brand" size="ctaSm">Записаться на звонок</Button>
           </nav>
         </div>
       </header>
@@ -73,9 +74,9 @@ export default function HomePage() {
             готовьте заключения, работайте с делами эффективнее.
           </p>
           <div className="flex flex-wrap gap-3 items-center">
-            <button onClick={handleStart} className="btn btn-primary btn-lg">
+            <Button onClick={handleStart} variant="brand" size="ctaLg">
               Записаться на звонок
-            </button>
+            </Button>
             <span style={{ fontSize: 13.5, color: 'var(--text-secondary)' }}>
               Консультация бесплатная, ~30 минут
             </span>
@@ -169,9 +170,9 @@ export default function HomePage() {
           <p style={{ fontSize: 17, color: 'var(--on-dark-muted)', margin: '0 0 32px' }}>
             Запишитесь на короткую консультацию — обсудим ваши задачи и покажем возможности системы.
           </p>
-          <button onClick={handleStart} className="btn btn-primary btn-lg">
+          <Button onClick={handleStart} variant="brand" size="ctaLg">
             Записаться на звонок
-          </button>
+          </Button>
           <p style={{ marginTop: 16, fontSize: 13.5, color: 'var(--on-dark-muted)' }}>
             Бесплатно, ~30 минут
           </p>

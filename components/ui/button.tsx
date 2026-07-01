@@ -18,12 +18,25 @@ const buttonVariants = cva(
           "bg-secondary text-secondary-foreground hover:bg-secondary/80",
         ghost: "hover:bg-accent hover:text-accent-foreground",
         link: "text-primary underline-offset-4 hover:underline",
+        // Brand variants — exact replacements for the legacy globals.css
+        // .btn-primary / .btn-outline-accent / .btn-secondary classes.
+        brand:
+          "border border-transparent bg-[var(--brand-accent)] text-white hover:bg-[var(--brand-accent-hover)] hover:text-white",
+        brandOutline:
+          "border border-[var(--brand-accent)] bg-transparent text-[var(--brand-accent)] hover:bg-[var(--brand-accent-bg)]",
+        outlineMuted:
+          "border border-[var(--border-strong)] bg-transparent text-[var(--text-primary)] hover:bg-white hover:border-[#cfd1d6]",
       },
       size: {
         default: "h-10 px-4 py-2",
         sm: "h-9 rounded-md px-3",
         lg: "h-11 rounded-md px-8",
         icon: "h-10 w-10",
+        // CTA sizes — pixel-parity with the legacy .btn / .btn-sm / .btn-lg
+        // paddings so the desktop look is unchanged by the migration.
+        cta: "gap-2.5 rounded-[8px] px-[22px] py-3.5 text-[16px] leading-none",
+        ctaSm: "gap-2.5 rounded-[8px] px-4 py-2.5 text-sm leading-none",
+        ctaLg: "gap-2.5 rounded-[8px] px-[26px] py-4 text-[17px] leading-none",
       },
     },
     defaultVariants: {

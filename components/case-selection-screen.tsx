@@ -3,7 +3,6 @@
 import { useState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { CreateCaseDialog } from "@/components/create-case-dialog";
 import { RenameProjectDialog } from "@/components/rename-project-dialog";
 import {
@@ -131,10 +130,9 @@ export function CaseSelectionScreen({
       </header>
 
       <main className="flex-1">
-        <div className="container-x" style={{ paddingTop: 48, paddingBottom: 96 }}>
+        <div className="container-x pt-8 pb-16 sm:pt-12 sm:pb-24">
           <div
-            className="flex items-end justify-between gap-8 flex-wrap"
-            style={{ marginBottom: 32 }}
+            className="mb-8 flex flex-col items-stretch gap-4 sm:flex-row sm:items-end sm:justify-between sm:gap-8"
           >
             <div>
               <h2
@@ -157,7 +155,12 @@ export function CaseSelectionScreen({
                     }`}
               </p>
             </div>
-            <Button onClick={handleOpenDialog} className="btn btn-primary gap-2 shrink-0">
+            <Button
+              onClick={handleOpenDialog}
+              variant="brand"
+              size="cta"
+              className="w-full shrink-0 sm:w-auto"
+            >
               <FolderPlus className="h-5 w-5" />
               Новое дело
             </Button>
@@ -203,17 +206,15 @@ export function CaseSelectionScreen({
               >
                 Создайте первое дело, чтобы начать работу с AI-помощником
               </p>
-              <Button onClick={handleOpenDialog} className="btn btn-primary gap-2">
+              <Button onClick={handleOpenDialog} variant="brand" size="cta">
                 <FolderPlus className="h-4 w-4" />
                 Создать первое дело
               </Button>
             </div>
           ) : (
-            <ScrollArea className="h-[calc(100vh-260px)]">
-              <div
-                className="grid gap-5 auto-rows-fr"
-                style={{ gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" }}
-              >
+            <div
+              className="grid auto-rows-fr gap-4 grid-cols-[repeat(auto-fill,minmax(min(280px,100%),1fr))] sm:gap-5"
+            >
                 {projects.map((project) => {
                   const stats = getProjectStats(project.id);
                   const lastUpdate = new Date(project.updated_at ?? project.created_at);
@@ -221,9 +222,8 @@ export function CaseSelectionScreen({
                   return (
                     <div
                       key={project.id}
-                      className="card-x is-clickable flex flex-col"
+                      className="card-x is-clickable flex min-h-[180px] flex-col"
                       onClick={() => onSelectProject(project.id)}
-                      style={{ minHeight: 180 }}
                     >
                       <div className="flex items-start justify-between gap-2" style={{ marginBottom: 12 }}>
                         <h3
@@ -242,7 +242,7 @@ export function CaseSelectionScreen({
                             <Button
                               variant="ghost"
                               size="sm"
-                              className="h-7 w-7 p-0 shrink-0"
+                              className="h-11 w-11 p-0 shrink-0 md:h-7 md:w-7"
                               onClick={(e) => e.stopPropagation()}
                               style={{ color: "var(--text-secondary)" }}
                             >
@@ -291,8 +291,7 @@ export function CaseSelectionScreen({
                     </div>
                   );
                 })}
-              </div>
-            </ScrollArea>
+            </div>
           )}
         </div>
       </main>

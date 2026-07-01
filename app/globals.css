@@ -122,79 +122,14 @@
 }
 
 @layer components {
-  /* Container */
+  /* Container — 16px gutters on phones, the original 28px from sm: up */
   .container-x {
-    max-width: var(--container);
-    margin: 0 auto;
-    padding: 0 28px;
+    @apply mx-auto w-full max-w-[1240px] px-4 sm:px-7;
   }
 
-  /* Buttons */
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 10px;
-    border: 1px solid transparent;
-    border-radius: var(--r-btn);
-    padding: 14px 22px;
-    font-weight: 500;
-    font-size: 16px;
-    line-height: 1;
-    transition: background-color .15s, border-color .15s, color .15s, transform .15s;
-    white-space: nowrap;
-  }
-
-  .btn-primary {
-    background: var(--brand-accent);
-    color: #fff;
-  }
-
-  .btn-primary:hover {
-    background: var(--brand-accent-hover);
-    color: #fff;
-  }
-
-  .btn-secondary {
-    background: transparent;
-    color: var(--text-primary);
-    border-color: var(--border-strong);
-  }
-
-  .btn-secondary:hover {
-    background: #fff;
-    border-color: #cfd1d6;
-  }
-
-  .btn-outline-accent {
-    background: transparent;
-    color: var(--brand-accent);
-    border-color: var(--brand-accent);
-  }
-
-  .btn-outline-accent:hover {
-    background: var(--brand-accent-bg);
-  }
-
-  .btn-ghost {
-    background: transparent;
-    color: var(--text-secondary);
-    border-color: transparent;
-  }
-
-  .btn-ghost:hover {
-    color: var(--text-primary);
-  }
-
-  .btn-sm {
-    padding: 10px 16px;
-    font-size: 14px;
-  }
-
-  .btn-lg {
-    padding: 16px 26px;
-    font-size: 17px;
-  }
+  /* Buttons live in components/ui/button.tsx (buttonVariants: brand /
+     brandOutline / outlineMuted + cta sizes) — the legacy .btn* classes
+     were migrated there. */
 
   /* Cards */
   .card-x {
