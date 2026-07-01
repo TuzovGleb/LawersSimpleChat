@@ -12,7 +12,7 @@ from app.rag_core.llm import ChatModelRegistry, ChatOpenAI
 
 logger = logging.getLogger(__name__)
 
-MAX_TOOL_ROUNDS = 4
+MAX_TOOL_ROUNDS = 8
 
 # Number of extra attempts on the *same* model when it returns an empty
 # response (no content, no tool calls) before moving to the next model in the
