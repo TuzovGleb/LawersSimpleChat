@@ -110,7 +110,7 @@ export function DocumentPreviewPanel({
         aria-label={`Предпросмотр документа ${fileName}`}
       >
         <header
-          className="flex items-center justify-between gap-3 px-5 py-3.5 pt-[max(0.875rem,env(safe-area-inset-top))]"
+          className="flex items-center justify-between gap-3 pl-[max(1.25rem,env(safe-area-inset-left))] pr-[max(1.25rem,env(safe-area-inset-right))] py-3.5 pt-[max(0.875rem,env(safe-area-inset-top))]"
           style={{
             borderBottom: "1px solid var(--border-soft)",
             borderTop: "2px solid var(--brand-accent)",

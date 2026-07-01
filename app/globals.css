@@ -122,9 +122,19 @@
 }
 
 @layer components {
-  /* Container — 16px gutters on phones, the original 28px from sm: up */
+  /* Container — 16px gutters on phones, the original 28px from sm: up.
+     max(..., env(...)) keeps content clear of the notch in landscape now
+     that viewport-fit=cover disables Safari's automatic pillar-boxing. */
   .container-x {
-    @apply mx-auto w-full max-w-[1240px] px-4 sm:px-7;
+    @apply mx-auto w-full max-w-[1240px];
+    padding-left: max(1rem, env(safe-area-inset-left));
+    padding-right: max(1rem, env(safe-area-inset-right));
+  }
+  @media (min-width: 640px) {
+    .container-x {
+      padding-left: max(1.75rem, env(safe-area-inset-left));
+      padding-right: max(1.75rem, env(safe-area-inset-right));
+    }
   }
 
   /* Buttons live in components/ui/button.tsx (buttonVariants: brand /

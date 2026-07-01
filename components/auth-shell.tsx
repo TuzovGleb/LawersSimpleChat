@@ -21,7 +21,7 @@ export function AuthShell({
 }) {
   return (
     <div className="grid min-h-dvh grid-rows-[auto_1fr] bg-[var(--bg)] lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)] lg:grid-rows-1">
-      <aside className="relative flex flex-col overflow-hidden bg-[var(--bg-dark)] px-5 pb-4 pt-[max(1rem,env(safe-area-inset-top))] text-[var(--text-on-dark)] lg:px-14 lg:pb-12 lg:pt-12">
+      <aside className="relative flex flex-col overflow-hidden bg-[var(--bg-dark)] pl-[max(1.25rem,env(safe-area-inset-left))] pr-[max(1.25rem,env(safe-area-inset-right))] pb-4 pt-[max(1rem,env(safe-area-inset-top))] text-[var(--text-on-dark)] lg:px-14 lg:pb-12 lg:pt-12">
         {/* Ambient brand glow (was .auth-aside::after) */}
         <div
           aria-hidden
@@ -78,7 +78,7 @@ export function AuthShell({
         </div>
       </aside>
 
-      <main className="flex flex-col bg-[var(--bg)] px-4 pt-5 pb-[max(28px,env(safe-area-inset-bottom))] lg:px-14 lg:pb-10 lg:pt-7">
+      <main className="flex flex-col bg-[var(--bg)] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-5 pb-[max(28px,env(safe-area-inset-bottom))] lg:px-14 lg:pb-10 lg:pt-7">
         <div className="auth-form-wrap m-auto w-full py-2 lg:max-w-[420px] lg:py-8">
           {children}
         </div>

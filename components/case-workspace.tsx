@@ -125,26 +125,58 @@ export function CaseWorkspace({
     [sessions],
   );
 
-  // Autoscroll to the newest message — but only when the reader is already
-  // near the bottom, so scrolling up to re-read during token streaming isn't
-  // yanked back on every update. Switching chats always jumps to the bottom.
+  // Stick-to-bottom autoscroll. "Pinned" flips only on real user scrolling:
+  // scrolling UP unpins (so streaming doesn't yank the reader back on every
+  // token), returning to the bottom re-pins. Content growth alone never
+  // unpins — a tall message appended while pinned still follows.
+  const isPinnedRef = useRef(true);
+  const lastScrollTopRef = useRef(0);
+  useEffect(() => {
+    const viewport = messagesEndRef.current?.closest(
+      "[data-radix-scroll-area-viewport]",
+    );
+    if (!viewport) {
+      return;
+    }
+    const handleScroll = () => {
+      const distanceFromBottom =
+        viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+      if (viewport.scrollTop < lastScrollTopRef.current - 1) {
+        isPinnedRef.current = false;
+      } else if (distanceFromBottom < 120) {
+        isPinnedRef.current = true;
+      }
+      lastScrollTopRef.current = viewport.scrollTop;
+    };
+    viewport.addEventListener("scroll", handleScroll, { passive: true });
+    return () => viewport.removeEventListener("scroll", handleScroll);
+  }, []);
+
+  // Jump to the bottom when a chat's content first shows up, then follow new
+  // messages while pinned. The session-switch jump must not be consumed by
+  // the lazy-loading spinner render: messages arrive asynchronously after
+  // activeSessionId changes, so the switch counts only once content exists.
   const lastAutoscrollSessionRef = useRef<string | null>(null);
   useEffect(() => {
     const end = messagesEndRef.current;
     if (!end) {
       return;
     }
+    const hasContent =
+      (activeSession?.messages.length ?? 0) > 0 || Boolean(streamingDraft);
     const sessionChanged = lastAutoscrollSessionRef.current !== activeSessionId;
-    lastAutoscrollSessionRef.current = activeSessionId;
-    const viewport = end.closest("[data-radix-scroll-area-viewport]");
-    if (!sessionChanged && viewport) {
-      const distanceFromBottom =
-        viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
-      if (distanceFromBottom > 120) {
-        return;
+    if (sessionChanged) {
+      if (!hasContent) {
+        return; // history still lazy-loading — keep the jump for its arrival
       }
+      lastAutoscrollSessionRef.current = activeSessionId;
+      isPinnedRef.current = true;
+      end.scrollIntoView({ behavior: "auto" });
+      return;
     }
-    end.scrollIntoView({ behavior: sessionChanged ? "auto" : "smooth" });
+    if (isPinnedRef.current) {
+      end.scrollIntoView({ behavior: "smooth" });
+    }
   }, [activeSessionId, activeSession?.messages, streamingDraft, toolStatus]);
 
   // Grow the composer textarea to fit its content, up to a max height (then scroll).
@@ -290,7 +322,10 @@ export function CaseWorkspace({
           borderBottom: "1px solid var(--border-strong)",
         }}
       >
-        <div className="flex items-center justify-between px-5" style={{ height: 60 }}>
+        <div
+          className="flex items-center justify-between pl-[max(1.25rem,env(safe-area-inset-left))] pr-[max(1.25rem,env(safe-area-inset-right))]"
+          style={{ height: 60 }}
+        >
           <div className="flex items-center gap-3 min-w-0">
             <Button
               variant="ghost"
@@ -370,7 +405,7 @@ export function CaseWorkspace({
         {/* Sidebar */}
         <aside
           className={cn(
-            "fixed inset-y-0 left-0 z-40 flex w-[min(280px,85vw)] shrink-0 flex-col pt-[env(safe-area-inset-top)] transition-transform duration-300 md:static md:w-[280px] md:translate-x-0 md:pt-0",
+            "fixed inset-y-0 left-0 z-40 flex w-[min(280px,85vw)] shrink-0 flex-col pl-[env(safe-area-inset-left)] pt-[env(safe-area-inset-top)] transition-transform duration-300 md:static md:w-[280px] md:translate-x-0 md:pl-0 md:pt-0",
             isSidebarOpen ? "translate-x-0" : "-translate-x-full",
           )}
           style={{
@@ -542,7 +577,7 @@ export function CaseWorkspace({
         <main className="flex flex-1 flex-col" style={{ background: "#FBFAF6", minWidth: 0 }}>
           <div className="flex-1 overflow-hidden">
             <ScrollArea className="h-full">
-              <div className="mx-auto flex w-full max-w-[860px] flex-col gap-4 px-4 py-6 md:px-8 md:py-8">
+              <div className="mx-auto flex w-full max-w-[860px] flex-col gap-4 pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] py-6 md:pl-[max(2rem,env(safe-area-inset-left))] md:pr-[max(2rem,env(safe-area-inset-right))] md:py-8">
                 {isLoadingChats && !activeSession ? (
                   <div className="mt-10 text-center" style={{ color: "var(--text-secondary)" }}>
                     <Loader2 className="mx-auto h-10 w-10 animate-spin" />
@@ -953,7 +988,7 @@ export function CaseWorkspace({
           >
             <form
               onSubmit={handleSubmit}
-              className="mx-auto flex w-full max-w-[860px] flex-col gap-2 px-4 pt-3.5 pb-[max(18px,env(safe-area-inset-bottom))] md:px-8"
+              className="mx-auto flex w-full max-w-[860px] flex-col gap-2 pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-3.5 pb-[max(18px,env(safe-area-inset-bottom))] md:pl-[max(2rem,env(safe-area-inset-left))] md:pr-[max(2rem,env(safe-area-inset-right))]"
             >
               <input
                 ref={fileInputRef}
@@ -1118,7 +1153,7 @@ function ModeToggle({
           onClick={() => onChange(option.key)}
           title={option.title}
           className={cn(
-            "inline-flex items-center justify-center gap-1.5 rounded-full border-0 bg-transparent px-3.5 py-2.5 text-sm font-medium text-[var(--text-secondary)] transition-colors md:py-1.5 md:text-[13px]",
+            "inline-flex items-center justify-center gap-1.5 rounded-full border-0 bg-transparent px-3.5 py-2.5 text-sm font-medium leading-[1.6] text-[var(--text-secondary)] transition-colors md:py-1.5 md:text-[13px]",
             selectedModel === option.key &&
               "bg-white text-[var(--text-primary)] shadow-[var(--shadow-sm)]",
           )}
