@@ -57,13 +57,17 @@ export default function HomePage() {
             <a href="#use-cases" className="hidden md:inline text-sm font-medium" style={{ color: 'var(--text-primary)', opacity: .82 }}>Сценарии</a>
             <a href="#security" className="hidden md:inline text-sm font-medium" style={{ color: 'var(--text-primary)', opacity: .82 }}>Безопасность</a>
             <Button onClick={handleLogin} variant="outlineMuted" size="ctaSm">Войти</Button>
-            <Button onClick={handleStart} variant="brand" size="ctaSm">Записаться на звонок</Button>
+            {/* The header CTA doesn't fit a phone-width bar next to the logo
+                and «Войти»; the hero right below carries the same CTA. */}
+            <Button onClick={handleStart} variant="brand" size="ctaSm" className="hidden sm:inline-flex">
+              Записаться на звонок
+            </Button>
           </nav>
         </div>
       </header>
 
       {/* Hero */}
-      <section id="top" className="container-x" style={{ padding: '72px 28px 88px' }}>
+      <section id="top" className="container-x pt-12 pb-16 sm:pt-[72px] sm:pb-[88px]">
         <div className="max-w-3xl">
           <div className="sec-eyebrow">для российских юристов</div>
           <h1 style={{ fontSize: 'clamp(38px, 5.4vw, 62px)', lineHeight: 1.07, margin: '0 0 22px' }}>
@@ -85,13 +89,13 @@ export default function HomePage() {
       </section>
 
       {/* Features */}
-      <section id="features" style={{ background: 'var(--bg-soft)', borderTop: '1px solid var(--border-soft)', borderBottom: '1px solid var(--border-soft)', padding: '110px 0' }}>
+      <section id="features" className="py-16 sm:py-[110px]" style={{ background: 'var(--bg-soft)', borderTop: '1px solid var(--border-soft)', borderBottom: '1px solid var(--border-soft)' }}>
         <div className="container-x">
           <div className="sec-eyebrow">Возможности</div>
           <h2 style={{ fontSize: 'clamp(28px, 3.5vw, 40px)', maxWidth: 720, marginBottom: 48 }}>
             Что вы получаете в Джейхелпере
           </h2>
-          <div className="grid gap-5" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))' }}>
+          <div className="grid gap-4 grid-cols-[repeat(auto-fit,minmax(min(280px,100%),1fr))] sm:gap-5">
             {features.map((feature) => (
               <div key={feature.id} className="card-x" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 <h3 style={{ fontSize: 20, fontWeight: 500, lineHeight: 1.25 }}>{feature.name}</h3>
@@ -113,13 +117,13 @@ export default function HomePage() {
       </section>
 
       {/* Use cases */}
-      <section id="use-cases" style={{ padding: '110px 0' }}>
+      <section id="use-cases" className="py-16 sm:py-[110px]">
         <div className="container-x">
           <div className="sec-eyebrow">Сценарии</div>
           <h2 style={{ fontSize: 'clamp(28px, 3.5vw, 40px)', maxWidth: 720, marginBottom: 48 }}>
             Как это работает в реальной практике
           </h2>
-          <div className="grid gap-5" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))' }}>
+          <div className="grid gap-4 grid-cols-[repeat(auto-fit,minmax(min(280px,100%),1fr))] sm:gap-5">
             {useCases.map((useCase, idx) => (
               <div key={idx} className="card-x">
                 <div style={{ fontFamily: 'var(--font-serif-family)', fontStyle: 'italic', color: 'var(--brand-accent)', fontSize: 14, fontWeight: 500, marginBottom: 10 }}>
@@ -134,13 +138,13 @@ export default function HomePage() {
       </section>
 
       {/* Security */}
-      <section id="security" style={{ background: 'var(--bg-soft)', borderTop: '1px solid var(--border-soft)', borderBottom: '1px solid var(--border-soft)', padding: '110px 0' }}>
+      <section id="security" className="py-16 sm:py-[110px]" style={{ background: 'var(--bg-soft)', borderTop: '1px solid var(--border-soft)', borderBottom: '1px solid var(--border-soft)' }}>
         <div className="container-x">
           <div className="sec-eyebrow">Безопасность</div>
           <h2 style={{ fontSize: 'clamp(28px, 3.5vw, 40px)', maxWidth: 720, marginBottom: 48 }}>
             {security.title}
           </h2>
-          <div className="grid gap-5" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
+          <div className="grid gap-4 grid-cols-[repeat(auto-fit,minmax(min(240px,100%),1fr))] sm:gap-5">
             {security.items.map((item, idx) => (
               <div key={idx} className="card-x">
                 <h3 style={{ fontSize: 18, fontWeight: 500, margin: '0 0 10px' }}>{item.title}</h3>
@@ -152,7 +156,7 @@ export default function HomePage() {
       </section>
 
       {/* Final CTA */}
-      <section style={{ background: 'var(--bg-dark)', color: 'var(--text-on-dark)', padding: '100px 0', position: 'relative', overflow: 'hidden' }}>
+      <section className="py-16 sm:py-[100px]" style={{ background: 'var(--bg-dark)', color: 'var(--text-on-dark)', position: 'relative', overflow: 'hidden' }}>
         <div
           aria-hidden
           style={{
