@@ -29,7 +29,7 @@ export default function HomePage() {
 
   if (loading || user) {
     return (
-      <div className="flex min-h-screen items-center justify-center" style={{ background: 'var(--bg)' }}>
+      <div className="flex min-h-dvh items-center justify-center" style={{ background: 'var(--bg)' }}>
         <div className="text-center">
           <div className="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid" style={{ borderColor: 'var(--brand-accent)', borderRightColor: 'transparent' }} />
           <p className="mt-4" style={{ color: 'var(--text-secondary)' }}>

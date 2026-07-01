@@ -230,7 +230,7 @@ export function CaseWorkspace({
 
   return (
     <div
-      className="relative flex h-screen flex-col"
+      className="relative flex h-dvh flex-col"
       style={{ background: "var(--bg)" }}
       onDragEnter={handlePageDragEnter}
       onDragLeave={handlePageDragLeave}
@@ -262,7 +262,7 @@ export function CaseWorkspace({
 
       {/* Header */}
       <header
-        className="flex-shrink-0"
+        className="flex-shrink-0 pt-[env(safe-area-inset-top)]"
         style={{
           background: "var(--bg)",
           borderBottom: "1px solid var(--border-strong)",
@@ -342,7 +342,7 @@ export function CaseWorkspace({
         {/* Sidebar */}
         <aside
           className={cn(
-            "fixed inset-y-0 left-0 z-40 flex flex-col transition-transform duration-300 md:static md:translate-x-0",
+            "fixed inset-y-0 left-0 z-40 flex flex-col pt-[env(safe-area-inset-top)] transition-transform duration-300 md:static md:translate-x-0 md:pt-0",
             isSidebarOpen ? "translate-x-0" : "-translate-x-full",
           )}
           style={{
@@ -935,8 +935,7 @@ export function CaseWorkspace({
           >
             <form
               onSubmit={handleSubmit}
-              className="mx-auto flex w-full flex-col gap-2"
-              style={{ maxWidth: 860, padding: "14px 32px 18px" }}
+              className="mx-auto flex w-full max-w-[860px] flex-col gap-2 px-8 pt-3.5 pb-[max(18px,env(safe-area-inset-bottom))]"
             >
               <input
                 ref={fileInputRef}
@@ -999,12 +998,11 @@ export function CaseWorkspace({
                   onKeyDown={handleInputKeyDown}
                   rows={1}
                   placeholder="Опишите ситуацию, вопрос или запрос…"
-                  className="flex-1 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 focus:outline-none outline-none min-h-0"
+                  className="flex-1 resize-none border-0 bg-transparent text-base shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 focus:outline-none outline-none min-h-0 md:text-[15px]"
                   style={{
                     minHeight: 24,
                     maxHeight: COMPOSER_MAX_HEIGHT,
                     padding: 4,
-                    fontSize: 15,
                     lineHeight: 1.5,
                     color: "var(--text-primary)",
                     background: "transparent",

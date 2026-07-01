@@ -197,7 +197,7 @@ export function AuthForm() {
   if (authLoading || user) {
     return (
       <div
-        className="flex min-h-screen items-center justify-center"
+        className="flex min-h-dvh items-center justify-center"
         style={{ background: "var(--bg)" }}
       >
         <div className="text-center">

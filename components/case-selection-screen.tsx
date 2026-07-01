@@ -105,7 +105,7 @@ export function CaseSelectionScreen({
   };
 
   return (
-    <div className="flex min-h-screen flex-col" style={{ background: "var(--bg)" }}>
+    <div className="flex min-h-dvh flex-col" style={{ background: "var(--bg)" }}>
       <header className="app-header">
         <div className="container-x app-header-inner">
           <Link

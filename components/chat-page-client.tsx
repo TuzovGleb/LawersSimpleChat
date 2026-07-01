@@ -1356,7 +1356,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
   // Show loading while checking auth or resolving a /chat/[chatId] deep link
   if (authLoading || (user && isResolvingInitialChat)) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
+      <div className="flex min-h-dvh items-center justify-center">
         <div className="text-center">
           <div className="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-current border-r-transparent align-[-0.125em] motion-reduce:animate-[spin_1.5s_linear_infinite]" />
           <p className="mt-4 text-muted-foreground">Загрузка...</p>
@@ -1393,7 +1393,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
   if (!currentProject) {
     if (isProjectsLoading) {
       return (
-        <div className="flex min-h-screen items-center justify-center">
+        <div className="flex min-h-dvh items-center justify-center">
           <div className="text-center">
             <div className="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-current border-r-transparent align-[-0.125em] motion-reduce:animate-[spin_1.5s_linear_infinite]" />
             <p className="mt-4 text-muted-foreground">Загрузка...</p>
