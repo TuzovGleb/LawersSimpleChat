@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ThinkingIndicator } from "@/components/thinking-indicator";
 import { DocumentPreviewPanel } from "@/components/document-preview-panel";
+import { useAppHeight } from "@/hooks/use-app-height";
 import { cn } from "@/lib/utils";
 import type { ChatMessage, Project, SessionDocument, SelectedModel } from "@/lib/types";
 import {
@@ -96,6 +97,9 @@ export function CaseWorkspace({
   onRetryMessage,
   onSignOut,
 }: CaseWorkspaceProps) {
+  // Keep the shell sized to the visible viewport (iOS keyboard handling).
+  useAppHeight();
+
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   // Drafted document currently open in the right-side preview panel.
@@ -121,9 +125,27 @@ export function CaseWorkspace({
     [sessions],
   );
 
+  // Autoscroll to the newest message — but only when the reader is already
+  // near the bottom, so scrolling up to re-read during token streaming isn't
+  // yanked back on every update. Switching chats always jumps to the bottom.
+  const lastAutoscrollSessionRef = useRef<string | null>(null);
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [activeSession?.messages, streamingDraft, toolStatus]);
+    const end = messagesEndRef.current;
+    if (!end) {
+      return;
+    }
+    const sessionChanged = lastAutoscrollSessionRef.current !== activeSessionId;
+    lastAutoscrollSessionRef.current = activeSessionId;
+    const viewport = end.closest("[data-radix-scroll-area-viewport]");
+    if (!sessionChanged && viewport) {
+      const distanceFromBottom =
+        viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+      if (distanceFromBottom > 120) {
+        return;
+      }
+    }
+    end.scrollIntoView({ behavior: sessionChanged ? "auto" : "smooth" });
+  }, [activeSessionId, activeSession?.messages, streamingDraft, toolStatus]);
 
   // Grow the composer textarea to fit its content, up to a max height (then scroll).
   useEffect(() => {
@@ -230,7 +252,7 @@ export function CaseWorkspace({
 
   return (
     <div
-      className="relative flex h-dvh flex-col"
+      className="relative flex h-[var(--app-h,100dvh)] flex-col"
       style={{ background: "var(--bg)" }}
       onDragEnter={handlePageDragEnter}
       onDragLeave={handlePageDragLeave}
@@ -275,6 +297,7 @@ export function CaseWorkspace({
               size="icon"
               onClick={onBack}
               title="К списку дел"
+              className="h-11 w-11 md:h-10 md:w-10"
               style={{ color: "var(--text-secondary)" }}
             >
               <ArrowLeft className="h-5 w-5" />
@@ -284,7 +307,7 @@ export function CaseWorkspace({
               variant="ghost"
               size="icon"
               onClick={() => setIsSidebarOpen(true)}
-              className="md:hidden"
+              className="h-11 w-11 md:hidden"
             >
               <Menu className="h-5 w-5" />
               <span className="sr-only">Открыть меню</span>
@@ -322,12 +345,17 @@ export function CaseWorkspace({
           </div>
 
           <div className="flex items-center gap-3">
-            <ModeToggle selectedModel={selectedModel} onChange={onModelChange} />
+            <ModeToggle
+              selectedModel={selectedModel}
+              onChange={onModelChange}
+              className="hidden sm:inline-flex"
+            />
             <Button
               variant="ghost"
               size="icon"
               onClick={onSignOut}
               title="Выйти"
+              className="h-11 w-11 md:h-10 md:w-10"
               style={{ color: "var(--text-secondary)" }}
             >
               <LogOut className="h-5 w-5" />
@@ -342,12 +370,10 @@ export function CaseWorkspace({
         {/* Sidebar */}
         <aside
           className={cn(
-            "fixed inset-y-0 left-0 z-40 flex flex-col pt-[env(safe-area-inset-top)] transition-transform duration-300 md:static md:translate-x-0 md:pt-0",
+            "fixed inset-y-0 left-0 z-40 flex w-[min(280px,85vw)] shrink-0 flex-col pt-[env(safe-area-inset-top)] transition-transform duration-300 md:static md:w-[280px] md:translate-x-0 md:pt-0",
             isSidebarOpen ? "translate-x-0" : "-translate-x-full",
           )}
           style={{
-            width: 280,
-            flexShrink: 0,
             background: "var(--bg)",
             borderRight: "1px solid var(--border-strong)",
             minHeight: 0,
@@ -362,40 +388,32 @@ export function CaseWorkspace({
             <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
               Чаты
             </h2>
-            <Button variant="ghost" size="icon" onClick={() => setIsSidebarOpen(false)}>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setIsSidebarOpen(false)}
+              className="h-11 w-11 md:h-10 md:w-10"
+            >
               <X className="h-5 w-5" />
               <span className="sr-only">Закрыть панель</span>
             </Button>
           </div>
 
+          {/* Model switcher — the header hides it on phones; the drawer is its mobile home */}
+          <div className="border-b p-3 sm:hidden" style={{ borderBottomColor: "var(--border-soft)" }}>
+            <ModeToggle
+              selectedModel={selectedModel}
+              onChange={onModelChange}
+              className="grid w-full grid-cols-2"
+            />
+          </div>
+
           {/* New chat button */}
-          <div style={{ padding: 12, borderBottom: "1px solid var(--border-soft)" }}>
+          <div className="p-3" style={{ borderBottom: "1px solid var(--border-soft)" }}>
             <button
               type="button"
               onClick={onNewChat}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 6,
-                width: "100%",
-                padding: "9px 12px",
-                borderRadius: 8,
-                border: "1px solid var(--brand-accent)",
-                color: "var(--brand-accent)",
-                background: "transparent",
-                fontWeight: 500,
-                fontSize: 13.5,
-                cursor: "pointer",
-                transition: "background .15s",
-                fontFamily: "inherit",
-              }}
-              onMouseEnter={(e) => {
-                (e.currentTarget as HTMLElement).style.background = "var(--brand-accent-bg)";
-              }}
-              onMouseLeave={(e) => {
-                (e.currentTarget as HTMLElement).style.background = "transparent";
-              }}
+              className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--brand-accent)] bg-transparent px-3 py-3 text-[13.5px] font-medium text-[var(--brand-accent)] transition-colors hover:bg-[var(--brand-accent-bg)] md:py-[9px]"
             >
               <Plus className="h-4 w-4" />
               Новый чат
@@ -524,7 +542,7 @@ export function CaseWorkspace({
         <main className="flex flex-1 flex-col" style={{ background: "#FBFAF6", minWidth: 0 }}>
           <div className="flex-1 overflow-hidden">
             <ScrollArea className="h-full">
-              <div className="chat-container mx-auto flex w-full flex-col gap-4 px-8 py-8" style={{ maxWidth: 860 }}>
+              <div className="mx-auto flex w-full max-w-[860px] flex-col gap-4 px-4 py-6 md:px-8 md:py-8">
                 {isLoadingChats && !activeSession ? (
                   <div className="mt-10 text-center" style={{ color: "var(--text-secondary)" }}>
                     <Loader2 className="mx-auto h-10 w-10 animate-spin" />
@@ -569,7 +587,7 @@ export function CaseWorkspace({
                     {message.role === "user" ? (
                       <div className="max-w-full md:max-w-[80%]">
                         <div
-                          className="message-content rounded-2xl px-4 py-3"
+                          className="rounded-2xl px-4 py-3"
                           style={{
                             background: "#F0F0EE",
                             ...(message.status === "failed"
@@ -579,7 +597,7 @@ export function CaseWorkspace({
                         >
                           {message.content.trim() ? (
                             <p
-                              className="mobile-safe-text whitespace-pre-wrap text-sm leading-relaxed"
+                              className="whitespace-pre-wrap break-words text-sm leading-relaxed"
                               style={{ wordBreak: "normal", overflowWrap: "break-word", color: "var(--text-primary)" }}
                             >
                               {message.content}
@@ -649,7 +667,7 @@ export function CaseWorkspace({
                           </div>
                         )}
                         <div
-                          className="message-content prose prose-sm prose-mobile max-w-none"
+                          className="prose prose-sm prose-mobile max-w-none"
                           style={{
                             background: "#fff",
                             border: "1px solid var(--border-strong)",
@@ -935,7 +953,7 @@ export function CaseWorkspace({
           >
             <form
               onSubmit={handleSubmit}
-              className="mx-auto flex w-full max-w-[860px] flex-col gap-2 px-8 pt-3.5 pb-[max(18px,env(safe-area-inset-bottom))]"
+              className="mx-auto flex w-full max-w-[860px] flex-col gap-2 px-4 pt-3.5 pb-[max(18px,env(safe-area-inset-bottom))] md:px-8"
             >
               <input
                 ref={fileInputRef}
@@ -1018,12 +1036,7 @@ export function CaseWorkspace({
                     onClick={handleAttachButtonClick}
                     disabled={isUploadingDocument}
                     title="Прикрепить файл"
-                    style={{
-                      width: 36,
-                      height: 36,
-                      border: "1px solid var(--border-strong)",
-                      color: "var(--text-secondary)",
-                    }}
+                    className="size-11 border border-[var(--border-strong)] text-[var(--text-secondary)] md:size-9"
                   >
                     {isUploadingDocument ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
@@ -1043,12 +1056,7 @@ export function CaseWorkspace({
                     }
                     size="icon"
                     title="Отправить"
-                    style={{
-                      width: 36,
-                      height: 36,
-                      background: "var(--brand-accent)",
-                      color: "#fff",
-                    }}
+                    className="size-11 bg-[var(--brand-accent)] text-white hover:bg-[var(--brand-accent-hover)] md:size-9"
                   >
                     {isLoading || isLoadingChats || isLoadingMessages ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
@@ -1085,67 +1093,40 @@ export function CaseWorkspace({
 function ModeToggle({
   selectedModel,
   onChange,
+  className,
 }: {
   selectedModel: SelectedModel;
   onChange: (m: SelectedModel) => void;
+  className?: string;
 }) {
-  const isFast = selectedModel === "openai";
-  const isDeep = selectedModel === "thinking";
-
-  const baseBtnStyle: React.CSSProperties = {
-    border: 0,
-    background: "transparent",
-    padding: "6px 14px",
-    borderRadius: 999,
-    fontSize: 13,
-    fontWeight: 500,
-    color: "var(--text-secondary)",
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 6,
-    cursor: "pointer",
-    transition: "color .15s, background .15s",
-  };
-
-  const activeStyle: React.CSSProperties = {
-    background: "#fff",
-    color: "var(--text-primary)",
-    boxShadow: "var(--shadow-sm)",
-  };
+  const options = [
+    { key: "openai", icon: "⚡", label: "Быстрая", title: "Быстрая модель" },
+    { key: "thinking", icon: "🧠", label: "Думающая", title: "Думающая модель" },
+  ] as const;
 
   return (
     <div
       role="tablist"
-      className="hidden sm:inline-flex"
-      style={{
-        background: "#F1EFE7",
-        borderRadius: 999,
-        padding: 3,
-        gap: 2,
-      }}
+      className={cn("inline-flex gap-0.5 rounded-full bg-[#F1EFE7] p-[3px]", className)}
     >
-      <button
-        type="button"
-        role="tab"
-        aria-selected={isFast}
-        onClick={() => onChange("openai")}
-        style={{ ...baseBtnStyle, ...(isFast ? activeStyle : {}) }}
-        title="Быстрая модель"
-      >
-        <span>⚡</span>
-        Быстрая
-      </button>
-      <button
-        type="button"
-        role="tab"
-        aria-selected={isDeep}
-        onClick={() => onChange("thinking")}
-        style={{ ...baseBtnStyle, ...(isDeep ? activeStyle : {}) }}
-        title="Думающая модель"
-      >
-        <span>🧠</span>
-        Думающая
-      </button>
+      {options.map((option) => (
+        <button
+          key={option.key}
+          type="button"
+          role="tab"
+          aria-selected={selectedModel === option.key}
+          onClick={() => onChange(option.key)}
+          title={option.title}
+          className={cn(
+            "inline-flex items-center justify-center gap-1.5 rounded-full border-0 bg-transparent px-3.5 py-2.5 text-sm font-medium text-[var(--text-secondary)] transition-colors md:py-1.5 md:text-[13px]",
+            selectedModel === option.key &&
+              "bg-white text-[var(--text-primary)] shadow-[var(--shadow-sm)]",
+          )}
+        >
+          <span>{option.icon}</span>
+          {option.label}
+        </button>
+      ))}
     </div>
   );
 }

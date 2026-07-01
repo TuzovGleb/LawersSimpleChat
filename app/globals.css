@@ -311,25 +311,4 @@
     hyphens: auto;
   }
 
-  @media (max-width: 768px) {
-    .mobile-safe-text {
-      word-break: break-word;
-      overflow-wrap: break-word;
-      max-width: 100vw;
-      box-sizing: border-box;
-    }
-
-    .chat-container {
-      max-width: 100vw;
-      overflow-x: hidden;
-      padding-left: 0.5rem;
-      padding-right: 0.5rem;
-    }
-
-    .message-content {
-      max-width: calc(100vw - 2rem);
-      word-break: break-word;
-      overflow-wrap: break-word;
-    }
-  }
 }
