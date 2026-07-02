@@ -25,7 +25,7 @@ chat:
     # strongest model. Adjust freely.
     models:
       fast:
-        name: "~anthropic/claude-sonnet-latest"
+        name: "anthropic/claude-sonnet-4.6"
         temperature: 0.7
         max_tokens: 16000
         fallback: [alt, power]
@@ -52,7 +52,7 @@ chat:
         # Same base model as the 'fast' entry (Claude Sonnet), but with reasoning
         # enabled. No temperature here: Claude rejects a custom temperature when
         # extended thinking is on (must be 1 / unset).
-        name: "~anthropic/claude-sonnet-latest"
+        name: "anthropic/claude-sonnet-4.6"
         reasoning_effort: high
         max_tokens: 32000
         # Drop to plain (non-reasoning) Sonnet, then a different provider.
