@@ -10,7 +10,7 @@ import { ThinkingIndicator } from "@/components/thinking-indicator";
 import { DocumentPreviewPanel } from "@/components/document-preview-panel";
 import { useAppHeight } from "@/hooks/use-app-height";
 import { cn } from "@/lib/utils";
-import type { ChatMessage, Project, SessionDocument, SelectedModel } from "@/lib/types";
+import type { ChatMessage, Project, SessionDocument, SelectedModel, UploadingDocument } from "@/lib/types";
 import {
   AlertCircle,
   ArrowLeft,
@@ -58,6 +58,7 @@ interface CaseWorkspaceProps {
   isLoadingChats: boolean;
   isLoadingMessages: boolean;
   pendingDocuments: SessionDocument[];
+  uploadingDocuments: UploadingDocument[];
   selectedModel: SelectedModel;
   onModelChange: (model: SelectedModel) => void;
   onBack: () => void;
@@ -67,8 +68,94 @@ interface CaseWorkspaceProps {
   onSendMessage: () => void;
   onAttachDocument: (files: FileList | null) => void;
   onRemovePendingDocument: (documentId: string) => void;
+  onRemoveUploadingDocument: (localId: string) => void;
   onRetryMessage?: (messageIndex: number) => void;
   onSignOut: () => void;
+}
+
+// The remove button paints outside the chip's layout box (negative margins) so
+// its touch target is ~34px on phones and ~26px with a pointer, without
+// inflating the chip itself.
+const CHIP_REMOVE_CLASS =
+  "-my-2.5 -mr-2 shrink-0 rounded-full p-2.5 md:-my-1.5 md:-mr-1.5 md:p-1.5";
+
+// Attachment chip above the composer. State is encoded beyond color alone
+// (red is this brand's accent, so a red border can't mean "failed" by itself):
+// solid border = attached, dashed + spinner = uploading, tinted background +
+// visible error text = failed. Uploading chips reserve the remove button's
+// width so the row doesn't shift when the X appears on success.
+function ComposerChip({
+  variant,
+  name,
+  error,
+  onRemove,
+}: {
+  variant: "attached" | "uploading" | "error";
+  name: string;
+  error?: string;
+  onRemove?: () => void;
+}) {
+  const isError = variant === "error";
+  const errorText = error ?? "Не удалось обработать документ";
+  return (
+    <span
+      role={variant === "uploading" ? "status" : undefined}
+      className="inline-flex max-w-full items-center gap-1.5 rounded-full px-3 py-2 text-[13px] md:py-1.5"
+      style={{
+        border: `1px ${variant === "uploading" ? "dashed" : "solid"} ${
+          isError ? "hsl(var(--destructive))" : "var(--border-strong)"
+        }`,
+        background: isError ? "hsl(var(--destructive) / 0.06)" : "var(--bg-soft)",
+        color: variant === "uploading" ? "var(--text-secondary)" : "var(--text-primary)",
+      }}
+    >
+      {variant === "uploading" ? (
+        <Loader2
+          className="h-3.5 w-3.5 shrink-0 animate-spin"
+          style={{ color: "var(--brand-accent)" }}
+        />
+      ) : isError ? (
+        <AlertCircle
+          className="h-3.5 w-3.5 shrink-0"
+          style={{ color: "hsl(var(--destructive))" }}
+        />
+      ) : (
+        <FileText
+          className="h-3.5 w-3.5 shrink-0"
+          style={{ color: "var(--brand-accent)" }}
+        />
+      )}
+      <span className="max-w-[240px] truncate" title={name}>
+        {name}
+      </span>
+      {variant === "uploading" && <span className="sr-only">Загружается…</span>}
+      {isError && (
+        // The reason must be visible, not tooltip-only: touch devices have no
+        // hover and the toast is transient.
+        <span
+          className="max-w-[220px] truncate"
+          style={{ color: "hsl(var(--destructive))" }}
+          title={errorText}
+        >
+          {errorText}
+        </span>
+      )}
+      {onRemove ? (
+        <button
+          type="button"
+          className={cn(CHIP_REMOVE_CLASS, "hover:opacity-70")}
+          onClick={onRemove}
+          aria-label={isError ? `Убрать ${name} (не загружен)` : `Убрать ${name}`}
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      ) : (
+        <span aria-hidden="true" className={cn(CHIP_REMOVE_CLASS, "invisible")}>
+          <X className="h-3.5 w-3.5" />
+        </span>
+      )}
+    </span>
+  );
 }
 
 export function CaseWorkspace({
@@ -85,6 +172,7 @@ export function CaseWorkspace({
   isLoadingChats,
   isLoadingMessages,
   pendingDocuments,
+  uploadingDocuments,
   selectedModel,
   onModelChange,
   onBack,
@@ -94,6 +182,7 @@ export function CaseWorkspace({
   onSendMessage,
   onAttachDocument,
   onRemovePendingDocument,
+  onRemoveUploadingDocument,
   onRetryMessage,
   onSignOut,
 }: CaseWorkspaceProps) {
@@ -999,34 +1088,32 @@ export function CaseWorkspace({
                 onChange={handleFileInputChange}
               />
 
-              {pendingDocuments.length > 0 && (
+              {(pendingDocuments.length > 0 || uploadingDocuments.length > 0) && (
                 <div className="flex flex-wrap gap-2">
+                  {/* Attached first, uploads after: while uploads succeed in
+                      pick order a chip keeps its slot when it flips to
+                      "attached"; an errored file's chip stays on the right
+                      with the still-uploading ones. */}
                   {pendingDocuments.map((document) => (
-                    <span
+                    <ComposerChip
                       key={document.id}
-                      className="inline-flex max-w-full items-center gap-1.5 rounded-full px-2.5 py-1 text-xs"
-                      style={{
-                        border: "1px solid var(--border-strong)",
-                        background: "var(--bg-soft)",
-                        color: "var(--text-primary)",
-                      }}
-                    >
-                      <FileText
-                        className="h-3 w-3 shrink-0"
-                        style={{ color: "var(--brand-accent)" }}
-                      />
-                      <span className="max-w-[240px] truncate" title={document.name}>
-                        {document.name}
-                      </span>
-                      <button
-                        type="button"
-                        className="-mr-1 rounded-full p-0.5 hover:opacity-70"
-                        onClick={() => onRemovePendingDocument(document.id)}
-                        aria-label={`Убрать ${document.name}`}
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </span>
+                      variant="attached"
+                      name={document.name}
+                      onRemove={() => onRemovePendingDocument(document.id)}
+                    />
+                  ))}
+                  {uploadingDocuments.map((upload) => (
+                    <ComposerChip
+                      key={upload.localId}
+                      variant={upload.status === "uploading" ? "uploading" : "error"}
+                      name={upload.name}
+                      error={upload.error}
+                      onRemove={
+                        upload.status === "error"
+                          ? () => onRemoveUploadingDocument(upload.localId)
+                          : undefined
+                      }
+                    />
                   ))}
                 </div>
               )}
@@ -1069,15 +1156,11 @@ export function CaseWorkspace({
                     variant="ghost"
                     size="icon"
                     onClick={handleAttachButtonClick}
-                    disabled={isUploadingDocument}
+                    disabled={!activeSession}
                     title="Прикрепить файл"
                     className="size-11 border border-[var(--border-strong)] text-[var(--text-secondary)] md:size-9"
                   >
-                    {isUploadingDocument ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Paperclip className="h-4 w-4" />
-                    )}
+                    <Paperclip className="h-4 w-4" />
                     <span className="sr-only">Прикрепить</span>
                   </Button>
                   <Button

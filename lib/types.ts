@@ -48,6 +48,19 @@ export interface SessionDocument {
   uploadedAt: string;
 }
 
+// Optimistic composer chip for a file that is still uploading/processing (or
+// failed): exists only on the client, keyed by a local id — the server id
+// (SessionDocument.id) appears only after extraction succeeds. sessionId pins
+// the chip to the chat where the file was picked, so multi-minute extractions
+// don't leak chips or send-blocking into other chats.
+export interface UploadingDocument {
+  localId: string;
+  sessionId: string | null;
+  name: string;
+  status: 'uploading' | 'error';
+  error?: string;
+}
+
 export interface ChatRequestDocument {
   id: string;
   name: string;

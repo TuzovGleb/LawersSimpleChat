@@ -5,7 +5,7 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { v4 as uuidv4 } from "uuid";
 import { CaseSelectionScreen } from "@/components/case-selection-screen";
 import { CaseWorkspace } from "@/components/case-workspace";
-import type { ChatMessage, ChatMessageDocument, Project, SessionDocument, SelectedModel } from "@/lib/types";
+import type { ChatMessage, ChatMessageDocument, Project, SessionDocument, SelectedModel, UploadingDocument } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import { ToasterClient } from "@/components/toaster-client";
@@ -149,7 +149,28 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
   const isLoading = Boolean(activeStream);
   const isThinking = activeStream?.phase === "thinking";
   const [hasInitialized, setHasInitialized] = useState(false);
-  const [isUploadingDocument, setIsUploadingDocument] = useState(false);
+  // Optimistic upload chips: one entry per file from the moment it is picked;
+  // an entry disappears on success (the doc moves to pendingMessageDocuments)
+  // or turns into an error chip the user dismisses manually. Entries are pinned
+  // to the chat they were picked in — only the active chat's entries render and
+  // gate sending, so a multi-minute extraction never blocks other chats.
+  const [uploadingDocuments, setUploadingDocuments] = useState<UploadingDocument[]>([]);
+  const activeUploadingDocuments = useMemo(
+    () => uploadingDocuments.filter((entry) => entry.sessionId === activeSessionId),
+    [uploadingDocuments, activeSessionId],
+  );
+  const isUploadingDocument = activeUploadingDocuments.some(
+    (entry) => entry.status === "uploading",
+  );
+  // Latest navigation state for long-running upload callbacks: extraction can
+  // finish many minutes after the user has left the chat, and the finished doc
+  // must only join the composer of the chat it was picked in.
+  const activeSessionIdRef = useRef(activeSessionId);
+  const isInWorkspaceRef = useRef(isInWorkspace);
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+    isInWorkspaceRef.current = isInWorkspace;
+  }, [activeSessionId, isInWorkspace]);
   const [pendingMessageDocuments, setPendingMessageDocuments] = useState<SessionDocument[]>([]);
   const [isLoadingChatsFromDB, setIsLoadingChatsFromDB] = useState(false);
   // Чат, открытый по прямой ссылке /chat/[chatId]: ждём, пока он появится в списке сессий
@@ -860,14 +881,44 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         });
         return;
       }
-
-      setIsUploadingDocument(true);
+      // Первое открытие дела: пока список чатов грузится, activeSessionId ещё
+      // null — чип не к чему привязать (см. UploadingDocument.sessionId), и
+      // успешная загрузка не смогла бы прикрепиться к сообщению.
+      if (!activeSessionId) {
+        toast({
+          title: "Чат ещё открывается",
+          description: "Подождите секунду и прикрепите файл снова.",
+        });
+        return;
+      }
 
       const files = Array.from(fileList);
+      // Show a chip per file immediately; each chip tracks its own upload.
+      const chipEntries: UploadingDocument[] = files.map((file) => ({
+        localId: uuidv4(),
+        sessionId: activeSessionId,
+        name: file.name,
+        status: "uploading",
+      }));
+      // Re-picking a failed file is a retry: its stale error chip gives way to
+      // the fresh uploading chip instead of lingering next to it.
+      setUploadingDocuments((prev) => [
+        ...prev.filter(
+          (entry) =>
+            !(
+              entry.status === "error" &&
+              entry.sessionId === activeSessionId &&
+              files.some((file) => file.name === entry.name)
+            ),
+        ),
+        ...chipEntries,
+      ]);
+
       // Stable chat id (client-generated, exists before the chat row) so the
       // backend can tag the extraction trace with chat_id for LangSmith.
       const chatId = activeSession?.backendSessionId ?? activeSessionId;
-      for (const file of files) {
+      for (const [fileIndex, file] of files.entries()) {
+        const chipLocalId = chipEntries[fileIndex].localId;
         try {
           // Step 1: Get presigned URL
           const presignResponse = await fetchWithRetry("/api/upload/presign", {
@@ -893,12 +944,27 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
 
           const { uploadUrl, objectKey } = await presignResponse.json();
 
-          // Step 2: Upload file directly to S3
-          const uploadResponse = await fetch(uploadUrl, {
-            method: "PUT",
-            headers: { "Content-Type": file.type || "application/octet-stream" },
-            body: file,
-          });
+          // Step 2: Upload file directly to S3. A bare fetch would hang forever
+          // on a stalled mobile connection (знакомый сценарий с троттлингом у
+          // RU-операторов), leaving the chip spinning and send blocked until a
+          // page reload — cap the PUT so the chip flips to a dismissable error.
+          const putController = new AbortController();
+          const putTimeoutId = setTimeout(() => putController.abort(), 600000); // 10 минут
+          let uploadResponse: Response;
+          try {
+            uploadResponse = await fetch(uploadUrl, {
+              method: "PUT",
+              headers: { "Content-Type": file.type || "application/octet-stream" },
+              body: file,
+              signal: putController.signal,
+            });
+          } catch (putError) {
+            throw putController.signal.aborted
+              ? new Error("Сеть не ответила при загрузке файла. Проверьте соединение и попробуйте снова.")
+              : putError;
+          } finally {
+            clearTimeout(putTimeoutId);
+          }
 
           if (!uploadResponse.ok) {
             throw new Error(`Ошибка загрузки файла в хранилище (${uploadResponse.status}).`);
@@ -952,10 +1018,20 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
             throw new Error("Ответ сервера не содержит текст документа.");
           }
 
-          setPendingMessageDocuments((prev) => {
-            const withoutDuplicate = prev.filter((document) => document.id !== normalized.id);
-            return [...withoutDuplicate, normalized];
-          });
+          // The chip flips from "uploading" to "attached" in place: the entry
+          // leaves the uploading list and the ready document takes its slot.
+          setUploadingDocuments((prev) => prev.filter((entry) => entry.localId !== chipLocalId));
+          // Attach to the composer only if the user is still in the chat where
+          // the file was picked: switching chats deliberately drops composer
+          // attachments, and a doc finished minutes later must not ride along
+          // with an unrelated chat's next message. The doc still lands in the
+          // case's document list below either way.
+          if (isInWorkspaceRef.current && activeSessionIdRef.current === activeSessionId) {
+            setPendingMessageDocuments((prev) => {
+              const withoutDuplicate = prev.filter((document) => document.id !== normalized.id);
+              return [...withoutDuplicate, normalized];
+            });
+          }
 
           setProjects((prev) => {
             const next = prev.map((project) => {
@@ -983,28 +1059,36 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
             );
           });
 
-          toast({
-            title: "Документ прикреплён",
-            description: `«${normalized.name}» будет отправлен вместе со следующим сообщением.`,
-          });
         } catch (error) {
           console.error("Ошибка при обработке документа:", error);
+          const description =
+            error instanceof Error && error.message.trim()
+              ? error.message
+              : "Попробуйте другой файл или повторите попытку позже.";
+          setUploadingDocuments((prev) =>
+            prev.map((entry) =>
+              entry.localId === chipLocalId
+                ? { ...entry, status: "error", error: description }
+                : entry,
+            ),
+          );
           toast({
             variant: "destructive",
             title: "Не удалось обработать документ",
-            description:
-              error instanceof Error ? error.message : "Попробуйте другой файл или повторите попытку позже.",
+            description: `«${file.name}» — ${description}`,
           });
         }
       }
-
-      setIsUploadingDocument(false);
     },
     [selectedProjectId, setProjects, toast, user?.id, activeSession?.backendSessionId, activeSessionId],
   );
 
   const handleRemovePendingDocument = useCallback((documentId: string) => {
     setPendingMessageDocuments((prev) => prev.filter((document) => document.id !== documentId));
+  }, []);
+
+  const handleRemoveUploadingDocument = useCallback((localId: string) => {
+    setUploadingDocuments((prev) => prev.filter((entry) => entry.localId !== localId));
   }, []);
 
   const handleSendMessage = useCallback(async (override?: {
@@ -1014,6 +1098,15 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
     baseMessages: ChatMessage[];
   }) => {
     if (!activeSession || isLoadingMessages) return;
+    // Enter is not gated by the disabled send button: don't let a message slip
+    // out without documents that are still uploading (retry has none pending).
+    if (!override && isUploadingDocument) {
+      toast({
+        title: "Документы ещё загружаются",
+        description: "Отправка станет доступна, когда все файлы будут обработаны.",
+      });
+      return;
+    }
     if (!selectedProjectId) {
       toast({
         variant: "destructive",
@@ -1333,7 +1426,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         return next;
       });
     }
-  }, [activeSession, input, isLoadingMessages, isPageVisible, pendingMessageDocuments, selectedProjectId, selectedModel, toast, user?.id, utmQuery]);
+  }, [activeSession, input, isLoadingMessages, isPageVisible, isUploadingDocument, pendingMessageDocuments, selectedProjectId, selectedModel, toast, user?.id, utmQuery]);
 
   // Retry a failed user turn: re-send its content/attachments with the history
   // that preceded it. The failed message is always the last one, but we slice
@@ -1422,6 +1515,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         isLoadingChats={isLoadingChatsFromDB}
         isLoadingMessages={isLoadingMessages}
         pendingDocuments={pendingMessageDocuments}
+        uploadingDocuments={activeUploadingDocuments}
         selectedModel={selectedModel}
         onModelChange={setSelectedModel}
         onBack={handleBackToSelection}
@@ -1431,6 +1525,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         onSendMessage={handleSendMessage}
         onAttachDocument={processDocumentFiles}
         onRemovePendingDocument={handleRemovePendingDocument}
+        onRemoveUploadingDocument={handleRemoveUploadingDocument}
         onRetryMessage={handleRetryMessage}
         onSignOut={signOut}
       />
