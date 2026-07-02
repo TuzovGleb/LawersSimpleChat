@@ -1,11 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { getAuthorizedChatSession } from '@/lib/chat-access';
+import { checkRateLimit } from '@/lib/rate-limit';
 import type { UTMData } from '@/lib/types';
 import { logger, requestIdFrom } from '@/lib/server-logger';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+
+// Per-user chat send limit: generous for a human, but caps scripted hammering
+// that would burn LLM tokens. Enforced in Postgres (see lib/rate-limit.ts).
+const CHAT_RATE_MAX = 30;
+const CHAT_RATE_WINDOW_SECONDS = 60;
 
 const SSE_HEADERS = {
   'Content-Type': 'text/event-stream',
@@ -87,10 +93,12 @@ export async function GET(req: NextRequest) {
     );
 
     if (!upstream.ok) {
+      // Log the upstream body server-side for diagnosis, but never echo it to the
+      // client — it can carry model ids / provider details (prompt.py [12]).
       const details = await upstream.text().catch(() => '');
       logger.error('Chat backend returned an error loading messages', { chat_id: sessionId, request_id: requestId, event: 'backend_error', status: upstream.status, details });
       return NextResponse.json(
-        { error: 'Не удалось загрузить сообщения.', details: details || `HTTP ${upstream.status}` },
+        { error: 'Не удалось загрузить сообщения.' },
         { status: 502 },
       );
     }
@@ -138,6 +146,27 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     userId = user.id;
+
+    // Defense in depth: if this session already exists it must belong to the
+    // caller (a brand-new session won't exist yet — the backend creates it, so
+    // that case is allowed). The backend also enforces this authoritatively via
+    // the service role, which is the guard that survives RLS being enabled.
+    const { data: existing } = await supabase
+      .from('chat_sessions')
+      .select('id')
+      .eq('id', sessionId)
+      .maybeSingle();
+    if (existing && !(await getAuthorizedChatSession(supabase, sessionId, user.id))) {
+      return NextResponse.json({ error: 'Чат не найден или нет доступа.' }, { status: 404 });
+    }
+
+    if (!(await checkRateLimit(supabase, 'chat', CHAT_RATE_MAX, CHAT_RATE_WINDOW_SECONDS))) {
+      logger.warn('Chat rate limit hit', { chat_id: sessionId, request_id: requestId, event: 'rate_limited', user_id: user.id });
+      return NextResponse.json(
+        { error: 'Слишком много сообщений подряд. Немного подождите и повторите.' },
+        { status: 429 },
+      );
+    }
   } catch (error) {
     logger.error('Auth check failed', { chat_id: sessionId, request_id: requestId, event: 'auth_failed', err: error });
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -164,10 +193,12 @@ export async function POST(req: NextRequest) {
     );
 
     if (!upstream.ok || !upstream.body) {
+      // Log upstream body server-side only; do not return it (may contain model/
+      // provider identifiers from the fallback chain — prompt.py [12]).
       const details = await upstream.text().catch(() => '');
       logger.error('Chat backend returned an error', { chat_id: sessionId, request_id: requestId, event: 'backend_error', status: upstream.status, details });
       return NextResponse.json(
-        { error: 'Backend error', details: details || `HTTP ${upstream.status}` },
+        { error: 'Не удалось получить ответ. Попробуйте ещё раз.' },
         { status: 502 },
       );
     }
@@ -175,8 +206,7 @@ export async function POST(req: NextRequest) {
     logger.info('Chat message proxied to backend', { chat_id: sessionId, request_id: requestId, event: 'chat_proxied', status: upstream.status, duration_ms: Date.now() - startedAt });
     return new Response(upstream.body, { headers: SSE_HEADERS });
   } catch (error) {
-    const details = error instanceof Error ? error.message : 'Unknown error';
     logger.error('Failed to reach chat backend', { chat_id: sessionId, request_id: requestId, event: 'backend_unreachable', err: error });
-    return NextResponse.json({ error: 'Failed to reach chat backend', details }, { status: 502 });
+    return NextResponse.json({ error: 'Не удалось получить ответ. Попробуйте ещё раз.' }, { status: 502 });
   }
 }

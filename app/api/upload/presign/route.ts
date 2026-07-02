@@ -1,9 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
 import { generatePresignedUploadUrl } from '@/lib/s3-client';
+import { createClient } from '@/lib/supabase/server';
+import { isProjectOwnedBy } from '@/lib/chat-access';
 import { logger, requestIdFrom } from '@/lib/server-logger';
 
 export const runtime = 'nodejs';
+
+// Upper bound on a single upload (bytes). Keeps a hostile caller from requesting
+// a presigned URL for an arbitrarily huge object.
+const MAX_UPLOAD_BYTES = 100 * 1024 * 1024; // 100 MB
 
 const ALLOWED_MIME_TYPES = new Set([
   'application/pdf',
@@ -27,7 +33,9 @@ export async function POST(req: NextRequest) {
   const startedAt = Date.now();
   try {
     const body = await req.json();
-    const { filename, mimeType, size, projectId, userId } = body;
+    // NB: userId is derived from the authenticated session, NOT taken from the
+    // request body — a caller must not be able to act on behalf of another user.
+    const { filename, mimeType, size, projectId } = body;
 
     if (!filename || typeof filename !== 'string') {
       return NextResponse.json({ error: 'filename is required' }, { status: 400 });
@@ -38,11 +46,23 @@ export async function POST(req: NextRequest) {
     if (!size || typeof size !== 'number' || size <= 0) {
       return NextResponse.json({ error: 'size must be a positive number' }, { status: 400 });
     }
+    if (size > MAX_UPLOAD_BYTES) {
+      return NextResponse.json({ error: 'Файл слишком большой.' }, { status: 400 });
+    }
     if (!projectId || typeof projectId !== 'string') {
       return NextResponse.json({ error: 'projectId is required' }, { status: 400 });
     }
-    if (!userId || typeof userId !== 'string') {
-      return NextResponse.json({ error: 'userId is required' }, { status: 400 });
+
+    // Require an authenticated user who owns the target project.
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    if (!(await isProjectOwnedBy(supabase, projectId, user.id))) {
+      return NextResponse.json({ error: 'Проект не найден или нет доступа.' }, { status: 404 });
     }
 
     if (!ALLOWED_MIME_TYPES.has(mimeType)) {

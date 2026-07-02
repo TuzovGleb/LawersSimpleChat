@@ -110,7 +110,7 @@ export function DocumentPreviewPanel({
         aria-label={`Предпросмотр документа ${fileName}`}
       >
         <header
-          className="flex items-center justify-between gap-3 px-5 py-3.5"
+          className="flex items-center justify-between gap-3 pl-[max(1.25rem,env(safe-area-inset-left))] pr-[max(1.25rem,env(safe-area-inset-right))] py-3.5 pt-[max(0.875rem,env(safe-area-inset-top))]"
           style={{
             borderBottom: "1px solid var(--border-soft)",
             borderTop: "2px solid var(--brand-accent)",
@@ -165,7 +165,10 @@ export function DocumentPreviewPanel({
           </div>
         </header>
 
-        <div className="relative flex-1 overflow-auto" style={{ background: "var(--bg-soft)" }}>
+        <div
+          className="relative flex-1 overflow-auto pb-[env(safe-area-inset-bottom)]"
+          style={{ background: "var(--bg-soft)" }}
+        >
           {status === "loading" && (
             <div
               className="absolute inset-0 flex items-center justify-center gap-2 text-sm"

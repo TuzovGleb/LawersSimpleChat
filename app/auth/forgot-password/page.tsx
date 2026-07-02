@@ -131,7 +131,9 @@ export default function ForgotPasswordPage() {
 
         <Button
           type="submit"
-          className="btn btn-primary w-full"
+          variant="brand"
+          size="cta"
+          className="w-full"
           disabled={loading || !isValid || cooldown > 0}
         >
           {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}

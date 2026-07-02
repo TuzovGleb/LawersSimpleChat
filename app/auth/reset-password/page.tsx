@@ -3,7 +3,8 @@
 import { useState, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/hooks/use-auth";
@@ -261,7 +262,10 @@ export default function ResetPasswordPage() {
               ? "Ссылка недействительна для этого устройства. Откройте письмо в том же браузере, где запрашивали сброс, или запросите новую ссылку."
               : "Ссылка восстановления истекла или недействительна. Запросите новую."}
           </p>
-          <Link href="/auth/forgot-password" className="btn btn-primary w-full">
+          <Link
+            href="/auth/forgot-password"
+            className={cn(buttonVariants({ variant: "brand", size: "cta" }), "w-full")}
+          >
             Запросить новую ссылку
           </Link>
         </>
@@ -329,7 +333,9 @@ export default function ResetPasswordPage() {
 
             <Button
               type="submit"
-              className="btn btn-primary w-full"
+              variant="brand"
+              size="cta"
+              className="w-full"
               disabled={!isValid || phase !== "ready"}
             >
               {(phase === "updating" || phase === "done") && (

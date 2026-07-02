@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabase } from '@/lib/supabase';
+import { isProjectOwnedBy } from '@/lib/chat-access';
+import { checkRateLimit } from '@/lib/rate-limit';
 import { mapProjectDocument } from '@/lib/projects';
 import { logger, requestIdFrom } from '@/lib/server-logger';
+
+// OCR is expensive (S3 download + per-page LLM vision). Cap how many extractions
+// one user can trigger in a window. Enforced in Postgres (see lib/rate-limit.ts).
+const OCR_RATE_MAX = 20;
+const OCR_RATE_WINDOW_SECONDS = 300;
 
 // NOTE: Для Yandex Cloud Serverless Containers используем Node.js runtime.
 // GET читает список документов из Supabase. POST теперь только проксирует
@@ -52,6 +59,18 @@ export async function GET(req: NextRequest) {
         { error: 'Не удалось подключиться к базе данных.' },
         { status: 500 }
       );
+    }
+
+    // Require an authenticated user who owns this project before returning any
+    // document data (the extracted `text` column is sensitive tenant content).
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    if (!(await isProjectOwnedBy(supabase, projectId, user.id))) {
+      return NextResponse.json({ error: 'Проект не найден или нет доступа.' }, { status: 404 });
     }
 
     const { data, error } = await supabase
@@ -115,7 +134,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const { objectKey, filename, mimeType, size, userId, chatId } = body ?? {};
+  const { objectKey, filename, mimeType, size, chatId } = body ?? {};
 
   if (!objectKey || typeof objectKey !== 'string') {
     return NextResponse.json({ error: 'objectKey is required' }, { status: 400 });
@@ -130,13 +149,35 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'size must be a positive number' }, { status: 400 });
   }
 
+  // OCR extraction is expensive (S3 download + per-page LLM vision). Require an
+  // authenticated owner of the project so it can't be triggered anonymously or
+  // against another tenant's project. userId comes from the session, not the body.
+  const supabase = await getSupabase();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  if (!(await isProjectOwnedBy(supabase, projectId, user.id))) {
+    return NextResponse.json({ error: 'Проект не найден или нет доступа.' }, { status: 404 });
+  }
+
+  if (!(await checkRateLimit(supabase, 'ocr', OCR_RATE_MAX, OCR_RATE_WINDOW_SECONDS))) {
+    logger.warn('OCR rate limit hit', { project_id: projectId, request_id: requestId, event: 'rate_limited', user_id: user.id });
+    return NextResponse.json(
+      { error: 'Слишком много загрузок подряд. Немного подождите и повторите.' },
+      { status: 429 },
+    );
+  }
+
   const forwardBody = {
     objectKey,
     filename,
     mimeType,
     size,
     projectId,
-    userId: typeof userId === 'string' ? userId : undefined,
+    userId: user.id,
   };
 
   try {

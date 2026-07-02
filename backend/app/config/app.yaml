@@ -2,6 +2,11 @@ app:
   # Shared secret expected from the Next.js proxy (header: X-Backend-Secret).
   backend_secret: ${env.get('BACKEND_SHARED_SECRET', '')}
 
+  # Escape hatch: run WITHOUT a shared secret (fail-open auth). LOCAL DEV ONLY.
+  # When empty (default) a missing backend_secret makes the backend refuse all
+  # authenticated endpoints (fail closed) — correct for the public container.
+  allow_insecure: ${env.get('BACKEND_ALLOW_INSECURE', '')}
+
   # Supabase service-role access (same project the Next.js app uses).
   supabase:
     url: ${env.get('SUPABASE_URL', '')}

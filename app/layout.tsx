@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter, Lora } from "next/font/google";
 import "./globals.css";
 import { metadataStrings } from "./metadata-strings";
@@ -34,12 +34,6 @@ export const metadata: Metadata = {
   alternates: {
     canonical: '/',
   },
-  viewport: {
-    width: 'device-width',
-    initialScale: 1,
-    maximumScale: 5,
-    userScalable: true,
-  },
   openGraph: {
     title: metadataStrings.siteTitle,
     description: metadataStrings.siteDescription,
@@ -68,6 +62,20 @@ export const metadata: Metadata = {
   verification: {
     google: 'your-google-verification-code',
   },
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 5,
+  userScalable: true,
+  // Extends the page under the notch/home indicator and activates the
+  // env(safe-area-inset-*) values the layout compensates with.
+  viewportFit: "cover",
+  // Chrome/Android: the software keyboard resizes the layout viewport, so
+  // bottom-pinned UI (chat composer) stays visible without JS. iOS ignores
+  // this; hooks/use-app-height.ts covers it there.
+  interactiveWidget: "resizes-content",
 };
 
 export default function RootLayout({

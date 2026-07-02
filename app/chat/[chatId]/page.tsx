@@ -9,7 +9,7 @@ export default async function ChatPage({
   const { chatId } = await params;
 
   return (
-    <main className="min-h-screen">
+    <main className="min-h-dvh">
       <Suspense fallback={null}>
         <ChatPageClient initialChatId={chatId} />
       </Suspense>

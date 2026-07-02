@@ -4,14 +4,17 @@ Wire contract the Next.js frontend consumes:
   - ``: heartbeat\\n\\n`` whenever the model is working but nothing new has been
     produced for HEARTBEAT_INTERVAL_SECONDS (keeps proxies / load balancers from
     closing the connection during a slow tool call);
-  - ``data: {"type": "status", "tool", "label"}`` when the agent starts a tool,
-    so the user sees "Ищу судебную практику…" instead of silence;
+  - ``data: {"type": "status", "label"}`` when the agent starts a tool, so the
+    user sees "Ищу судебную практику…" instead of silence (the raw internal tool
+    name is deliberately NOT sent — see prompt.py section [12]);
   - ``data: {"type": "token", "delta"}`` for each chunk of the answer as it
     streams from the model;
   - a single ``data: {"type": "final", "message", "sessionId", "projectId",
     "metadata"}`` event at the end (also carries ``message`` so an older client
-    that only looks at ``data.message`` still works);
-  - on failure, a single ``data: {"type": "error", "error", "details"}`` event.
+    that only looks at ``data.message`` still works); ``metadata`` is vendor-neutral
+    (no provider/raw model id — see nodes._extract_metadata);
+  - on failure, a single ``data: {"type": "error", "error"}`` event with a
+    generic message only (the raw exception is logged server-side, never sent).
 
 The graph is consumed INLINE via ``graph.astream`` rather than a detached
 ``asyncio.shield``-ed background task: on a client disconnect the stream is
@@ -209,6 +212,18 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
 
     is_new_session = not await repo.session_exists(session_id) if repo else True
 
+    # Cross-tenant guard: an existing session must belong to the caller. This is
+    # enforced here (backend, service-role) because the BFF's user-scoped client
+    # can't see another tenant's session under RLS, yet this path uses the service
+    # role and would otherwise append to it. New sessions have no owner yet.
+    if repo and not is_new_session and await repo.is_foreign_session(session_id, payload.userId):
+        logger.warning(
+            "Rejected cross-tenant chat access",
+            extra={"session_id": session_id, "user_id": payload.userId},
+        )
+        yield _sse({"type": "error", "error": "Чат не найден или нет доступа."})
+        return
+
     project_id = payload.projectId
     if not project_id and repo:
         project_id = await repo.resolve_project_id(session_id)
@@ -218,6 +233,7 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
         "History assembled",
         extra={
             "session_id": session_id,
+            "user_id": payload.userId,
             "history_source": history_source,
             "history_len": len(history),
             "is_new_session": is_new_session,
@@ -295,10 +311,13 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
                         announced_tool_calls.add(key)
                         name = call.get("name", "")
                         last_tool = name
+                        # Only the human-readable label goes to the client. The raw
+                        # internal tool name (search_court_practice / draft_document…)
+                        # would disclose the system's internal machinery, so it is
+                        # kept server-side (see prompt.py section [12]).
                         yield _sse(
                             {
                                 "type": "status",
-                                "tool": name,
                                 "label": TOOL_STATUS_LABELS.get(name, DEFAULT_TOOL_STATUS),
                             }
                         )
@@ -335,8 +354,11 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
         raise
     except Exception as error:  # noqa: BLE001 - surface any generation failure to the client
         needs_flush = True
+        # Log the full exception server-side (str(error) can embed upstream model
+        # ids / provider URLs from the fallback chain), but send the client only a
+        # generic, vendor-neutral message — never the raw error text (prompt.py [12]).
         logger.exception("Chat generation failed", extra={"session_id": session_id})
-        yield _sse({"type": "error", "error": "Internal server error", "details": str(error)})
+        yield _sse({"type": "error", "error": "Не удалось получить ответ. Попробуйте ещё раз."})
         return
     finally:
         # Cancel/await the in-flight __anext__ so aclose() doesn't trip over a
@@ -415,6 +437,7 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
         "Chat response sent",
         extra={
             "session_id": session_id,
+            "user_id": payload.userId,
             "project_id": project_id,
             "total_ms": int((time.time() - started) * 1000),
             "model_used": metadata.get("modelUsed"),

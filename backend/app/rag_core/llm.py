@@ -37,7 +37,7 @@ class ProviderConfig(BaseModel):
 
 class ChatProviderParams(BaseModel):
     provider: ProviderConfig
-    default_model: str = "openai"
+    default_model: str = "fast"
     models: dict[str, ModelConfig]
 
 

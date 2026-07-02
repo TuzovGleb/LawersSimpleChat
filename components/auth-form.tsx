@@ -197,7 +197,7 @@ export function AuthForm() {
   if (authLoading || user) {
     return (
       <div
-        className="flex min-h-screen items-center justify-center"
+        className="flex min-h-dvh items-center justify-center"
         style={{ background: "var(--bg)" }}
       >
         <div className="text-center">
@@ -288,7 +288,9 @@ export function AuthForm() {
                 </FormField>
                 <Button
                   type="submit"
-                  className="btn btn-primary w-full"
+                  variant="brand"
+                  size="cta"
+                  className="w-full"
                   disabled={loading || !isSignupFormValid}
                 >
                   {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
@@ -338,13 +340,15 @@ export function AuthForm() {
             >
               Регистрация доступна только после звонка
             </p>
-            <button
+            <Button
               type="button"
+              variant="brandOutline"
+              size="ctaSm"
               onClick={handleCalendlyClick}
-              className="btn btn-outline-accent w-full btn-sm"
+              className="w-full"
             >
               Записаться на звонок
-            </button>
+            </Button>
           </div>
         </>
       )}
@@ -431,7 +435,9 @@ function LoginForm({
       </div>
       <Button
         type="submit"
-        className="btn btn-primary w-full"
+        variant="brand"
+        size="cta"
+        className="w-full"
         disabled={loading || !isValid}
       >
         {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}

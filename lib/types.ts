@@ -48,6 +48,19 @@ export interface SessionDocument {
   uploadedAt: string;
 }
 
+// Optimistic composer chip for a file that is still uploading/processing (or
+// failed): exists only on the client, keyed by a local id — the server id
+// (SessionDocument.id) appears only after extraction succeeds. sessionId pins
+// the chip to the chat where the file was picked, so multi-minute extractions
+// don't leak chips or send-blocking into other chats.
+export interface UploadingDocument {
+  localId: string;
+  sessionId: string | null;
+  name: string;
+  status: 'uploading' | 'error';
+  error?: string;
+}
+
 export interface ChatRequestDocument {
   id: string;
   name: string;
@@ -113,19 +126,14 @@ export interface AIResponseMetadata {
   finishReason: string;
   /** Время генерации в миллисекундах */
   responseTimeMs: number;
-  /** Использованный провайдер (openrouter или openai) */
-  provider?: 'openrouter' | 'openai';
 }
 
 /**
- * Доступные модели для выбора пользователем
+ * Доступные режимы модели для выбора пользователем.
+ * SECURITY: значения намеренно нейтральны (не называют вендора/провайдера) —
+ * этот токен уходит на сервер в теле запроса. См. backend prompt.py [12].
  */
-export type SelectedModel = 'openai' | 'anthropic' | 'gemini' | 'thinking';
-
-/**
- * Провайдер AI (OpenRouter или OpenAI)
- */
-export type AIProvider = 'openrouter' | 'openai';
+export type SelectedModel = 'fast' | 'thinking';
 
 // Supabase database types
 export interface Database {
