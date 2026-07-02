@@ -56,3 +56,26 @@ export async function getAuthorizedChatSession(
 
   return null;
 }
+
+/**
+ * true, только если проект принадлежит пользователю (projects.user_id).
+ * Используется API-роутами документов/загрузки для авторизации доступа к проекту.
+ */
+export async function isProjectOwnedBy(
+  supabase: ServerSupabaseClient,
+  projectId: string,
+  userId: string,
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('projects')
+    .select('id')
+    .eq('id', projectId)
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (error) {
+    console.error('[chat-access] Project ownership lookup error:', error);
+    return false;
+  }
+  return !!data;
+}

@@ -1218,7 +1218,7 @@ function ModeToggle({
   className?: string;
 }) {
   const options = [
-    { key: "openai", icon: "⚡", label: "Быстрая", title: "Быстрая модель" },
+    { key: "fast", icon: "⚡", label: "Быстрая", title: "Быстрая модель" },
     { key: "thinking", icon: "🧠", label: "Думающая", title: "Думающая модель" },
   ] as const;
 

@@ -61,10 +61,11 @@ export async function GET(req: NextRequest) {
     );
 
     if (!upstream.ok || !upstream.body) {
+      // Log upstream body server-side only; never echo it to the client.
       const details = await upstream.text().catch(() => '');
       logger.error('Document backend returned an error', { chat_id: sessionId, request_id: requestId, event: 'backend_error', status: upstream.status, details });
       return NextResponse.json(
-        { error: 'Не удалось сформировать документ.', details: details || `HTTP ${upstream.status}` },
+        { error: 'Не удалось сформировать документ.' },
         { status: upstream.status === 404 ? 404 : 502 },
       );
     }
@@ -79,8 +80,7 @@ export async function GET(req: NextRequest) {
     if (disposition) headers.set('Content-Disposition', disposition);
     return new Response(upstream.body, { headers });
   } catch (error) {
-    const details = error instanceof Error ? error.message : 'Unknown error';
     logger.error('Failed to reach document backend', { chat_id: sessionId, request_id: requestId, event: 'backend_unreachable', err: error });
-    return NextResponse.json({ error: 'Failed to reach document backend', details }, { status: 502 });
+    return NextResponse.json({ error: 'Не удалось сформировать документ.' }, { status: 502 });
   }
 }

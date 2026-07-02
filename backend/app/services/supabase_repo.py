@@ -102,6 +102,60 @@ class SupabaseRepo:
             logger.exception("Failed to check chat session", extra={"session_id": session_id})
             return False
 
+    async def is_foreign_session(self, session_id: str, user_id: str | None) -> bool:
+        """True only when the session PROVABLY belongs to a different user.
+
+        Authoritative cross-tenant guard: this repo uses the service role and so
+        bypasses Postgres RLS, which is exactly the path an attacker would use to
+        post into someone else's chat (RLS can't help here — see the RLS
+        migration note). We block only on a positive mismatch: a non-null owner
+        that differs from ``user_id`` and no project-based access. Sessions with
+        no explicit owner (legacy/ambiguous) are left alone to avoid locking
+        legitimate users out.
+        """
+        try:
+            res = (
+                await self._client.table("chat_sessions")
+                .select("user_id, project_id")
+                .eq("id", session_id)
+                .maybe_single()
+                .execute()
+            )
+            row = res.data if res else None
+        except Exception:
+            logger.exception("Failed to authorize chat session", extra={"session_id": session_id})
+            return False
+
+        if not row:
+            return False  # unknown / not yet created — treated as a new session
+        owner = row.get("user_id")
+        if not owner:
+            return False  # no explicit owner: don't block
+        if user_id and owner == user_id:
+            return False  # the caller owns it directly
+
+        # Owner differs — last chance is shared access via the session's project.
+        project_id = row.get("project_id")
+        if project_id and user_id:
+            try:
+                proj = (
+                    await self._client.table("projects")
+                    .select("id")
+                    .eq("id", project_id)
+                    .eq("user_id", user_id)
+                    .maybe_single()
+                    .execute()
+                )
+                if proj and proj.data:
+                    return False
+            except Exception:
+                logger.exception(
+                    "Failed to check project ownership", extra={"session_id": session_id}
+                )
+                return False
+
+        return True  # provably someone else's session
+
     async def get_messages(self, session_id: str) -> list[dict]:
         try:
             res = (

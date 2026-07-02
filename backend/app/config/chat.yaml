@@ -7,48 +7,56 @@ chat:
       site_url: ${env.get('SITE_URL', 'http://localhost:3000')}
       app_title: ${env.get('APP_TITLE', 'Lawyer Chat Bot')}
 
-    default_model: openai
+    default_model: fast
 
     # selected_model (sent by the frontend) -> OpenRouter model configuration.
-    # Mirrors lib/model-config.ts from the Next.js app.
+    #
+    # SECURITY: these keys are the PUBLIC vocabulary — the selected key travels to
+    # the browser (request payload + metadata.modelUsed in the SSE ``final`` event,
+    # incl. on fallback). They are deliberately VENDOR-NEUTRAL (fast/thinking/
+    # power/alt) so nothing on the wire discloses the underlying model or provider
+    # (see prompt.py section [12]). The real OpenRouter model id lives only in
+    # ``name`` and never leaves the backend. Do NOT rename a key back to a vendor
+    # name (openai/anthropic/gemini/claude/gpt…).
+    #
     # ``fallback`` lists other model keys to try, in order, if a model errors
     # (transient API/5xx) or returns an empty response. Defaults below prefer a
     # different provider first (to survive a single-provider outage) then the
     # strongest model. Adjust freely.
     models:
-      openai:
+      fast:
         name: "~anthropic/claude-sonnet-latest"
         temperature: 0.7
         max_tokens: 16000
-        fallback: [gemini, anthropic]
+        fallback: [alt, power]
         web_search:
           enabled: true
           max_results: 5
-      anthropic:
+      power:
         name: "anthropic/claude-opus-4.5"
         temperature: 0.7
         max_tokens: 16000
-        fallback: [gemini, openai]
+        fallback: [alt, fast]
         web_search:
           enabled: true
           max_results: 5
-      gemini:
+      alt:
         name: "google/gemini-2.5-flash"
         temperature: 0.7
         max_tokens: 16000
-        fallback: [openai, anthropic]
+        fallback: [fast, power]
         web_search:
           enabled: true
           max_results: 5
       thinking:
-        # Same base model as the fast 'openai' entry (Claude Sonnet), but with
-        # reasoning enabled. No temperature here: Claude rejects a custom
-        # temperature when extended thinking is on (must be 1 / unset).
+        # Same base model as the 'fast' entry (Claude Sonnet), but with reasoning
+        # enabled. No temperature here: Claude rejects a custom temperature when
+        # extended thinking is on (must be 1 / unset).
         name: "~anthropic/claude-sonnet-latest"
         reasoning_effort: high
         max_tokens: 32000
         # Drop to plain (non-reasoning) Sonnet, then a different provider.
-        fallback: [openai, gemini]
+        fallback: [fast, alt]
         web_search:
           enabled: true
           max_results: 5

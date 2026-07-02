@@ -181,7 +181,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
   const [loadingMessagesSessionId, setLoadingMessagesSessionId] = useState<string | null>(null);
   // Проект, для которого список чатов уже загружен из БД (нужно, чтобы не сбрасывать deep-link раньше времени)
   const dbChatsLoadedProjectRef = useRef<string | null>(null);
-  const [selectedModel, setSelectedModel] = useState<SelectedModel>('openai'); // Выбранная модель (по умолчанию openai)
+  const [selectedModel, setSelectedModel] = useState<SelectedModel>('fast'); // Выбранная модель (по умолчанию быстрая)
   const [isPageVisible, setIsPageVisible] = useState(true);
   const [pendingRequest, setPendingRequest] = useState<{
     sessionLocalId: string;
@@ -1319,16 +1319,11 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
           if (event.type === 'final' || event.message) {
             data = event;
 
-            if (event.metadata) {
-              console.log('[AI Response]', {
-                model: event.metadata.modelUsed,
-                fallback: event.metadata.fallbackOccurred,
-                tokens: event.metadata.totalTokens,
-                time: `${event.metadata.responseTimeMs}ms`,
-              });
-            }
+            // NB: do NOT log event.metadata.modelUsed / provider to the console —
+            // it would surface the model identifier in the browser devtools. The
+            // backend already sends only a vendor-neutral modelUsed (fast/thinking).
 
-            const wasReasoning = event.metadata?.modelUsed === 'reasoning' ||
+            const wasReasoning = event.metadata?.modelUsed === 'thinking' ||
               (event.metadata?.responseTimeMs && event.metadata.responseTimeMs > 5000);
             const thinkingTimeSeconds = event.metadata?.responseTimeMs
               ? Math.floor(event.metadata.responseTimeMs / 1000)

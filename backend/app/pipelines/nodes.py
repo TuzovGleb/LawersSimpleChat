@@ -48,6 +48,11 @@ def _extract_metadata(
 ) -> dict:
     usage = getattr(response, "usage_metadata", None) or {}
     finish_reason = (response.response_metadata or {}).get("finish_reason", "stop")
+    # NB: ``modelUsed`` here is the internal registry key. After the chat.yaml
+    # rename these keys are deliberately vendor-neutral (fast/thinking/power/alt),
+    # so nothing sent to the client discloses the underlying model or vendor. Do
+    # NOT reintroduce a raw provider/model id or a "provider" field here — the SSE
+    # ``final`` event forwards this dict to the browser verbatim.
     return {
         "modelUsed": model_used,
         "fallbackOccurred": False,
@@ -55,7 +60,6 @@ def _extract_metadata(
         "totalTokens": usage.get("total_tokens", 0),
         "finishReason": finish_reason or "stop",
         "responseTimeMs": response_time_ms,
-        "provider": "openrouter",
         "toolCallsCount": tool_rounds,
     }
 

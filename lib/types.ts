@@ -126,19 +126,14 @@ export interface AIResponseMetadata {
   finishReason: string;
   /** Время генерации в миллисекундах */
   responseTimeMs: number;
-  /** Использованный провайдер (openrouter или openai) */
-  provider?: 'openrouter' | 'openai';
 }
 
 /**
- * Доступные модели для выбора пользователем
+ * Доступные режимы модели для выбора пользователем.
+ * SECURITY: значения намеренно нейтральны (не называют вендора/провайдера) —
+ * этот токен уходит на сервер в теле запроса. См. backend prompt.py [12].
  */
-export type SelectedModel = 'openai' | 'anthropic' | 'gemini' | 'thinking';
-
-/**
- * Провайдер AI (OpenRouter или OpenAI)
- */
-export type AIProvider = 'openrouter' | 'openai';
+export type SelectedModel = 'fast' | 'thinking';
 
 // Supabase database types
 export interface Database {

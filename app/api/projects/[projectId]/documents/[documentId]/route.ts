@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabase } from '@/lib/supabase';
+import { isProjectOwnedBy } from '@/lib/chat-access';
 import { deleteFileFromS3 } from '@/lib/s3-client';
 import { logger, requestIdFrom } from '@/lib/server-logger';
 
@@ -23,26 +24,22 @@ export async function DELETE(req: NextRequest) {
   if (!projectId || !documentId) {
     return NextResponse.json({ error: 'projectId и documentId обязательны.' }, { status: 400 });
   }
-  const body = await req.json().catch(() => ({}));
-  const userId = typeof body?.userId === 'string' ? body.userId.trim() : null;
-
-  if (!projectId || !documentId) {
-    return NextResponse.json({ error: 'projectId и documentId обязательны.' }, { status: 400 });
-  }
 
   try {
     const supabase = await getSupabase();
-    if (userId) {
-      const { data: project, error: projectError } = await supabase
-        .from('projects')
-        .select('id')
-        .eq('id', projectId)
-        .eq('user_id', userId)
-        .maybeSingle();
 
-      if (projectError || !project) {
-        return NextResponse.json({ error: 'Проект не найден или нет доступа.' }, { status: 404 });
-      }
+    // Deleting a document is destructive (DB row + S3 object). Always require an
+    // authenticated owner of the project — the ownership check must never be
+    // skippable (previously it ran only when a userId was present in the body,
+    // so omitting it bypassed the guard entirely).
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    if (!(await isProjectOwnedBy(supabase, projectId, user.id))) {
+      return NextResponse.json({ error: 'Проект не найден или нет доступа.' }, { status: 404 });
     }
 
     // Fetch object_key before deleting from DB
