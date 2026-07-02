@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
@@ -79,36 +79,59 @@ interface CaseWorkspaceProps {
 const CHIP_REMOVE_CLASS =
   "-my-2.5 -mr-2 shrink-0 rounded-full p-2.5 md:-my-1.5 md:-mr-1.5 md:p-1.5";
 
-// Attachment chip above the composer. State is encoded beyond color alone
-// (red is this brand's accent, so a red border can't mean "failed" by itself):
-// solid border = attached, dashed + spinner = uploading, tinted background +
-// visible error text = failed. Uploading chips reserve the remove button's
-// width so the row doesn't shift when the X appears on success.
-function ComposerChip({
-  variant,
+// One document-chip family across every surface: the composer, attachments
+// inside a sent user message, and .docx artifacts under assistant replies.
+// Geometry, type scale and the state language are shared — solid border =
+// attached, dashed + spinner = uploading, tinted background + visible error
+// text = failed (red alone can't mean "failed" here: red is the brand accent).
+// The fill sits one step lighter than the chip's surface: a soft tint on the
+// white composer, a white "sheet" on the gray bubble and the paper page.
+// Interactive chips (onActivate) render as a real button with hover + trailing
+// affordance; inert record chips are plain spans. onActivate and onRemove are
+// mutually exclusive — combining them would nest a button inside a button.
+// Uploading chips reserve the remove button's width so the row doesn't shift
+// when the X appears.
+function DocumentChip({
+  variant = "attached",
   name,
   error,
+  fill = "soft",
+  muted = false,
+  trailing,
+  onActivate,
+  title,
   onRemove,
 }: {
-  variant: "attached" | "uploading" | "error";
+  variant?: "attached" | "uploading" | "error";
   name: string;
   error?: string;
+  fill?: "soft" | "white";
+  muted?: boolean;
+  trailing?: ReactNode;
+  onActivate?: () => void;
+  title?: string;
   onRemove?: () => void;
 }) {
   const isError = variant === "error";
   const errorText = error ?? "Не удалось обработать документ";
-  return (
-    <span
-      role={variant === "uploading" ? "status" : undefined}
-      className="inline-flex max-w-full items-center gap-1.5 rounded-full px-3 py-2 text-[13px] md:py-1.5"
-      style={{
-        border: `1px ${variant === "uploading" ? "dashed" : "solid"} ${
-          isError ? "hsl(var(--destructive))" : "var(--border-strong)"
-        }`,
-        background: isError ? "hsl(var(--destructive) / 0.06)" : "var(--bg-soft)",
-        color: variant === "uploading" ? "var(--text-secondary)" : "var(--text-primary)",
-      }}
-    >
+  const chipClass = cn(
+    "inline-flex max-w-full items-center gap-1.5 rounded-full px-3 py-2 text-[13px] md:py-1.5",
+    isError
+      ? "bg-[hsl(var(--destructive)/0.06)]"
+      : fill === "white"
+        ? "bg-white"
+        : "bg-[var(--bg-soft)]",
+    onActivate && "transition-colors hover:bg-[var(--bg-soft)]",
+  );
+  const chipStyle = {
+    border: `1px ${variant === "uploading" ? "dashed" : "solid"} ${
+      isError ? "hsl(var(--destructive))" : "var(--border-strong)"
+    }`,
+    color:
+      variant === "uploading" || muted ? "var(--text-secondary)" : "var(--text-primary)",
+  };
+  const content = (
+    <>
       {variant === "uploading" ? (
         <Loader2
           className="h-3.5 w-3.5 shrink-0 animate-spin"
@@ -125,7 +148,10 @@ function ComposerChip({
           style={{ color: "var(--brand-accent)" }}
         />
       )}
-      <span className="max-w-[240px] truncate" title={name}>
+      <span
+        className="max-w-[240px] truncate"
+        title={onActivate ? undefined : title ?? name}
+      >
         {name}
       </span>
       {variant === "uploading" && <span className="sr-only">Загружается…</span>}
@@ -140,6 +166,7 @@ function ComposerChip({
           {errorText}
         </span>
       )}
+      {trailing}
       {onRemove ? (
         <button
           type="button"
@@ -149,11 +176,27 @@ function ComposerChip({
         >
           <X className="h-3.5 w-3.5" />
         </button>
-      ) : (
+      ) : variant === "uploading" ? (
         <span aria-hidden="true" className={cn(CHIP_REMOVE_CLASS, "invisible")}>
           <X className="h-3.5 w-3.5" />
         </span>
-      )}
+      ) : null}
+    </>
+  );
+  if (onActivate) {
+    return (
+      <button type="button" onClick={onActivate} title={title} className={chipClass} style={chipStyle}>
+        {content}
+      </button>
+    );
+  }
+  return (
+    <span
+      role={variant === "uploading" ? "status" : undefined}
+      className={chipClass}
+      style={chipStyle}
+    >
+      {content}
     </span>
   );
 }
@@ -729,7 +772,7 @@ export function CaseWorkspace({
                           ) : null}
                           {Array.isArray(message.attachedDocumentIds) &&
                             message.attachedDocumentIds.length > 0 && (
-                              <div className="mt-2 flex flex-wrap justify-end gap-1.5">
+                              <div className="mt-2 flex flex-wrap justify-end gap-2">
                                 {message.attachedDocumentIds.map((documentId) => {
                                   const document = message.attachedDocuments?.find(
                                     (item) => item.id === documentId,
@@ -737,22 +780,12 @@ export function CaseWorkspace({
                                   const label =
                                     document?.name ?? `Документ ${documentId.slice(0, 8)}`;
                                   return (
-                                    <span
+                                    <DocumentChip
                                       key={documentId}
-                                      className="inline-flex max-w-[240px] items-center gap-1 rounded-full border px-2 py-0.5 text-[11px]"
-                                      style={{
-                                        border: "1px solid var(--border-strong)",
-                                        background: "#fff",
-                                        color: "var(--text-secondary)",
-                                      }}
-                                      title={label}
-                                    >
-                                      <FileText
-                                        className="h-3 w-3 shrink-0"
-                                        style={{ color: "var(--brand-accent)" }}
-                                      />
-                                      <span className="truncate">{label}</span>
-                                    </span>
+                                      name={label}
+                                      fill="white"
+                                      muted
+                                    />
                                   );
                                 })}
                               </div>
@@ -971,44 +1004,32 @@ export function CaseWorkspace({
                           </ReactMarkdown>
                         </div>
                         {Array.isArray(message.artifacts) && message.artifacts.length > 0 && (
-                          <div className="mt-2 flex flex-wrap gap-1.5">
+                          <div className="mt-2 flex flex-wrap gap-2">
                             {message.artifacts.map((artifact) =>
                               artifact.status === "ready" ? (
-                                <button
+                                <DocumentChip
                                   key={artifact.id}
-                                  type="button"
-                                  onClick={() =>
+                                  name={`${artifact.fileName}.docx`}
+                                  fill="white"
+                                  onActivate={() =>
                                     setPreview({ id: artifact.id, fileName: artifact.fileName })
                                   }
-                                  className="inline-flex max-w-[280px] items-center gap-1.5 rounded-full border px-3 py-1 text-[12px] transition-colors hover:bg-[var(--bg-soft)]"
-                                  style={{
-                                    border: "1px solid var(--border-strong)",
-                                    background: "#fff",
-                                    color: "var(--text-secondary)",
-                                  }}
                                   title={`Открыть «${artifact.fileName}.docx»`}
-                                >
-                                  <FileText
-                                    className="h-3.5 w-3.5 shrink-0"
-                                    style={{ color: "var(--brand-accent)" }}
-                                  />
-                                  <span className="truncate">{artifact.fileName}.docx</span>
-                                  <Eye className="h-3.5 w-3.5 shrink-0" />
-                                </button>
+                                  trailing={
+                                    <Eye
+                                      className="h-3.5 w-3.5 shrink-0"
+                                      style={{ color: "var(--text-secondary)" }}
+                                    />
+                                  }
+                                />
                               ) : (
-                                <span
+                                <DocumentChip
                                   key={artifact.id}
-                                  className="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[12px] opacity-70"
-                                  style={{
-                                    border: "1px solid var(--border-strong)",
-                                    background: "#fff",
-                                    color: "var(--text-secondary)",
-                                  }}
-                                  title="Документ не удалось оформить"
-                                >
-                                  <FileText className="h-3.5 w-3.5 shrink-0" />
-                                  <span className="truncate">Не удалось оформить документ</span>
-                                </span>
+                                  variant="error"
+                                  name={`${artifact.fileName}.docx`}
+                                  fill="white"
+                                  error="Не удалось оформить документ"
+                                />
                               ),
                             )}
                           </div>
@@ -1095,7 +1116,7 @@ export function CaseWorkspace({
                       "attached"; an errored file's chip stays on the right
                       with the still-uploading ones. */}
                   {pendingDocuments.map((document) => (
-                    <ComposerChip
+                    <DocumentChip
                       key={document.id}
                       variant="attached"
                       name={document.name}
@@ -1103,7 +1124,7 @@ export function CaseWorkspace({
                     />
                   ))}
                   {uploadingDocuments.map((upload) => (
-                    <ComposerChip
+                    <DocumentChip
                       key={upload.localId}
                       variant={upload.status === "uploading" ? "uploading" : "error"}
                       name={upload.name}
