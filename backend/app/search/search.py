@@ -306,7 +306,7 @@ def format_vs_crosscheck(results: list[RankedDocument], primary_ids: set[str] | 
     if not results:
         return (
             header
-            + "\nРелевантная практика ВС РФ по этим запросам в корпусе не найдена "
+            + "\nРелевантная практика ВС РФ по этим запросам не найдена "
             "(это не гарантия отсутствия позиции ВС)."
         )
 
