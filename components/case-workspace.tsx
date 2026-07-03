@@ -3,6 +3,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+// Render single newlines as <br>, like LangSmith / most chat UIs. Without this,
+// CommonMark folds a soft line break into a space, so label lines the model
+// emits one per line ("Суд:\nДата:\nСтороны:") collapse into one paragraph.
+import remarkBreaks from "remark-breaks";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -836,7 +840,7 @@ export function CaseWorkspace({
                           }}
                         >
                           <ReactMarkdown
-                            remarkPlugins={[remarkGfm]}
+                            remarkPlugins={[remarkGfm, remarkBreaks]}
                             components={{
                               p: ({ children }) => (
                                 <p
