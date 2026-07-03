@@ -7,9 +7,12 @@ import zipfile
 import io
 import re
 
+from app.rag_core.llm import ChatProviderParams
 from app.services.docx_drafting import (
     ClassifiedDoc,
+    LineType,
     assemble_blocks,
+    build_segmenter_llm,
     classify_lines,
     tokenize_draft,
 )
@@ -110,6 +113,74 @@ def test_end_to_end_assemble_renders_valid_docx():
     assert "Times New Roman" in xml
     assert len(re.findall(r"<w:p[ >]", xml)) == len(blocks)  # one paragraph per block
     assert xml.count('w:val="center"') >= 1  # the title is centered
+
+
+def test_tokenize_strips_markdown_remnants():
+    text = (
+        "## I. РАЗДЕЛ\n"
+        "Абзац с **жирным** и `кодом`.\n"
+        "---\n"
+        "____________\n"
+        "> Цитата суда.\n"
+    )
+    units = tokenize_draft(text)
+    texts = [u["text"] for u in units if u["kind"] == "content"]
+    assert texts == [
+        "I. РАЗДЕЛ",
+        "Абзац с жирным и кодом.",
+        "____________",  # строка-прочерк — плейсхолдер, НЕ markdown-линейка
+        "Цитата суда.",
+    ]
+    # '---' стал спейсером
+    assert [u["kind"] for u in units] == ["content", "content", "spacer", "content", "content"]
+
+
+def test_strip_markdown_keeps_legitimate_text():
+    from app.services.docx_drafting import _strip_markdown
+
+    # Непарные ** между цифрами (степень) не трогаем.
+    assert _strip_markdown("Сумма 2**10 рублей") == "Сумма 2**10 рублей"
+    # Ведущий знак сравнения перед числом — не markdown-цитата.
+    assert _strip_markdown("> 50 % голосов принадлежит истцу") == "> 50 % голосов принадлежит истцу"
+    # А настоящая markdown-цитата перед словом снимается.
+    assert _strip_markdown("> Цитата суда.") == "Цитата суда."
+    # Парный жирный снимается.
+    assert _strip_markdown("Абзац с **жирным** словом") == "Абзац с жирным словом"
+
+
+def test_linetype_coerces_unknown_type_to_body():
+    assert LineType(id=1, type="date").type == "body"
+    assert LineType(id=2, type="header").type == "header"
+    doc = ClassifiedDoc(
+        file_name="Возражения",
+        lines=[{"id": 1, "type": "title"}, {"id": 2, "type": "неизвестный"}],
+    )
+    assert [l.type for l in doc.lines] == ["title", "body"]
+
+
+def _provider_params(models: dict) -> ChatProviderParams:
+    return ChatProviderParams.model_validate(
+        {
+            "provider": {"api_key": "dummy"},
+            "default_model": "fast",
+            "models": models,
+        }
+    )
+
+
+def test_segmenter_prefers_lite_model():
+    params = _provider_params(
+        {
+            "fast": {"name": "vendor/big-model"},
+            "lite": {"name": "vendor/small-model"},
+        }
+    )
+    assert build_segmenter_llm(params).model_name == "vendor/small-model"
+
+
+def test_segmenter_falls_back_to_default_without_lite():
+    params = _provider_params({"fast": {"name": "vendor/big-model"}})
+    assert build_segmenter_llm(params).model_name == "vendor/big-model"
 
 
 def test_classify_schema_binds():

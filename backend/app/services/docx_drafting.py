@@ -17,10 +17,11 @@ Text hygiene (nbsp, ёлочки) lives in the renderer, not here.
 from __future__ import annotations
 
 import logging
-from typing import Literal
+import re
+from typing import Literal, get_args
 
 from langchain_openai import ChatOpenAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.rag_core.llm import (
     ChatProviderParams,
@@ -33,15 +34,18 @@ logger = logging.getLogger(__name__)
 
 
 def build_segmenter_llm(params: ChatProviderParams) -> ChatOpenAI:
-    """A deterministic LLM for segmentation: default model, temp 0, no web-search,
-    larger output budget (a long document is echoed back as JSON blocks)."""
-    base = params.models[params.default_model]
+    """A deterministic LLM for line classification: temp 0, no web-search.
+
+    Prefers the cheap ``lite`` model when configured — the task is labelling
+    numbered lines with one of 12 types (types only, no text is re-emitted), so
+    the default chat model is overkill in both latency and cost."""
+    base = params.models.get("lite") or params.models[params.default_model]
     return build_chat_llm(
         params.provider,
         ModelConfig(
             name=base.name,
             temperature=0,
-            max_tokens=32000,
+            max_tokens=16000,
             web_search=WebSearchConfig(enabled=False),
         ),
     )
@@ -71,6 +75,25 @@ ContentType = Literal[
 
 
 # ---- 1. deterministic tokenizer (no LLM) ------------------------------------
+
+_MD_HEADING = re.compile(r"^#{1,6}\s+")
+# Горизонтальная линейка markdown. НЕ матчим _{3,}: строка из подчёркиваний —
+# это прочерк-плейсхолдер («____________»), а не разметка.
+_MD_HR = re.compile(r"^(?:-{3,}|\*{3,})$")
+
+
+def _strip_markdown(line: str) -> str:
+    """Детерминированная зачистка markdown-остатков. Промпт драфтера запрещает
+    разметку, но одно нарушение не должно попадать звёздочками в .docx.
+    Правила сужены, чтобы не портить легитимный текст: ``**`` снимается только
+    ПАРОЙ вокруг текста (одиночное «2**10» не трогаем), ведущий ``>`` — только
+    перед словом (сравнение «> 50 %» сохраняется); ``__`` и одиночные ``*``/``_``
+    не трогаем — коллизия с плейсхолдерами."""
+    line = _MD_HEADING.sub("", line)
+    line = re.sub(r"^>+\s+(?=[^\W\d])", "", line)
+    line = re.sub(r"\*\*([^*]+)\*\*", r"\1", line)
+    return line.replace("`", "").strip()
+
 
 def _split_cells(line: str) -> list[str]:
     parts = [c.strip() for c in line.split("|")]
@@ -128,6 +151,10 @@ def tokenize_draft(text: str) -> list[dict]:
 
     for raw in text.split("\n"):
         line = raw.strip()
+        if line and not _MD_HR.match(line):
+            line = _strip_markdown(line)
+        else:
+            line = ""  # пустая строка или markdown-линейка -> spacer
         if not line:
             flush_table()
             if not prev_spacer:
@@ -152,9 +179,19 @@ def tokenize_draft(text: str) -> list[dict]:
 
 # ---- 2. cheap LLM classifier (types only, no text re-emitted) ----------------
 
+_CONTENT_TYPES: frozenset[str] = frozenset(get_args(ContentType))
+
+
 class LineType(BaseModel):
     id: int = Field(description="Номер строки из входа.")
     type: ContentType = Field(description="Тип блока для этой строки.")
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def _coerce_unknown_type(cls, v):
+        # Один невалидный тип от LLM не должен валить pydantic-валидацию всего
+        # ответа (и разметку всего документа) — деградирует только эта строка.
+        return v if v in _CONTENT_TYPES else "body"
 
 
 class ClassifiedDoc(BaseModel):
@@ -190,7 +227,14 @@ CLASSIFIER_PROMPT = """\
 - sign_left — дата или строка подписи слева.
 - sign_right — подпись справа (как правило, ФИО представителя).
 
-Верни file_name и по одному элементу {id, type} на каждый номер входа.\
+Уточнения по спорным строкам:
+- Вводный абзац сразу после заголовка («В производстве … находится дело …») — это body, не subtitle.
+- Строка места/даты перед подписью («г. Москва, «__» января 2026 г.») — sign_left; дата внутри обычного абзаца типом не выделяется.
+- «ПРОШУ:» (в том числе «На основании изложенного, … ПРОШУ:») — proshu; следующие за ней нумерованные требования — item.
+- Цена иска, размер госпошлины, ИНН/СНИЛС/ОГРН и прочие реквизиты в блоке ДО заголовка документа — header.
+- Если строка не подходит ни под один тип — body.
+
+Верни file_name и по одному элементу {id, type} на КАЖДЫЙ номер входа — не пропускай номера и не добавляй лишних.\
 """
 
 

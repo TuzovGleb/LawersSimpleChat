@@ -60,6 +60,21 @@ chat:
         web_search:
           enabled: true
           max_results: 5
+      lite:
+        # Internal-only entry: the drafting tool's line classifier
+        # (build_segmenter_llm) prefers this key. Labelling numbered lines with
+        # 12 block types doesn't need the default chat model — a cheap fast
+        # model cuts both the drafting turn's latency and its cost. Not offered
+        # in the UI; harmless if a crafted request selects it for chat.
+        # NB: the segmenter takes only `name` from here — temperature 0,
+        # max_tokens and web_search=off are pinned in build_segmenter_llm; the
+        # values below only apply if this key is ever used as a chat model.
+        name: "anthropic/claude-haiku-4.5"
+        temperature: 0
+        max_tokens: 16000
+        fallback: [fast]
+        web_search:
+          enabled: false
       # NB: document OCR/extraction moved to its own config-driven recognizer
       # registry — see recognition.yaml (sotaocr -> llm fallback chain). The LLM
       # recognizer pins google/gemini-3.5-flash there, so there is no longer a

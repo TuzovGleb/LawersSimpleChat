@@ -396,9 +396,17 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
 
     # A drafting turn usually has NO assistant text (the model just calls the
     # tool). Synthesize a short note so the bubble isn't empty / cross-turn.
+    # The note must match the artifact status: a failed draft next to a
+    # "Готово — подготовил" bubble reads as a broken product.
     if not assistant_message.strip() and artifacts:
         file_name = artifacts[0].get("fileName") or "документ"
-        assistant_message = f"Готово — подготовил «{file_name}». Скачать можно по кнопке ниже."
+        if artifacts[0].get("status") == "ready":
+            assistant_message = f"Готово — подготовил «{file_name}». Скачать можно по кнопке ниже."
+        else:
+            assistant_message = (
+                "Не удалось подготовить документ. Попробуйте ещё раз — "
+                "при необходимости уточните, какой документ нужен."
+            )
 
     metadata = result.get("metadata", {}) or {}
     if "toolCallsCount" not in metadata:

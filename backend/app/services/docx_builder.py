@@ -3,7 +3,8 @@
 Stage 2 of the drafting tool: takes a list of typed blocks
 ``[{"type": "...", "text": "..."}]`` and renders a fully formatted .docx with
 the court-document layout baked in (A4, margins 3/1.5/2/2 cm, Times New Roman
-12pt, 1.5 line spacing, justified body, 1.25 cm first-line indent).
+14pt, 1.5 line spacing, justified body, 1.25 cm first-line indent, page numbers
+top-center from page 2).
 
 Ported from the standalone ``build_docx.py`` skill engine; the only changes are
 that ``render_docx`` returns ``bytes`` (via an in-memory buffer) instead of
@@ -11,7 +12,9 @@ writing to disk, and the CLI wrapper is dropped. Depends only on ``python-docx``
 (already a backend dependency), so it runs in-process — no sandbox/CLI needed.
 
 Block types (``type``):
-    header      — строка шапки (суд, дело, истец/ответчик, адрес). Слева, без отступа.
+    header      — строка шапки (суд, дело, истец/ответчик, адрес). Блоком в
+                  правой части листа (общий отступ слева ~8,25 см, строки по
+                  левому краю — так требует ГОСТ Р 7.0.97-2016 для адресата).
     title       — заголовок документа. По центру, жирный.
     subtitle    — подзаголовок под title. По центру, жирный.
     h1          — заголовок раздела (I., II., 1.1.). Жирный, слева, отступ сверху.
@@ -21,26 +24,34 @@ Block types (``type``):
     item        — пункт требования/списка. Как body.
     annex_h     — слово "Приложения:" (жирный, слева).
     annex_item  — пункт приложения. Как body.
-    sign_left   — строка подписи/даты слева.
+    sign_left   — строка подписи/даты слева. Если сразу за ней идёт sign_right,
+                  обе строки верстаются ОДНИМ абзацем: дата слева, подпись
+                  справа через правый таб-стоп.
     sign_right  — строка подписи справа.
     spacer      — пустой абзац (пустая строка-отступ).
 """
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from io import BytesIO
 
 from docx import Document
 from docx.enum.section import WD_ORIENT
 from docx.enum.table import WD_TABLE_ALIGNMENT
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING, WD_TAB_ALIGNMENT
+from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt
 
 FONT_NAME = "Times New Roman"
-FONT_SIZE = Pt(12)
+FONT_SIZE = Pt(14)
 FIRST_LINE = Cm(1.25)
 LINE_SPACING = 1.5
+# Ширина текстовой колонки: 21 см − поля 3 + 1,5 см. Правый таб-стоп подписи.
+TEXT_WIDTH = Cm(16.5)
+# Отступ блока шапки: правая половина листа, строки по левому краю.
+HEADER_INDENT = Cm(8.25)
 
 NBSP = " "  # неразрывный пробел
 NDASH = "–"
@@ -89,6 +100,9 @@ def normalize_text(t: str) -> str:
     # 7. Число + единица/слово, которые нельзя отрывать: "2026 г.", "100 руб.".
     t = re.sub(r"(\d)\s+(г|гг|руб|коп|млн|млрд|тыс|руб\.|%)\b", rf"\1{NBSP}\2", t)
 
+    # 7а. Разряды чисел: "1 250 000" — неразрывно внутри числа.
+    t = re.sub(r"(?<=\d) (?=\d{3}(?!\d))", NBSP, t)
+
     # 8. "ГК РФ", "ГПК РФ" и т.п. — неразрывно.
     t = re.sub(r"\b(ГК|ГПК|АПК|УК|УПК|КоАП|НК|ТК|СК)\s+РФ\b", rf"\1{NBSP}РФ", t)
 
@@ -116,7 +130,7 @@ def _set_run_font(run, bold: bool = False) -> None:
 
 
 def _base_format(p, align, first_line: bool = True, space_before: int = 0,
-                 space_after: int = 0) -> None:
+                 space_after: int = 0, left_indent=None) -> None:
     pf = p.paragraph_format
     pf.alignment = align
     pf.line_spacing_rule = WD_LINE_SPACING.MULTIPLE
@@ -124,13 +138,14 @@ def _base_format(p, align, first_line: bool = True, space_before: int = 0,
     pf.space_before = Pt(space_before)
     pf.space_after = Pt(space_after)
     pf.first_line_indent = FIRST_LINE if first_line else None
-    pf.left_indent = None
+    pf.left_indent = left_indent
 
 
 def _add_paragraph(doc, text, align, bold: bool = False, first_line: bool = True,
-                   space_before: int = 0, space_after: int = 0, bold_word=None):
+                   space_before: int = 0, space_after: int = 0, bold_word=None,
+                   left_indent=None):
     p = doc.add_paragraph()
-    _base_format(p, align, first_line, space_before, space_after)
+    _base_format(p, align, first_line, space_before, space_after, left_indent)
     text = normalize_text(text)
     if bold_word and bold_word in text:
         # Делим абзац, чтобы выделить одно слово (например ПРОШУ).
@@ -160,6 +175,40 @@ def _setup_page(doc) -> None:
     st.font.size = FONT_SIZE
     st.element.rPr.rFonts.set(qn("w:eastAsia"), FONT_NAME)
     st.element.rPr.rFonts.set(qn("w:cs"), FONT_NAME)
+
+
+def _set_core_properties(doc) -> None:
+    # Дефолтный шаблон python-docx несёт автора "python-docx" и дату создания
+    # 2013-12-23 — эти метаданные видны получателю через «Файл → Свойства».
+    cp = doc.core_properties
+    now = datetime.now(timezone.utc)
+    cp.author = ""
+    cp.last_modified_by = ""
+    cp.comments = ""
+    cp.created = now
+    cp.modified = now
+
+
+def _add_page_numbers(doc) -> None:
+    """Номер страницы по центру верхнего поля, начиная со второй страницы
+    (первая — без номера, как принято для процессуальных документов)."""
+    sec = doc.sections[0]
+    sec.different_first_page_header_footer = True
+    p = sec.header.paragraphs[0]
+    p.paragraph_format.alignment = _C
+    for tag, attrs, text in (
+        ("w:fldChar", {"w:fldCharType": "begin"}, None),
+        ("w:instrText", {"xml:space": "preserve"}, "PAGE"),
+        ("w:fldChar", {"w:fldCharType": "end"}, None),
+    ):
+        run = p.add_run()
+        _set_run_font(run)
+        el = OxmlElement(tag)
+        for key, val in attrs.items():
+            el.set(qn(key), val)
+        if text:
+            el.text = text
+        run._element.append(el)
 
 
 _J = WD_ALIGN_PARAGRAPH.JUSTIFY
@@ -193,7 +242,9 @@ def _add_table(doc, rows: list[dict]) -> None:
     for r_idx, row in enumerate(matrix):
         for c_idx in range(cols):
             cell = table.cell(r_idx, c_idx)
-            txt = normalize_text(row[c_idx]) if c_idx < len(row) else ""
+            # str(): в сохранённых blocks ячейки могут быть числами/None (JSON).
+            raw = row[c_idx] if c_idx < len(row) else ""
+            txt = normalize_text("" if raw is None else str(raw))
             para = cell.paragraphs[0]
             pf = para.paragraph_format
             pf.line_spacing_rule = WD_LINE_SPACING.SINGLE
@@ -203,15 +254,36 @@ def _add_table(doc, rows: list[dict]) -> None:
             _set_run_font(para.add_run(txt), bold=(r_idx == 0))
 
 
+def _add_signature_line(doc, left: str, right: str) -> None:
+    """Дата слева и подпись справа ОДНОЙ строкой через правый таб-стоп."""
+    p = doc.add_paragraph()
+    _base_format(p, _L, first_line=False)
+    p.paragraph_format.tab_stops.add_tab_stop(TEXT_WIDTH, WD_TAB_ALIGNMENT.RIGHT)
+    _set_run_font(p.add_run(normalize_text(left)))
+    _set_run_font(p.add_run("\t"))
+    _set_run_font(p.add_run(normalize_text(right)))
+
+
+def _block_text(b: dict) -> str:
+    txt = b.get("text", "")
+    return txt if isinstance(txt, str) else str(txt or "")
+
+
 def render_docx(blocks: list[dict]) -> bytes:
     """Render a list of typed blocks into a .docx and return its bytes."""
     doc = Document()
     _setup_page(doc)
-    for b in blocks:
+    _set_core_properties(doc)
+    _add_page_numbers(doc)
+    blocks = [b for b in blocks if isinstance(b, dict)]
+    i = 0
+    while i < len(blocks):
+        b = blocks[i]
         t = b.get("type", "body")
-        txt = b.get("text", "")
+        txt = _block_text(b)
         if t == "header":
-            _add_paragraph(doc, txt, _L, bold=False, first_line=False)
+            _add_paragraph(doc, txt, _L, bold=False, first_line=False,
+                           left_indent=HEADER_INDENT)
         elif t == "title":
             _add_paragraph(doc, txt, _C, bold=True, first_line=False,
                            space_before=6, space_after=0)
@@ -222,8 +294,10 @@ def render_docx(blocks: list[dict]) -> bytes:
                            space_before=12, space_after=6)
         elif t == "quote":
             q = normalize_text(txt)
-            if not q.startswith("«"):
-                q = "«" + q.strip("«»") + "»"
+            # Оборачиваем в «ёлочки» только текст вовсе без кавычек — иначе
+            # получаются вложенные/несбалансированные кавычки.
+            if "«" not in q and "»" not in q:
+                q = "«" + q + "»"
             _add_paragraph(doc, q, _J, bold=False, first_line=True)
         elif t == "proshu":
             _add_paragraph(doc, txt, _J, bold=False, first_line=True, bold_word="ПРОШУ")
@@ -236,6 +310,11 @@ def render_docx(blocks: list[dict]) -> bytes:
         elif t == "annex_item":
             _add_paragraph(doc, txt, _J, bold=False, first_line=True)
         elif t == "sign_left":
+            nxt = blocks[i + 1] if i + 1 < len(blocks) else None
+            if nxt is not None and nxt.get("type") == "sign_right":
+                _add_signature_line(doc, txt, _block_text(nxt))
+                i += 2
+                continue
             _add_paragraph(doc, txt, _L, bold=False, first_line=False)
         elif t == "sign_right":
             _add_paragraph(doc, txt, _R, bold=False, first_line=False)
@@ -243,8 +322,9 @@ def render_docx(blocks: list[dict]) -> bytes:
             p = doc.add_paragraph()
             _base_format(p, _J, first_line=False)
             _set_run_font(p.add_run(""))
-        else:  # body
+        else:  # body (и любой неизвестный тип)
             _add_paragraph(doc, txt, _J, bold=False, first_line=True)
+        i += 1
 
     buf = BytesIO()
     doc.save(buf)
