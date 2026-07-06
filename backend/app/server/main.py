@@ -23,7 +23,10 @@ from app.server.schema import ChatRequest, DocumentExtractRequest
 from app.server.security import verify_backend_secret
 from app.services.docx_builder import render_docx
 from app.services.docx_drafting import build_drafting_llm, build_segmenter_llm
-from app.services.document_extraction import extract_text_from_document
+from app.services.document_extraction import (
+    begin_extraction_deadline,
+    extract_text_from_document,
+)
 from app.services.s3_client import S3Client
 from app.services.supabase_repo import SupabaseRepo, map_project_document
 from app.utils import RequestContextMiddleware, current_chat_id, current_request_id
@@ -164,12 +167,22 @@ async def extract_document(request: Request, payload: DocumentExtractRequest) ->
 
     log_ctx = {"project_id": payload.projectId, "object_key": payload.objectKey}
 
+    # Absolute extraction deadline starts HERE, before the S3 download and PDF
+    # parsing — everything counts against the budget, so the extraction bounds
+    # itself well under the serverless container kill instead of drifting past it.
+    begin_extraction_deadline()
+
     # Serialize per object_key so a client retry can't double-extract/double-insert.
     async with repo.document_lock(payload.objectKey):
         existing = await repo.get_document_by_object_key(payload.projectId, payload.objectKey)
-        if existing:
+        if existing and not existing.get("truncated"):
             logger.info("Document already extracted; returning existing", extra=log_ctx)
             return JSONResponse(content={"document": map_project_document(existing)})
+        if existing:
+            # A partial (truncated) extraction must stay re-extractable — else a
+            # retry is forever locked to the first partial result.
+            logger.info("Document previously extracted partially; re-extracting",
+                        extra={**log_ctx, "raw_text_length": existing.get("raw_text_length")})
 
         logger.info("Downloading document from S3", extra={**log_ctx, "size": payload.size})
         data = await s3.download(payload.objectKey)
@@ -202,29 +215,74 @@ async def extract_document(request: Request, payload: DocumentExtractRequest) ->
             except RecognizerError as err:
                 # Every recognizer in the chain failed (or returned nothing).
                 logger.warning("Recognition failed", extra={**log_ctx, "reason": str(err)})
+                if existing:
+                    # Retry-into-outage on a partial doc: keep the stored partial
+                    # instead of surfacing an error for text we already have.
+                    logger.info("Re-extraction failed; keeping stored partial", extra=log_ctx)
+                    return JSONResponse(content={"document": map_project_document(existing)})
                 raise HTTPException(
                     status_code=422, detail="Could not extract text from document"
                 ) from err
         if not extraction.text:
+            if existing:
+                logger.info("Re-extraction yielded no text; keeping stored partial", extra=log_ctx)
+                return JSONResponse(content={"document": map_project_document(existing)})
             raise HTTPException(status_code=422, detail="Could not extract text from document")
 
         now = datetime.now(timezone.utc).isoformat()
-        record = {
-            "id": str(uuid4()),
-            "project_id": payload.projectId,
-            "name": payload.filename,
-            "mime_type": payload.mimeType,
-            "size": payload.size,
-            "text": extraction.text,
-            "truncated": extraction.truncated,
-            "raw_text_length": extraction.raw_text_length,
-            "strategy": extraction.strategy,
-            "uploaded_at": now,
-            "checksum": None,
-            "created_at": now,
-            "object_key": payload.objectKey,
-        }
-        row = await repo.insert_project_document(record)
+        if existing:
+            # Re-extraction of a partial doc: replace only when the retry did
+            # better (a retry into the same outage must not shrink coverage).
+            # Cheap snapshot pre-check; the authoritative guard is the atomic
+            # WHERE clause in update_project_document_if_improved (concurrent
+            # retries on other instances race this in-process lock).
+            if extraction.raw_text_length <= (existing.get("raw_text_length") or 0) and extraction.truncated:
+                logger.info("Re-extraction did not improve coverage; keeping existing",
+                            extra={**log_ctx, "raw_text_length": extraction.raw_text_length})
+                return JSONResponse(content={"document": map_project_document(existing)})
+            row = await repo.update_project_document_if_improved(
+                existing["id"],
+                {
+                    "text": extraction.text,
+                    "truncated": extraction.truncated,
+                    "raw_text_length": extraction.raw_text_length,
+                    "strategy": extraction.strategy,
+                    "uploaded_at": now,
+                },
+                # A complete retry always replaces a partial row; a partial retry
+                # only replaces strictly-smaller coverage.
+                min_raw_text_length=(
+                    extraction.raw_text_length if extraction.truncated else None
+                ),
+            )
+            if row is None:
+                # Lost the cross-instance race (or the row improved meanwhile):
+                # return whatever is stored now.
+                current = await repo.get_document_by_object_key(
+                    payload.projectId, payload.objectKey
+                )
+                logger.info("Re-extraction lost the update race; returning stored row",
+                            extra=log_ctx)
+                return JSONResponse(
+                    content={"document": map_project_document(current or existing)}
+                )
+        else:
+            record = {
+                "id": str(uuid4()),
+                "project_id": payload.projectId,
+                "name": payload.filename,
+                "mime_type": payload.mimeType,
+                "size": payload.size,
+                "text": extraction.text,
+                "truncated": extraction.truncated,
+                "raw_text_length": extraction.raw_text_length,
+                "strategy": extraction.strategy,
+                "uploaded_at": now,
+                "checksum": None,
+                "created_at": now,
+                "object_key": payload.objectKey,
+            }
+            row = await repo.insert_project_document(record)
         await repo.touch_project(payload.projectId, payload.userId, now)
         logger.info(
             "Document processed",
@@ -232,6 +290,9 @@ async def extract_document(request: Request, payload: DocumentExtractRequest) ->
                 **log_ctx,
                 "strategy": extraction.strategy,
                 "raw_text_length": extraction.raw_text_length,
+                "truncated": extraction.truncated,
+                "pages_total": extraction.pages_total,
+                "pages_recognized": extraction.pages_recognized,
                 "doc_filename": payload.filename,
             },
         )

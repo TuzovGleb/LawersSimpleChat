@@ -192,9 +192,11 @@ export async function POST(req: NextRequest) {
         ...(typeof chatId === 'string' && chatId ? { 'X-Chat-Id': chatId } : {}),
       },
       body: JSON.stringify(forwardBody),
-      // Per-page OCR of large scans can run minutes; allow well past the backend
-      // container limit so we never abort before it responds.
-      signal: AbortSignal.timeout(2100000),
+      // The backend bounds itself to PDF_EXTRACTION_HARD_BUDGET (1500s) + reserve
+      // and returns a partial result before the container's 1800s kill. Waiting
+      // LONGER than the container lives (the old 35min) only ever produced
+      // orphaned requests — stay under the kill with headroom for the response.
+      signal: AbortSignal.timeout(1740000),
     });
 
     const payload = await upstream.json().catch(() => null);

@@ -2,11 +2,12 @@
 
 Routes an uploaded document to text. Office/plain formats are parsed natively
 off the FastAPI event loop (CPU-bound / subprocess). Everything OCR-able — PDFs
-(no native PDF text parsing: even text-layer PDFs go through OCR so mixed/partial
-scans are never missed) and images — is handed to the configured
-:class:`Recognizer` (see ``app/rag_core/recognizers``: a SotaOCR -> LLM fallback
-chain). Native office parsers fall back to the same recognizer when they yield
-nothing.
+and images — is handed to the configured :class:`Recognizer`
+(see ``app/rag_core/recognizers``). For PDFs the LLM recognizer first runs the
+per-page text-layer gate (``recognizers/pdf_gate.py``): pages whose text layer
+explains the rendered ink are taken from the layer directly; only pages that
+actually need it (scans, garbled layers) are OCR'd. Native office parsers fall
+back to the same recognizer when they yield nothing.
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ import logging
 import os
 import re
 import tempfile
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -29,7 +31,38 @@ PDF_PAGE_CONCURRENCY = 10
 PDF_PAGE_MAX_RETRIES = 2
 DOCUMENT_EXTRACTION_MAX_TOKENS = 16384
 
-Strategy = Literal["text", "docx", "doc", "vision", "llm-file", "pdf-pages", "sotaocr"]
+# Stage-A resilience knobs (see the OCR-resilience plan). The hard wall bounds
+# ONE page (all retries included) so a stalled provider can't compound
+# 300s-timeouts into hours; the budget bounds the whole extraction well under
+# the serverless container kill; the breaker stops feeding a dying provider.
+PDF_PAGE_HARD_TIMEOUT = 90.0        # s per page, retries included
+PDF_EXTRACTION_HARD_BUDGET = 1500.0  # s from endpoint entry (download included)
+PDF_DEADLINE_RESERVE = 120.0         # s kept back for assembly + DB insert
+PDF_CIRCUIT_BREAKER_THRESHOLD = 20   # consecutive same-class page failures
+
+# Absolute extraction deadline (monotonic loop time), set at endpoint entry so
+# the S3 download and PDF parsing count against the budget too — a fixed
+# wait-timeout deeper down would silently drift past the container kill.
+_EXTRACTION_DEADLINE: ContextVar[float | None] = ContextVar(
+    "extraction_deadline", default=None
+)
+
+
+def begin_extraction_deadline() -> float:
+    """Start (or return the already-started) absolute deadline for this request."""
+    deadline = _EXTRACTION_DEADLINE.get()
+    if deadline is None:
+        deadline = asyncio.get_running_loop().time() + PDF_EXTRACTION_HARD_BUDGET
+        _EXTRACTION_DEADLINE.set(deadline)
+    return deadline
+
+
+def extraction_deadline() -> float | None:
+    return _EXTRACTION_DEADLINE.get()
+
+Strategy = Literal[
+    "text", "docx", "doc", "vision", "llm-file", "pdf-pages", "pdf-text-layer", "sotaocr"
+]
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic"}
 _MIME_BY_EXT = {
@@ -52,6 +85,11 @@ class ExtractedDocument:
     raw_text_length: int
     truncated: bool
     strategy: Strategy
+    # Per-page coverage (PDF per-page path only; None elsewhere). truncated=True
+    # with pages_recognized < pages_total marks a partial extraction that the
+    # endpoint keeps re-extractable instead of caching forever.
+    pages_total: int | None = None
+    pages_recognized: int | None = None
 
 
 # --- mime / extension detection (mirror document-processing.ts) ---
@@ -92,16 +130,28 @@ def mime_from_extension(ext: str) -> str:
     return _MIME_BY_EXT.get(ext.lower(), "application/octet-stream")
 
 
-def normalize_result(raw_text: str, strategy: Strategy) -> ExtractedDocument:
+def normalize_result(
+    raw_text: str,
+    strategy: Strategy,
+    *,
+    truncated: bool = False,
+    pages_total: int | None = None,
+    pages_recognized: int | None = None,
+) -> ExtractedDocument:
     cleaned = raw_text.replace("\x00", "").strip()
     return ExtractedDocument(
-        text=cleaned, raw_text_length=len(cleaned), truncated=False, strategy=strategy
+        text=cleaned,
+        raw_text_length=len(cleaned),
+        truncated=truncated,
+        strategy=strategy,
+        pages_total=pages_total,
+        pages_recognized=pages_recognized,
     )
 
 
 # --- native parsers (CPU-bound / subprocess -> run off the event loop) ---
-# Note: PDFs are intentionally NOT parsed natively — every PDF goes through the
-# recognizer (OCR) so partial/mixed scans are never silently dropped.
+# Note: PDFs are not parsed here — the recognizer's per-page gate (pdf_gate.py)
+# decides text-layer vs OCR per page, so mixed/partial scans are still caught.
 
 def _extract_docx_sync(data: bytes) -> str:
     try:
@@ -183,7 +233,13 @@ async def _recognize(
     recognizer: "Recognizer", data: bytes, mime_type: str, filename: str
 ) -> ExtractedDocument:
     result = await recognizer.recognize(data, mime_type, filename)
-    return normalize_result(result.text, result.strategy)
+    return normalize_result(
+        result.text,
+        result.strategy,
+        truncated=result.truncated,
+        pages_total=result.pages_total,
+        pages_recognized=result.pages_recognized,
+    )
 
 
 async def extract_text_from_document(
@@ -209,5 +265,6 @@ async def extract_text_from_document(
             return normalize_result(doc_text, "doc")
         return await _recognize(recognizer, data, mime_type, filename)
 
-    # PDFs, images, and anything else -> recognizer (no native PDF text parsing).
+    # PDFs, images, and anything else -> recognizer (PDFs go through the
+    # per-page text-layer gate inside the LLM recognizer).
     return await _recognize(recognizer, data, mime_type, filename)

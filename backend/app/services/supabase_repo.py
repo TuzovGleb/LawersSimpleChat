@@ -474,6 +474,27 @@ class SupabaseRepo:
             raise RuntimeError("project_documents insert returned no row")
         return rows[0]
 
+    async def update_project_document_if_improved(
+        self, document_id: str, fields: dict, *, min_raw_text_length: int | None
+    ) -> dict | None:
+        """Compare-and-set replacement of a partial extraction (the WHERE clause
+        is atomic in Postgres, so concurrent retries on different instances
+        can't clobber each other): only while the row is still ``truncated`` (a
+        complete extraction is never overwritten), and — when the new result is
+        itself partial (``min_raw_text_length`` set) — only if it actually adds
+        coverage. Returns None when the update lost the race / did not improve."""
+        query = (
+            self._client.table("project_documents")
+            .update(fields)
+            .eq("id", document_id)
+            .eq("truncated", True)
+        )
+        if min_raw_text_length is not None:
+            query = query.lt("raw_text_length", min_raw_text_length)
+        res = await query.execute()
+        rows = res.data or []
+        return rows[0] if rows else None
+
     async def touch_project(
         self, project_id: str, user_id: str | None, now: str
     ) -> None:

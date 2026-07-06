@@ -2,13 +2,14 @@ recognition:
   # Document OCR / text recognition. Resolved from the config-driven recognizer
   # registry (app/rag_core/recognizers) — same pattern as the rag_core chat models.
   #
-  # Single LLM recognizer (no SotaOCR, no fallback chain): behaves exactly like the
-  # previous per-page OCR pipeline — PDFs are split into single pages and OCR'd in
-  # parallel (concurrency 5, per-page retry, all-or-nothing -> single-request
-  # fallback); images go through vision. The only change vs the old code is the
-  # model: google/gemini-3-flash-preview (was gemini-3.5-flash) — chosen after
-  # head-to-head OCR tests on real RU legal scans (best accuracy + ~2.5x faster,
-  # no page-drops with the production per-page prompt).
+  # Single LLM recognizer (no SotaOCR, no fallback chain). PDFs run the per-page
+  # text-layer gate first (recognizers/pdf_gate.py): born-digital pages come from
+  # the text layer with zero LLM calls; only scan/garbled pages are OCR'd in
+  # parallel — per-page hard wall + absolute deadline + circuit breaker, partial
+  # results instead of all-or-nothing. Images go through vision. Model:
+  # google/gemini-3-flash-preview — chosen after head-to-head OCR tests on real
+  # RU legal scans (best accuracy + ~2.5x faster, no page-drops with the
+  # production per-page prompt).
   #
   # To add SotaOCR / a fallback later, wrap this in {type: fallback, params: {chain: [...]}}.
   recognizer:

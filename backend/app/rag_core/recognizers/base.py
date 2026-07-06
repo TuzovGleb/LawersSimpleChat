@@ -16,11 +16,20 @@ class RecognitionResult:
 
     ``strategy`` is persisted to ``project_documents.strategy`` and logged, so it
     must stay stable: ``sotaocr`` for SotaOCR; ``vision`` / ``pdf-pages`` /
-    ``llm-file`` for the LLM recognizer (unchanged from the pre-migration values).
+    ``llm-file`` for the LLM recognizer (unchanged from the pre-migration values);
+    ``pdf-text-layer`` when every PDF page came straight from the text layer.
+
+    ``truncated``/``pages_*`` describe partial per-page extractions (some pages
+    failed after retries, or the extraction deadline cut the run short). Missing
+    pages are NEVER padded with placeholder strings in ``text`` — they would
+    poison RAG retrieval; coverage lives here instead.
     """
 
     text: str
     strategy: str
+    truncated: bool = False
+    pages_total: int | None = None
+    pages_recognized: int | None = None
 
 
 @runtime_checkable
