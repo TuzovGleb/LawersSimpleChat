@@ -31,6 +31,14 @@ const LEGACY_LOCAL_STORAGE_KEY = "legal-assistant-chat-sessions";
 const ACTIVE_PROJECT_STORAGE_KEY = "legal-assistant-active-project-id";
 const DEFAULT_PROJECT_NAME = "Мои дела";
 
+// macOS junk: AppleDouble sidecars ("._<имя>") and Finder metadata. They ride
+// along when mail/zip archives are unpacked, carry no document text (only
+// xattrs) and would only fail extraction with an error for a "file" the user
+// never meant to attach.
+function isMacosJunkFile(name: string): boolean {
+  return name.startsWith("._") || name === ".DS_Store";
+}
+
 function createEmptySession(projectId: string): LocalChatSession {
   const now = new Date().toISOString();
   const chatId = uuidv4();
@@ -892,7 +900,18 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         return;
       }
 
-      const files = Array.from(fileList);
+      const pickedFiles = Array.from(fileList);
+      const junkFiles = pickedFiles.filter((file) => isMacosJunkFile(file.name));
+      const files = pickedFiles.filter((file) => !isMacosJunkFile(file.name));
+      if (junkFiles.length > 0) {
+        toast({
+          title: "Служебные файлы пропущены",
+          description: `${junkFiles.map((file) => `«${file.name}»`).join(", ")} — служебные файлы macOS, а не документы.`,
+        });
+      }
+      if (files.length === 0) {
+        return;
+      }
       // Show a chip per file immediately; each chip tracks its own upload.
       const chipEntries: UploadingDocument[] = files.map((file) => ({
         localId: uuidv4(),

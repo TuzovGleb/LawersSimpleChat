@@ -72,6 +72,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // macOS junk (AppleDouble "._*" sidecars, .DS_Store): xattr metadata, not
+    // documents. The client filters them too; this catches direct API callers.
+    if (filename.startsWith('._') || filename === '.DS_Store') {
+      return NextResponse.json(
+        { error: `«${filename}» — служебный файл macOS, а не документ.` },
+        { status: 400 },
+      );
+    }
+
     const sanitizedFilename = filename.replace(/[^a-zA-Z0-9._\-а-яА-ЯёЁ]/g, '_');
     const objectKey = `uploads/${projectId}/${uuidv4()}/${sanitizedFilename}`;
 
