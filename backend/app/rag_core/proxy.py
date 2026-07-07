@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import gzip
 import itertools
 import logging
 import os
@@ -152,19 +153,26 @@ def _proxy_enabled() -> bool:
 def _load_raw_pool() -> str:
     """Raw proxy list text from the first configured source.
 
-    ``PROXY_LIST_B64`` (base64 of the Webshare export) is preferred because the
-    deploy pipeline joins env vars with commas into ``yc ... --environment`` —
-    base64 has no commas or newlines to break that join. ``PROXY_LIST`` (plain)
-    and ``PROXY_FILE`` (a mounted path) are conveniences for local/dev.
+    ``PROXY_LIST_B64`` (base64 of the Webshare export, optionally gzip'd first)
+    is preferred because the deploy pipeline joins env vars with commas into
+    ``yc ... --environment`` — base64 has no commas or newlines to break that
+    join. A YC container env var is capped at 4096 bytes and plain base64 of
+    ~100 proxies is ~5.5KB, so the value is gzip'd first (~1.3KB); we detect the
+    gzip magic and inflate transparently, so a plain (un-gzipped) base64 value
+    still works. ``PROXY_LIST`` (plain) and ``PROXY_FILE`` (a mounted path) are
+    conveniences for local/dev.
     """
     b64 = os.getenv("PROXY_LIST_B64")
     if b64:
         b64 = re.sub(r"\s+", "", b64)  # drop any line-wrapping whitespace
         b64 += "=" * (-len(b64) % 4)  # tolerate padding stripped to dodge '=' issues
         try:
-            return base64.b64decode(b64).decode("utf-8")
+            data = base64.b64decode(b64)
         except (binascii.Error, ValueError) as exc:
             raise RuntimeError(f"PROXY_LIST_B64 is not valid base64: {exc}") from exc
+        if data[:2] == b"\x1f\x8b":  # gzip magic — inflate to fit the 4096B cap
+            data = gzip.decompress(data)
+        return data.decode("utf-8")
     raw = os.getenv("PROXY_LIST")
     if raw:
         return raw

@@ -158,6 +158,20 @@ def test_base64_source_is_preferred(monkeypatch):
     assert _load_proxy_urls() == ["http://usr:pwd@9.9.9.9:1080"]
 
 
+def test_gzip_base64_is_inflated(monkeypatch):
+    """The deploy stores gzip+base64 (to fit YC's 4096B env cap); the loader
+    must detect the gzip magic and inflate it transparently."""
+    import gzip as _gzip
+
+    raw = "1.2.3.4:5500:user:pass\n5.6.7.8:6376:user:pass"
+    gz_b64 = base64.b64encode(_gzip.compress(raw.encode())).decode()
+    monkeypatch.setenv("PROXY_LIST_B64", gz_b64)
+    assert _load_proxy_urls() == [
+        "http://user:pass@1.2.3.4:5500",
+        "http://user:pass@5.6.7.8:6376",
+    ]
+
+
 # --- get_proxy_client toggle -------------------------------------------------
 
 def test_disabled_returns_none():

@@ -159,9 +159,10 @@ jobs:
           S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
           S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
           # Egress proxy for OpenRouter (our RU IP is 403'd by its edge). Toggle
-          # via the PROXY_ENABLED var; PROXY_LIST_B64 is the base64 of the
-          # Webshare `host:port:user:pass` export (base64 so it survives the
-          # comma-joined --environment string below).
+          # via the PROXY_ENABLED var; PROXY_LIST_B64 is the GZIP+base64 of the
+          # Webshare `host:port:user:pass` export — gzip to stay under YC's 4096B
+          # per-env-var cap, base64 so it survives the comma-joined --environment
+          # string below. Generate: gzip -c proxies.txt | base64 | tr -d '\n'
           PROXY_ENABLED: ${{ vars.PROXY_ENABLED }}
           PROXY_LIST_B64: ${{ secrets.PROXY_LIST_B64 }}
         run: |
