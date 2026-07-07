@@ -11,6 +11,8 @@ from typing import Literal
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
+from app.rag_core.proxy import get_proxy_client
+
 
 class WebSearchConfig(BaseModel):
     enabled: bool = False
@@ -85,6 +87,14 @@ def build_chat_llm(provider: ProviderConfig, model: ModelConfig) -> ChatOpenAI:
         kwargs["extra_body"] = {
             "plugins": [{"id": "web", "max_results": model.web_search.max_results}]
         }
+
+    # Route egress through the rotating proxy pool when enabled (our Yandex
+    # Cloud IP is 403'd by OpenRouter's edge). One shared client for all models;
+    # None ⇒ proxying off ⇒ direct connection. Only http_async_client is set:
+    # every call path here is ainvoke (no sync .invoke), verified in the repo.
+    proxy_client = get_proxy_client()
+    if proxy_client is not None:
+        kwargs["http_async_client"] = proxy_client
 
     return ChatOpenAI(**kwargs)
 

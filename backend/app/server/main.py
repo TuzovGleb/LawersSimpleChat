@@ -16,6 +16,7 @@ from app.config import CONFIG
 from app.pipelines.tools import drafting_tool_specs, handlers_of, load_tool_specs
 from app.pipelines.workflows import build_chat_graph
 from app.rag_core.llm import get_chat_registry
+from app.rag_core.proxy import aclose_proxy_client
 from app.rag_core.recognizers.base import RecognizerError
 from app.rag_core.recognizers.factory import describe as describe_recognizer, get_recognizer
 from app.server.chat_stream import stream_chat
@@ -117,6 +118,9 @@ async def lifespan(app: FastAPI):
         # thread flushes on its own and this hook would be redundant.
         with suppress(Exception):
             wait_for_all_tracers()
+        # Close the shared rotating-proxy client (if egress proxying is on).
+        with suppress(Exception):
+            await aclose_proxy_client()
 
 
 app = FastAPI(title="LawersSimpleChat Backend", lifespan=lifespan)

@@ -155,6 +155,12 @@ jobs:
           S3_BUCKET_NAME: ${{ vars.S3_BUCKET_NAME }}
           S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
           S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+          # Egress proxy for OpenRouter (our RU IP is 403'd by its edge). Toggle
+          # via the PROXY_ENABLED var; PROXY_LIST_B64 is the base64 of the
+          # Webshare `host:port:user:pass` export (base64 so it survives the
+          # comma-joined --environment string below).
+          PROXY_ENABLED: ${{ vars.PROXY_ENABLED }}
+          PROXY_LIST_B64: ${{ secrets.PROXY_LIST_B64 }}
         run: |
           export PATH="$HOME/.local/bin:$PATH"
 
@@ -185,6 +191,12 @@ jobs:
             ENV_VARS="${ENV_VARS},LANGSMITH_API_KEY=${LANGSMITH_API_KEY},LANGCHAIN_API_KEY=${LANGSMITH_API_KEY}"
             ENV_VARS="${ENV_VARS},LANGSMITH_PROJECT=lawers-chat-staging,LANGCHAIN_PROJECT=lawers-chat-staging"
             ENV_VARS="${ENV_VARS},LANGSMITH_ENDPOINT=https://api.smith.langchain.com"
+          fi
+
+          # OpenRouter egress proxy — optional. Base64 value is comma-free so it
+          # is safe inside the comma-joined --environment string.
+          if [ -n "${PROXY_ENABLED}" ]; then
+            ENV_VARS="${ENV_VARS},PROXY_ENABLED=${PROXY_ENABLED},PROXY_LIST_B64=${PROXY_LIST_B64}"
           fi
 
           yc serverless container revision deploy \
