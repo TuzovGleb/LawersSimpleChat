@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSupabase } from '@/lib/supabase';
 import { isProjectOwnedBy } from '@/lib/chat-access';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { requireEntitlement } from '@/lib/entitlement';
 import { mapProjectDocument } from '@/lib/projects';
 import { logger, requestIdFrom } from '@/lib/server-logger';
 
@@ -169,6 +170,15 @@ export async function POST(req: NextRequest) {
       { error: 'Слишком много загрузок подряд. Немного подождите и повторите.' },
       { status: 429 },
     );
+  }
+
+  // Access gate (fail-closed): extraction is the most expensive call in the
+  // system (S3 download + per-page LLM vision) — an expired/absent subscription
+  // must stop here, before the backend call. requireEntitlement never throws.
+  const { response: entitlementResponse } = await requireEntitlement(supabase);
+  if (entitlementResponse) {
+    logger.warn('Document extraction blocked by entitlement gate', { project_id: projectId, request_id: requestId, event: 'entitlement_blocked', user_id: user.id, status: entitlementResponse.status });
+    return entitlementResponse;
   }
 
   const forwardBody = {

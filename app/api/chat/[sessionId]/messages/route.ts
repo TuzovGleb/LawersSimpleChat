@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { getAuthorizedChatSession } from '@/lib/chat-access';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { requireEntitlement } from '@/lib/entitlement';
 import type { UTMData } from '@/lib/types';
 import { logger, requestIdFrom } from '@/lib/server-logger';
 
@@ -166,6 +167,15 @@ export async function POST(req: NextRequest) {
         { error: 'Слишком много сообщений подряд. Немного подождите и повторите.' },
         { status: 429 },
       );
+    }
+
+    // Access gate (fail-closed): sending a message burns LLM tokens, so an
+    // expired/absent subscription must stop here, before the backend call.
+    // requireEntitlement never throws — 402/503 come back as a response.
+    const { response: entitlementResponse } = await requireEntitlement(supabase);
+    if (entitlementResponse) {
+      logger.warn('Chat message blocked by entitlement gate', { chat_id: sessionId, request_id: requestId, event: 'entitlement_blocked', user_id: user.id, status: entitlementResponse.status });
+      return entitlementResponse;
     }
   } catch (error) {
     logger.error('Auth check failed', { chat_id: sessionId, request_id: requestId, event: 'auth_failed', err: error });

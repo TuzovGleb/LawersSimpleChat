@@ -204,14 +204,33 @@ export function useAuth() {
     }
   }
 
-  const signUp = async (email: string, password: string) => {
+  // Обязательные поля регистрации (gating). Кладём их в user_metadata:
+  // Postgres-триггер handle_new_user переносит metadata → profiles на сервере.
+  // НИКАКИХ клиентских INSERT в profiles — при включённом email-confirm
+  // сессии после signUp нет, и RLS такой INSERT отобьёт.
+  const signUp = async (
+    email: string,
+    password: string,
+    profile: { firstName: string; lastName: string; phone: string },
+  ) => {
     if (!supabase) {
       return { data: null, error: new Error('Supabase client is not available') };
     }
     const normalizedEmail = email.trim().toLowerCase()
     try {
       const { data, error } = await withTimeout(
-        supabase.auth.signUp({ email: normalizedEmail, password }),
+        supabase.auth.signUp({
+          email: normalizedEmail,
+          password,
+          options: {
+            data: {
+              first_name: profile.firstName,
+              last_name: profile.lastName,
+              phone: profile.phone,
+              profile_completed: true,
+            },
+          },
+        }),
         SIGN_IN_TIMEOUT_MS,
         'signUp',
       )

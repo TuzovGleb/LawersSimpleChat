@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { generatePresignedUploadUrl } from '@/lib/s3-client';
 import { createClient } from '@/lib/supabase/server';
 import { isProjectOwnedBy } from '@/lib/chat-access';
+import { requireEntitlement } from '@/lib/entitlement';
 import { logger, requestIdFrom } from '@/lib/server-logger';
 
 export const runtime = 'nodejs';
@@ -63,6 +64,20 @@ export async function POST(req: NextRequest) {
     }
     if (!(await isProjectOwnedBy(supabase, projectId, user.id))) {
       return NextResponse.json({ error: 'Проект не найден или нет доступа.' }, { status: 404 });
+    }
+
+    // Access gate (fail-closed): no new uploads in read-only (expired) mode.
+    // requireEntitlement never throws — 402/503 come back as a response.
+    const { response: entitlementResponse } = await requireEntitlement(supabase);
+    if (entitlementResponse) {
+      logger.warn('Presign blocked by entitlement gate', {
+        request_id: requestId,
+        event: 'entitlement_blocked',
+        project_id: projectId,
+        user_id: user.id,
+        status: entitlementResponse.status,
+      });
+      return entitlementResponse;
     }
 
     if (!ALLOWED_MIME_TYPES.has(mimeType)) {

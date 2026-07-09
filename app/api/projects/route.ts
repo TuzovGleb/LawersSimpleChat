@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
 import { createClient } from '@/lib/supabase/server';
 import { requireAuth } from '@/lib/auth-helpers';
+import { getEntitlement } from '@/lib/entitlement';
 import { mapProject } from '@/lib/projects';
 import { slugify } from '@/lib/utils';
 import { logger, requestIdFrom } from '@/lib/server-logger';
@@ -33,13 +34,20 @@ export async function GET(req: NextRequest) {
     }
 
     const projects = (data ?? []).map(mapProject);
+
+    // Entitlement rides along with this bootstrap fetch so the client can show
+    // the subscription banner without an extra request. It must NEVER break
+    // project loading: getEntitlement returns null on any RPC error.
+    const entitlement = await getEntitlement(supabase);
+
     logger.info('Projects listed', {
       request_id: requestId,
       event: 'projects_listed',
       duration_ms: Date.now() - startedAt,
       count: projects.length,
+      entitlement_status: entitlement?.status ?? null,
     });
-    return NextResponse.json({ projects });
+    return NextResponse.json({ projects, entitlement });
   } catch (error) {
     logger.error('Unexpected error', {
       request_id: requestId,

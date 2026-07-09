@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { CreateCaseDialog } from "@/components/create-case-dialog";
 import { RenameProjectDialog } from "@/components/rename-project-dialog";
+import { SubscriptionBanner } from "@/components/subscription-banner";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -31,6 +32,7 @@ import {
   Pencil,
   Trash2,
 } from "lucide-react";
+import type { Entitlement } from "@/lib/entitlement";
 import type { Project, SessionDocument } from "@/lib/types";
 
 type ProjectState = Project & {
@@ -48,6 +50,9 @@ interface CaseSelectionScreenProps {
   projects: ProjectState[];
   sessions: LocalChatSession[];
   isLoading: boolean;
+  entitlement: Entitlement | null;
+  accessExpired: boolean;
+  onRedeemed: (entitlement: Entitlement) => void;
   onSelectProject: (projectId: string) => void;
   onCreateProject: (name: string) => void;
   onRenameProject: (projectId: string, newName: string) => void;
@@ -59,6 +64,9 @@ export function CaseSelectionScreen({
   projects,
   sessions,
   isLoading,
+  entitlement,
+  accessExpired,
+  onRedeemed,
   onSelectProject,
   onCreateProject,
   onRenameProject,
@@ -131,6 +139,11 @@ export function CaseSelectionScreen({
 
       <main className="flex-1">
         <div className="container-x pt-8 pb-16 sm:pt-12 sm:pb-24">
+          <SubscriptionBanner
+            entitlement={entitlement}
+            onRedeemed={onRedeemed}
+            className="mb-6"
+          />
           <div
             className="mb-8 flex flex-col items-stretch gap-4 sm:flex-row sm:items-end sm:justify-between sm:gap-8"
           >
@@ -160,6 +173,8 @@ export function CaseSelectionScreen({
               variant="brand"
               size="cta"
               className="w-full shrink-0 sm:w-auto"
+              disabled={accessExpired}
+              title={accessExpired ? "Доступ приостановлен" : undefined}
             >
               <FolderPlus className="h-5 w-5" />
               Новое дело
@@ -206,7 +221,13 @@ export function CaseSelectionScreen({
               >
                 Создайте первое дело, чтобы начать работу с AI-помощником
               </p>
-              <Button onClick={handleOpenDialog} variant="brand" size="cta">
+              <Button
+                onClick={handleOpenDialog}
+                variant="brand"
+                size="cta"
+                disabled={accessExpired}
+                title={accessExpired ? "Доступ приостановлен" : undefined}
+              >
                 <FolderPlus className="h-4 w-4" />
                 Создать первое дело
               </Button>

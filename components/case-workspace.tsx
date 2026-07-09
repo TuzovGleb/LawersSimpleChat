@@ -12,8 +12,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ThinkingIndicator } from "@/components/thinking-indicator";
 import { DocumentPreviewPanel } from "@/components/document-preview-panel";
+import { SubscriptionBanner } from "@/components/subscription-banner";
 import { useAppHeight } from "@/hooks/use-app-height";
 import { cn } from "@/lib/utils";
+import type { Entitlement } from "@/lib/entitlement";
 import type { ChatMessage, Project, SessionDocument, SelectedModel, UploadingDocument } from "@/lib/types";
 import {
   AlertCircle,
@@ -64,6 +66,11 @@ interface CaseWorkspaceProps {
   pendingDocuments: SessionDocument[];
   uploadingDocuments: UploadingDocument[];
   selectedModel: SelectedModel;
+  entitlement: Entitlement | null;
+  // Read-only режим (доступ истёк): композер и загрузка/создание отключены,
+  // история и скачивание готовых документов работают как раньше.
+  accessExpired: boolean;
+  onRedeemed: (entitlement: Entitlement) => void;
   onModelChange: (model: SelectedModel) => void;
   onBack: () => void;
   onSelectSession: (sessionId: string) => void;
@@ -221,6 +228,9 @@ export function CaseWorkspace({
   pendingDocuments,
   uploadingDocuments,
   selectedModel,
+  entitlement,
+  accessExpired,
+  onRedeemed,
   onModelChange,
   onBack,
   onSelectSession,
@@ -393,12 +403,17 @@ export function CaseWorkspace({
     [onAttachDocument],
   );
 
-  const handlePageDragEnter = useCallback((e: React.DragEvent) => {
-    if (e.dataTransfer.types.includes("Files")) {
-      dragCounterRef.current += 1;
-      setIsDragging(true);
-    }
-  }, []);
+  const handlePageDragEnter = useCallback(
+    (e: React.DragEvent) => {
+      // Read-only режим: drag-n-drop — тот же канал загрузки, что и кнопка.
+      if (accessExpired) return;
+      if (e.dataTransfer.types.includes("Files")) {
+        dragCounterRef.current += 1;
+        setIsDragging(true);
+      }
+    },
+    [accessExpired],
+  );
 
   const handlePageDragLeave = useCallback(() => {
     dragCounterRef.current -= 1;
@@ -411,11 +426,12 @@ export function CaseWorkspace({
     (e: React.DragEvent) => {
       e.preventDefault();
       resetDragState();
+      if (accessExpired) return;
       if (e.dataTransfer.files.length > 0) {
         onAttachDocument(e.dataTransfer.files);
       }
     },
-    [onAttachDocument, resetDragState],
+    [accessExpired, onAttachDocument, resetDragState],
   );
 
   return (
@@ -536,6 +552,13 @@ export function CaseWorkspace({
         </div>
       </header>
 
+      {/* Access banner (renders nothing while access is active and not expiring).
+          The wrapper carries only horizontal padding, so it collapses to zero
+          height when the banner is hidden. */}
+      <div className="flex-shrink-0 pl-[max(1.25rem,env(safe-area-inset-left))] pr-[max(1.25rem,env(safe-area-inset-right))]">
+        <SubscriptionBanner entitlement={entitlement} onRedeemed={onRedeemed} className="mt-3" />
+      </div>
+
       {/* Main */}
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}
@@ -584,7 +607,9 @@ export function CaseWorkspace({
             <button
               type="button"
               onClick={onNewChat}
-              className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--brand-accent)] bg-transparent px-3 py-3 text-[13.5px] font-medium text-[var(--brand-accent)] transition-colors hover:bg-[var(--brand-accent-bg)] md:py-[9px]"
+              disabled={accessExpired}
+              title={accessExpired ? "Доступ приостановлен" : undefined}
+              className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--brand-accent)] bg-transparent px-3 py-3 text-[13.5px] font-medium text-[var(--brand-accent)] transition-colors hover:bg-[var(--brand-accent-bg)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent md:py-[9px]"
             >
               <Plus className="h-4 w-4" />
               Новый чат
@@ -1162,7 +1187,11 @@ export function CaseWorkspace({
                   onChange={(event) => onInputChange(event.target.value)}
                   onKeyDown={handleInputKeyDown}
                   rows={1}
-                  placeholder="Опишите ситуацию, вопрос или запрос…"
+                  placeholder={
+                    accessExpired
+                      ? "Доступ приостановлен"
+                      : "Опишите ситуацию, вопрос или запрос…"
+                  }
                   className="flex-1 resize-none border-0 bg-transparent text-base shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 focus:outline-none outline-none min-h-0 md:text-[15px]"
                   style={{
                     minHeight: 24,
@@ -1173,7 +1202,7 @@ export function CaseWorkspace({
                     background: "transparent",
                     overflowY: "hidden",
                   }}
-                  disabled={isLoading || isLoadingChats}
+                  disabled={isLoading || isLoadingChats || accessExpired}
                 />
                 <div className="flex gap-1.5 flex-shrink-0">
                   <Button
@@ -1181,8 +1210,8 @@ export function CaseWorkspace({
                     variant="ghost"
                     size="icon"
                     onClick={handleAttachButtonClick}
-                    disabled={!activeSession}
-                    title="Прикрепить файл"
+                    disabled={!activeSession || accessExpired}
+                    title={accessExpired ? "Доступ приостановлен" : "Прикрепить файл"}
                     className="size-11 border border-[var(--border-strong)] text-[var(--text-secondary)] md:size-9"
                   >
                     <Paperclip className="h-4 w-4" />
@@ -1191,6 +1220,7 @@ export function CaseWorkspace({
                   <Button
                     type="submit"
                     disabled={
+                      accessExpired ||
                       isLoading ||
                       isUploadingDocument ||
                       isLoadingChats ||
@@ -1198,7 +1228,7 @@ export function CaseWorkspace({
                       (!input.trim() && pendingDocuments.length === 0)
                     }
                     size="icon"
-                    title="Отправить"
+                    title={accessExpired ? "Доступ приостановлен" : "Отправить"}
                     className="size-11 bg-[var(--brand-accent)] text-white hover:bg-[var(--brand-accent-hover)] md:size-9"
                   >
                     {isLoading || isLoadingChats || isLoadingMessages ? (
@@ -1214,7 +1244,9 @@ export function CaseWorkspace({
                 className="px-1"
                 style={{ fontSize: 12, color: "var(--text-muted)" }}
               >
-                Enter — отправить · Shift+Enter — новая строка
+                {accessExpired
+                  ? "Доступ приостановлен. Свяжитесь с нами, чтобы продолжить работу."
+                  : "Enter — отправить · Shift+Enter — новая строка"}
               </p>
             </form>
           </div>

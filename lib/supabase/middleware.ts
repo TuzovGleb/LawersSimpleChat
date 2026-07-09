@@ -67,11 +67,50 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.redirect(url)
   }
 
-  // Redirect unauthenticated users from workspace and chat pages to home
-  if (!user && (pathname === '/workspace' || pathname === '/chat' || pathname.startsWith('/chat/'))) {
+  // Redirect unauthenticated users from protected pages to home
+  const requiresAuth =
+    pathname === '/workspace' ||
+    pathname === '/chat' ||
+    pathname.startsWith('/chat/') ||
+    pathname === '/admin' ||
+    pathname.startsWith('/admin/') ||
+    pathname === '/onboarding' ||
+    pathname.startsWith('/onboarding/')
+  if (!user && requiresAuth) {
     const url = request.nextUrl.clone()
     url.pathname = '/'
     return NextResponse.redirect(url)
+  }
+
+  // Onboarding gate: authenticated users without a completed profile must fill
+  // it in before using the app. Applies ONLY to page paths (/workspace, /chat*,
+  // /admin*) — never to /api/** (the matcher lets API routes through here; a
+  // redirect would break fetches), /auth/* (would break the PKCE reset-password
+  // flow), '/' or /onboarding itself (redirect loop).
+  if (user) {
+    const profileCompleted = user.user_metadata?.profile_completed === true
+    const isGatedPage =
+      pathname === '/workspace' ||
+      pathname === '/chat' ||
+      pathname.startsWith('/chat/') ||
+      pathname === '/admin' ||
+      pathname.startsWith('/admin/')
+
+    if (!profileCompleted && isGatedPage) {
+      const url = request.nextUrl.clone()
+      url.pathname = '/onboarding/profile'
+      return NextResponse.redirect(url)
+    }
+
+    // A completed user has nothing to do on the onboarding page.
+    if (
+      profileCompleted &&
+      (pathname === '/onboarding' || pathname.startsWith('/onboarding/'))
+    ) {
+      const url = request.nextUrl.clone()
+      url.pathname = '/workspace'
+      return NextResponse.redirect(url)
+    }
   }
 
   return response

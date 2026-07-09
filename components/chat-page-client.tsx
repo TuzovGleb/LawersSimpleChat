@@ -5,6 +5,8 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { v4 as uuidv4 } from "uuid";
 import { CaseSelectionScreen } from "@/components/case-selection-screen";
 import { CaseWorkspace } from "@/components/case-workspace";
+import { parseEntitlement } from "@/components/subscription-banner";
+import type { Entitlement } from "@/lib/entitlement";
 import type { ChatMessage, ChatMessageDocument, Project, SessionDocument, SelectedModel, UploadingDocument } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
@@ -136,6 +138,10 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
     return query ? `?${query}` : "";
   }, [searchParams]);
   const [projects, setProjects] = useState<ProjectState[]>([]);
+  // Статус доступа (триал/промо/ручной). Источник — GET /api/projects при
+  // bootstrap'е; обновляется после погашения промокода и при 402 от гейта.
+  // Только React-state, без localStorage: сервер всё равно fail-closed.
+  const [entitlement, setEntitlement] = useState<Entitlement | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [isInWorkspace, setIsInWorkspace] = useState<boolean>(false);
   const [isProjectsLoading, setIsProjectsLoading] = useState<boolean>(true);
@@ -279,18 +285,21 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
       try {
         const response = await fetchWithRetry(`/api/projects?userId=${encodeURIComponent(user.id)}`);
         let projectsPayload: Project[] = [];
+        let entitlementPayload: Entitlement | null = null;
 
         if (response.ok) {
           try {
-            const data = await safeJsonResponse<{ projects?: Project[] }>(response);
+            const data = await safeJsonResponse<{ projects?: Project[]; entitlement?: unknown }>(response);
             projectsPayload = Array.isArray(data?.projects) ? data.projects : [];
+            entitlementPayload = parseEntitlement(data?.entitlement);
           } catch (error) {
             console.warn("Ошибка при чтении ответа проектов, пробуем повторить:", error);
             // Повторяем запрос один раз при ошибке чтения
             const retryResponse = await fetchWithRetry(`/api/projects?userId=${encodeURIComponent(user.id)}`);
             if (retryResponse.ok) {
-              const data = await safeJsonResponse<{ projects?: Project[] }>(retryResponse);
+              const data = await safeJsonResponse<{ projects?: Project[]; entitlement?: unknown }>(retryResponse);
               projectsPayload = Array.isArray(data?.projects) ? data.projects : [];
+              entitlementPayload = parseEntitlement(data?.entitlement);
             }
           }
         }
@@ -322,6 +331,9 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
                 new Date(a.updated_at ?? a.created_at).getTime(),
             );
           setProjects(enriched);
+          // null при ошибке проверки на сервере — баннер просто не показываем,
+          // авторитетный гейт всё равно на BFF (fail-closed).
+          setEntitlement(entitlementPayload);
         }
       } catch (error) {
         console.error("Не удалось загрузить проекты:", error);
@@ -675,6 +687,44 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
   const isLoadingMessages =
     Boolean(activeSessionId) && loadingMessagesSessionId === activeSessionId;
 
+  // Read-only режим: любой статус, кроме 'active', блокирует отправку
+  // сообщений, загрузку документов и создание дел/чатов (история и скачивание
+  // готовых документов остаются доступными).
+  const accessExpired = Boolean(entitlement && entitlement.status !== "active");
+
+  const handleEntitlementRedeemed = useCallback((next: Entitlement) => {
+    setEntitlement(next);
+  }, []);
+
+  // Общий хелпер для 402 от гейта доступа (code SUBSCRIPTION_REQUIRED):
+  // обновляет entitlement из тела ответа (или минимально помечает доступ
+  // истёкшим, если тела нет) и показывает toast. Возвращает true, если ответ
+  // был обработан как «доступ приостановлен».
+  const handleSubscriptionRequired = useCallback(
+    async (response: Response): Promise<boolean> => {
+      if (response.status !== 402) return false;
+      let next: Entitlement | null = null;
+      try {
+        const payload = await response.clone().json();
+        next = parseEntitlement(payload?.entitlement);
+      } catch {
+        // Тело может отсутствовать — ниже пометим доступ истёкшим.
+      }
+      setEntitlement((prev) => {
+        if (next) return next;
+        if (prev && prev.status !== "active") return prev;
+        return { status: "expired", kind: prev?.kind ?? null, expiresAt: prev?.expiresAt ?? null };
+      });
+      toast({
+        variant: "destructive",
+        title: "Доступ приостановлен",
+        description: "Свяжитесь с нами, чтобы продолжить работу.",
+      });
+      return true;
+    },
+    [toast],
+  );
+
   const handleNewChat = useCallback(() => {
     if (!selectedProjectId) return;
     const newSession = createEmptySession(selectedProjectId);
@@ -953,6 +1003,15 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
           });
 
           if (!presignResponse.ok) {
+            if (await handleSubscriptionRequired(presignResponse)) {
+              // handleSubscriptionRequired уже показал toast — помечаем ошибку,
+              // чтобы catch не дублировал его на каждый файл (чип с ошибкой остаётся).
+              const subscriptionError = new Error(
+                "Доступ приостановлен. Свяжитесь с нами, чтобы продолжить работу.",
+              );
+              subscriptionError.name = "SubscriptionRequiredError";
+              throw subscriptionError;
+            }
             const errorPayload = await presignResponse.json().catch(() => ({}));
             const message =
               typeof errorPayload?.error === "string" && errorPayload.error.trim()
@@ -1023,6 +1082,13 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
           );
 
           if (!response.ok) {
+            if (await handleSubscriptionRequired(response)) {
+              const subscriptionError = new Error(
+                "Доступ приостановлен. Свяжитесь с нами, чтобы продолжить работу.",
+              );
+              subscriptionError.name = "SubscriptionRequiredError";
+              throw subscriptionError;
+            }
             const errorPayload = await response.json().catch(() => ({}));
             const message =
               typeof errorPayload?.error === "string" && errorPayload.error.trim()
@@ -1091,15 +1157,20 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
                 : entry,
             ),
           );
-          toast({
-            variant: "destructive",
-            title: "Не удалось обработать документ",
-            description: `«${file.name}» — ${description}`,
-          });
+          // Для 402 toast «Доступ приостановлен» уже показан в
+          // handleSubscriptionRequired — второй (да ещё по одному на файл)
+          // не нужен; остаётся только чип с ошибкой.
+          if (!(error instanceof Error && error.name === "SubscriptionRequiredError")) {
+            toast({
+              variant: "destructive",
+              title: "Не удалось обработать документ",
+              description: `«${file.name}» — ${description}`,
+            });
+          }
         }
       }
     },
-    [selectedProjectId, setProjects, toast, user?.id, activeSession?.backendSessionId, activeSessionId],
+    [handleSubscriptionRequired, selectedProjectId, setProjects, toast, user?.id, activeSession?.backendSessionId, activeSessionId],
   );
 
   const handleRemovePendingDocument = useCallback((documentId: string) => {
@@ -1246,6 +1317,9 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
       document.removeEventListener('visibilitychange', visibilityHandler);
 
       if (!response.ok) {
+        if (await handleSubscriptionRequired(response)) {
+          throw new Error("Доступ приостановлен. Свяжитесь с нами, чтобы продолжить работу.");
+        }
         throw new Error("Не удалось отправить сообщение");
       }
 
@@ -1440,7 +1514,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         return next;
       });
     }
-  }, [activeSession, input, isLoadingMessages, isPageVisible, isUploadingDocument, pendingMessageDocuments, selectedProjectId, selectedModel, toast, user?.id, utmQuery]);
+  }, [activeSession, handleSubscriptionRequired, input, isLoadingMessages, isPageVisible, isUploadingDocument, pendingMessageDocuments, selectedProjectId, selectedModel, toast, user?.id, utmQuery]);
 
   // Retry a failed user turn: re-send its content/attachments with the history
   // that preceded it. The failed message is always the last one, but we slice
@@ -1485,6 +1559,9 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         projects={projects}
         sessions={sessions}
         isLoading={isProjectsLoading}
+        entitlement={entitlement}
+        accessExpired={accessExpired}
+        onRedeemed={handleEntitlementRedeemed}
         onSelectProject={handleSelectProject}
         onCreateProject={handleCreateProject}
         onRenameProject={handleRenameProject}
@@ -1531,6 +1608,9 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         pendingDocuments={pendingMessageDocuments}
         uploadingDocuments={activeUploadingDocuments}
         selectedModel={selectedModel}
+        entitlement={entitlement}
+        accessExpired={accessExpired}
+        onRedeemed={handleEntitlementRedeemed}
         onModelChange={setSelectedModel}
         onBack={handleBackToSelection}
         onSelectSession={handleSelectSession}

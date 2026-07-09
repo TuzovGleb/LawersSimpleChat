@@ -10,10 +10,34 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import { AuthShell } from "@/components/auth-shell";
+import { createClient } from "@/lib/supabase/client";
+import { normalizeRuPhone, validateRuPhone } from "@/lib/phone";
+import { CALENDLY_URL } from "@/lib/contact";
 import { Loader2 } from "lucide-react";
 
-const CALENDLY_URL =
-  "https://calendly.com/glebtuzov/30-minute-call-with-tuzov-gleb-opencv?month=2025-12";
+// У supabase-вызовов нет собственного таймаута (см. комментарий к withTimeout
+// в hooks/use-auth.ts — тот же паттерн): зависший RPC не должен ни на что
+// влиять, по истечении срока просто остаёмся на fail-open рендере.
+const SIGNUP_GATE_TIMEOUT_MS = 8_000;
+
+function withTimeout<T>(promise: PromiseLike<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error("is_signup_enabled timeout")),
+      ms,
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
 
 export function AuthForm() {
   const [loginEmail, setLoginEmail] = useState("");
@@ -21,6 +45,9 @@ export function AuthForm() {
   const [signupEmail, setSignupEmail] = useState("");
   const [signupPassword, setSignupPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [signupFirstName, setSignupFirstName] = useState("");
+  const [signupLastName, setSignupLastName] = useState("");
+  const [signupPhone, setSignupPhone] = useState("");
   const [loading, setLoading] = useState(false);
   const { signIn, signUp, user, loading: authLoading } = useAuth();
   const router = useRouter();
@@ -28,6 +55,45 @@ export function AuthForm() {
 
   const isSignupEnabled = process.env.NEXT_PUBLIC_ENABLE_SIGNUP === "true";
   const defaultTab = "authorization";
+
+  // Runtime-выключатель регистрации (billing_settings.signup_enabled, тумблер
+  // в /admin). Env-флаг лишь прячет форму per-deploy; настоящий запрет — в
+  // БД-триггере on_auth_user_signup_gate, поэтому ошибка/таймаут RPC =
+  // fail-open (форму показываем). Default true: до ответа RPC рендерим как
+  // сейчас — без мигания и без спиннеров.
+  const [signupAllowed, setSignupAllowed] = useState(true);
+
+  useEffect(() => {
+    if (!isSignupEnabled) return;
+    if (
+      !process.env.NEXT_PUBLIC_SUPABASE_URL ||
+      !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+
+    try {
+      const supabase = createClient();
+      withTimeout(supabase.rpc("is_signup_enabled"), SIGNUP_GATE_TIMEOUT_MS)
+        .then(({ data, error }) => {
+          if (cancelled || error) return; // fail-open
+          if (data === false) {
+            setSignupAllowed(false);
+          }
+        })
+        .catch(() => {
+          // Таймаут/сеть → fail-open: БД-триггер всё равно отобьёт signup.
+        });
+    } catch (error) {
+      console.error("Failed to create Supabase client:", error);
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isSignupEnabled]);
 
   useEffect(() => {
     if (!authLoading && user) {
@@ -41,6 +107,9 @@ export function AuthForm() {
     loginPassword.length >= 6;
 
   const isSignupFormValid =
+    signupFirstName.trim().length >= 2 &&
+    signupLastName.trim().length >= 2 &&
+    signupPhone.trim() !== "" &&
     signupEmail.trim() !== "" &&
     signupPassword.trim() !== "" &&
     signupPassword.length >= 6 &&
@@ -101,14 +170,58 @@ export function AuthForm() {
     window.open(CALENDLY_URL, "_blank");
   };
 
+  // Нормализуем телефон к канону +7XXXXXXXXXX на blur, чтобы пользователь
+  // сразу видел, как номер будет сохранён (валидация — при сабмите).
+  const handlePhoneBlur = () => {
+    const normalized = normalizeRuPhone(signupPhone);
+    if (normalized) {
+      setSignupPhone(normalized);
+    }
+  };
+
   const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!signupEmail || !signupPassword || !confirmPassword) {
+    if (
+      !signupFirstName.trim() ||
+      !signupLastName.trim() ||
+      !signupPhone.trim() ||
+      !signupEmail ||
+      !signupPassword ||
+      !confirmPassword
+    ) {
       toast({
         variant: "destructive",
         title: "Ошибка",
         description: "Пожалуйста, заполните все поля",
+      });
+      return;
+    }
+
+    if (signupFirstName.trim().length < 2) {
+      toast({
+        variant: "destructive",
+        title: "Ошибка",
+        description: "Имя должно содержать минимум 2 символа",
+      });
+      return;
+    }
+
+    if (signupLastName.trim().length < 2) {
+      toast({
+        variant: "destructive",
+        title: "Ошибка",
+        description: "Фамилия должна содержать минимум 2 символа",
+      });
+      return;
+    }
+
+    const normalizedPhone = normalizeRuPhone(signupPhone);
+    if (!normalizedPhone || !validateRuPhone(normalizedPhone)) {
+      toast({
+        variant: "destructive",
+        title: "Ошибка",
+        description: "Укажите настоящий номер телефона в формате +7...",
       });
       return;
     }
@@ -134,7 +247,11 @@ export function AuthForm() {
     setLoading(true);
 
     try {
-      const { data, error } = await signUp(signupEmail, signupPassword);
+      const { data, error } = await signUp(signupEmail, signupPassword, {
+        firstName: signupFirstName.trim(),
+        lastName: signupLastName.trim(),
+        phone: normalizedPhone,
+      });
 
       if (error) {
         throw error;
@@ -224,7 +341,7 @@ export function AuthForm() {
         </Link>
       }
     >
-      {isSignupEnabled ? (
+      {isSignupEnabled && signupAllowed ? (
         <>
           <h1>Войти в Джейхелпер</h1>
           <p className="lede">Введите email и пароль</p>
@@ -241,6 +358,55 @@ export function AuthForm() {
 
             <TabsContent value="registration" className="mt-6">
               <form onSubmit={handleSignUp} autoComplete="off" className="space-y-4">
+                <FormField label="Имя" id="signup-first-name">
+                  <Input
+                    id="signup-first-name"
+                    name="first-name"
+                    type="text"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    placeholder="Иван"
+                    value={signupFirstName}
+                    onChange={(e) => setSignupFirstName(e.target.value)}
+                    disabled={loading}
+                    required
+                    minLength={2}
+                    autoComplete="given-name"
+                  />
+                </FormField>
+                <FormField label="Фамилия" id="signup-last-name">
+                  <Input
+                    id="signup-last-name"
+                    name="last-name"
+                    type="text"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    placeholder="Иванов"
+                    value={signupLastName}
+                    onChange={(e) => setSignupLastName(e.target.value)}
+                    disabled={loading}
+                    required
+                    minLength={2}
+                    autoComplete="family-name"
+                  />
+                </FormField>
+                <FormField label="Телефон" id="signup-phone">
+                  <Input
+                    id="signup-phone"
+                    name="phone"
+                    type="tel"
+                    inputMode="tel"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    placeholder="+7 999 123-45-67"
+                    value={signupPhone}
+                    onChange={(e) => setSignupPhone(e.target.value)}
+                    onBlur={handlePhoneBlur}
+                    disabled={loading}
+                    required
+                    autoComplete="tel"
+                  />
+                </FormField>
                 <FormField label="Email" id="signup-email">
                   <Input
                     id="signup-email"
