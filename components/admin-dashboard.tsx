@@ -56,7 +56,10 @@ interface AdminUser {
   registered_at: string | null;
   last_sign_in_at: string | null;
   status: "active" | "expired" | "none";
-  kind: "trial" | "promo" | "manual" | "payment" | null;
+  // 'admin' — вычисляемый kind (не хранится в access_grants): пользователь с
+  // хотя бы одним admin.*-пермишеном всегда active с постоянным доступом
+  // (access_until/days_left = null), см. 20260709120000_admin_permanent_access.sql.
+  kind: "trial" | "promo" | "manual" | "payment" | "admin" | null;
   access_until: string | null;
   days_left: number | null;
   roles: AdminUserRole[];
@@ -162,6 +165,14 @@ async function readErrorText(res: Response, fallback: string): Promise<string> {
 
 function statusBadge(user: AdminUser): { label: string; className: string } {
   if (user.status === "active") {
+    if (user.kind === "admin") {
+      // Постоянный доступ администратора: «Доступ до»/«Осталось дней» у такой
+      // строки null и рендерятся как «—» (formatDate / typeof-проверка ниже).
+      return {
+        label: "Админ · постоянный",
+        className: "bg-violet-100 text-violet-800 border-violet-200",
+      };
+    }
     if (user.kind === "trial") {
       return {
         label: "Активен · триал",
@@ -989,10 +1000,23 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
                                     <div className="flex gap-2">
                                       {canAccessManage && (
                                         <>
+                                          {/* Гранты не влияют на доступ админа
+                                              (kind='admin' — постоянный доступ,
+                                              вычисляется по admin.*-пермишенам):
+                                              выдача/отзыв на такой строке —
+                                              вводящий в заблуждение no-op,
+                                              поэтому кнопки дизейблим и
+                                              отправляем в «Роли…». */}
                                           <Button
                                             variant="outline"
                                             size="sm"
                                             onClick={() => openGrantDialog(user)}
+                                            disabled={user.kind === "admin"}
+                                            title={
+                                              user.kind === "admin"
+                                                ? "Доступ администратора постоянный — управляется ролями (диалог «Роли…»)"
+                                                : undefined
+                                            }
                                           >
                                             Выдать/продлить
                                           </Button>
@@ -1001,7 +1025,15 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
                                             size="sm"
                                             className="text-destructive hover:text-destructive"
                                             onClick={() => openRevokeDialog(user)}
-                                            disabled={user.status !== "active"}
+                                            disabled={
+                                              user.kind === "admin" ||
+                                              user.status !== "active"
+                                            }
+                                            title={
+                                              user.kind === "admin"
+                                                ? "Доступ администратора постоянный — управляется ролями (диалог «Роли…»)"
+                                                : undefined
+                                            }
                                           >
                                             Отозвать
                                           </Button>

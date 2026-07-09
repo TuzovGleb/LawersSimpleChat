@@ -5,8 +5,14 @@ type ServerSupabaseClient = Awaited<ReturnType<typeof createClient>>;
 
 /**
  * Contract shared with the Postgres get_my_entitlement() function
- * (supabase/migrations/20260709000000_billing_and_profiles.sql):
- *   {"status":"active"|"expired"|"none","kind":"trial"|"promo"|"manual"|"payment"|null,"expires_at":"<ISO>"|null}
+ * (supabase/migrations/20260709000000_billing_and_profiles.sql +
+ * 20260709120000_admin_permanent_access.sql):
+ *   {"status":"active"|"expired"|"none","kind":"trial"|"promo"|"manual"|"payment"|"admin"|null,"expires_at":"<ISO>"|null}
+ *
+ * kind='admin' is COMPUTED (never stored in access_grants): a user holding at
+ * least one admin.* permission — the public.is_admin() criterion — is always
+ * {"status":"active","kind":"admin","expires_at":null}, i.e. permanent access
+ * with a null expiry.
  *
  * The snake_case→camelCase mapping (expires_at → expiresAt) happens HERE and
  * only here — every other layer (routes, banner, admin) works with this TS shape.
@@ -15,7 +21,7 @@ type ServerSupabaseClient = Awaited<ReturnType<typeof createClient>>;
  */
 export type Entitlement = {
   status: 'active' | 'expired' | 'none';
-  kind: 'trial' | 'promo' | 'manual' | 'payment' | null;
+  kind: 'trial' | 'promo' | 'manual' | 'payment' | 'admin' | null;
   expiresAt: string | null;
 };
 
@@ -25,6 +31,7 @@ const KINDS: ReadonlyArray<NonNullable<Entitlement['kind']>> = [
   'promo',
   'manual',
   'payment',
+  'admin',
 ];
 
 /**

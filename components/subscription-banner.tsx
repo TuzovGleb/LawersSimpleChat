@@ -48,7 +48,11 @@ export function parseEntitlement(raw: unknown): Entitlement | null {
     return null;
   }
   const kind =
-    value.kind === "trial" || value.kind === "promo" || value.kind === "manual" || value.kind === "payment"
+    value.kind === "trial" ||
+    value.kind === "promo" ||
+    value.kind === "manual" ||
+    value.kind === "payment" ||
+    value.kind === "admin"
       ? value.kind
       : null;
   return {
@@ -156,6 +160,13 @@ export function SubscriptionBanner({ entitlement, onRedeemed, className }: Subsc
   };
 
   if (!entitlement) {
+    return null;
+  }
+
+  // kind='admin' — постоянный доступ (expiresAt всегда null): админ не должен
+  // видеть ни одну полосу. Активные ветки ниже и так перечисляют kind'ы явно,
+  // но явный guard защищает от будущих правок веток.
+  if (entitlement.status === "active" && entitlement.kind === "admin") {
     return null;
   }
 
