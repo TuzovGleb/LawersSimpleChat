@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
-import { features, useCases, security } from "@/lib/landing-content";
+import { features, useCases } from "@/lib/landing-content";
 
 export const dynamic = 'force-dynamic';
 
@@ -55,7 +55,6 @@ export default function HomePage() {
           <nav className="flex items-center gap-3">
             <a href="#features" className="hidden md:inline text-sm font-medium" style={{ color: 'var(--text-primary)', opacity: .82 }}>Возможности</a>
             <a href="#use-cases" className="hidden md:inline text-sm font-medium" style={{ color: 'var(--text-primary)', opacity: .82 }}>Сценарии</a>
-            <a href="#security" className="hidden md:inline text-sm font-medium" style={{ color: 'var(--text-primary)', opacity: .82 }}>Безопасность</a>
             <Button onClick={handleLogin} variant="outlineMuted" size="ctaSm">Войти</Button>
             {/* The header CTA doesn't fit a phone-width bar next to the logo
                 and «Войти»; the hero right below carries the same CTA. */}
@@ -137,24 +136,6 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* Security */}
-      <section id="security" className="py-16 sm:py-[110px]" style={{ background: 'var(--bg-soft)', borderTop: '1px solid var(--border-soft)', borderBottom: '1px solid var(--border-soft)' }}>
-        <div className="container-x">
-          <div className="sec-eyebrow">Безопасность</div>
-          <h2 style={{ fontSize: 'clamp(28px, 3.5vw, 40px)', maxWidth: 720, marginBottom: 48 }}>
-            {security.title}
-          </h2>
-          <div className="grid gap-4 grid-cols-[repeat(auto-fit,minmax(min(240px,100%),1fr))] sm:gap-5">
-            {security.items.map((item, idx) => (
-              <div key={idx} className="card-x">
-                <h3 style={{ fontSize: 18, fontWeight: 500, margin: '0 0 10px' }}>{item.title}</h3>
-                <p style={{ fontSize: 14.5, color: '#4B5260', margin: 0, lineHeight: 1.55 }}>{item.description}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
       {/* Final CTA */}
       <section className="py-16 sm:py-[100px]" style={{ background: 'var(--bg-dark)', color: 'var(--text-on-dark)', position: 'relative', overflow: 'hidden' }}>
         <div
@@ -193,7 +174,7 @@ export default function HomePage() {
             <div className="flex gap-7 flex-wrap">
               <button onClick={handleLogin} style={{ background: 'transparent', border: 0, color: 'var(--text-secondary)', fontSize: 14, padding: 0, cursor: 'pointer' }}>Войти</button>
               <a href="#features" style={{ color: 'var(--text-secondary)', fontSize: 14 }}>Возможности</a>
-              <a href="#security" style={{ color: 'var(--text-secondary)', fontSize: 14 }}>Безопасность</a>
+              <a href="#use-cases" style={{ color: 'var(--text-secondary)', fontSize: 14 }}>Сценарии</a>
             </div>
           </div>
           <div style={{ marginTop: 24, paddingTop: 20, borderTop: '1px solid var(--border-strong)', display: 'flex', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', color: 'var(--text-secondary)', fontSize: 13 }}>

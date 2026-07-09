@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { ShieldCheck, Lock, Server } from "lucide-react";
+import { ShieldCheck, Lock } from "lucide-react";
 import { ToasterClient } from "@/components/toaster-client";
 
 /**
@@ -62,10 +62,6 @@ export function AuthShell({
               gap: 14,
             }}
           >
-            <li style={{ display: "grid", gridTemplateColumns: "22px 1fr", gap: 12, fontSize: 15.5, color: "rgba(250,250,247,.85)", lineHeight: 1.45 }}>
-              <Server size={20} style={{ color: "var(--secondary-accent)", marginTop: 1 }} />
-              <span>Данные хранятся в России. Соответствие 152-ФЗ.</span>
-            </li>
             <li style={{ display: "grid", gridTemplateColumns: "22px 1fr", gap: 12, fontSize: 15.5, color: "rgba(250,250,247,.85)", lineHeight: 1.45 }}>
               <ShieldCheck size={20} style={{ color: "var(--secondary-accent)", marginTop: 1 }} />
               <span>Содержимое дел не используется для обучения моделей.</span>
