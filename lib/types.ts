@@ -21,11 +21,14 @@ export interface ChatMessage {
     thinkingTimeSeconds?: number;
     wasReasoning?: boolean;
   };
-  // Set on a user message whose turn failed to generate. Such a message is a
-  // local-only, retryable artifact: it is never persisted server-side and is
-  // excluded from request payloads and localStorage. Cleared on retry, dropped
-  // when the user sends a new message instead of retrying.
-  status?: 'failed';
+  // Local-only lifecycle of an uncommitted user message. 'pending' — its turn
+  // is in flight (set optimistically at send, cleared when the final event
+  // commits the answer); 'failed' — the turn errored, message is retryable.
+  // Either way the message is not yet persisted server-side, so it is excluded
+  // from request payloads and localStorage: a tab killed mid-flight must not
+  // resurrect it as a committed message the server never saved (that's how
+  // client/server history used to diverge permanently).
+  status?: 'pending' | 'failed';
   errorText?: string;
 }
 

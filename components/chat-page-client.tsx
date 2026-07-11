@@ -381,7 +381,12 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
           return {
             ...session,
             title: session.title?.trim() ? session.title : "Новый чат",
-            messages: Array.isArray(session.messages) ? session.messages : [],
+            // Uncommitted (pending/failed) messages must not survive a reload:
+            // the server never persisted them, and resurrecting them as normal
+            // messages permanently forks local history from the server's.
+            messages: Array.isArray(session.messages)
+              ? session.messages.filter((message) => !message?.status)
+              : [],
             documents: normalizedDocuments,
             createdAt: session.createdAt ?? new Date().toISOString(),
             projectId: session.projectId ?? "",
@@ -406,11 +411,13 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
   useEffect(() => {
     if (!hasInitialized || typeof window === "undefined") return;
     try {
-      // Strip failed (uncommitted) messages: they are ephemeral retry artifacts
-      // that the backend never persisted, so they must not survive a refresh.
+      // Strip uncommitted (pending/failed) messages: the backend never persisted
+      // them, so they must not survive a refresh. Notably 'pending': if the tab
+      // dies mid-flight, the catch below never runs to mark it failed — saving
+      // it without a status would resurrect it as a phantom committed message.
       const sanitized = sessions.map((session) => ({
         ...session,
-        messages: session.messages.filter((message) => message.status !== "failed"),
+        messages: session.messages.filter((message) => !message.status),
       }));
       localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(sanitized));
       console.log('[Cache] Saved', sessions.length, 'sessions to localStorage');
@@ -624,8 +631,11 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         setSessions((prev) =>
           prev.map((session) => {
             if (session.id !== sessionId && session.backendSessionId !== sessionId) return session;
-            // Не затираем локальные сообщения (например, оптимистично добавленные перед ответом)
-            if (fetchedMessages.length <= session.messages.length) return session;
+            // Сервер — источник истины: локальный стейт сохраняем только пока
+            // в ЭТОЙ вкладке идёт отправка (оптимистичный ход ещё не сохранён).
+            // Прежний гард «у кого больше сообщений» намертво закреплял
+            // фантомные локальные сообщения, которых на сервере нет.
+            if (inflightSessionsRef.current.has(session.id)) return session;
             return { ...session, messages: fetchedMessages };
           }),
         );
@@ -1234,7 +1244,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
     // when the user sends/retries (variant A). For a retry we rebuild from the
     // history that preceded the failed message (override.baseMessages).
     const committed = (override ? override.baseMessages : activeSession.messages).filter(
-      (message) => message.status !== "failed",
+      (message) => !message.status,
     );
     const isFirstUserMessage = !committed.some((message) => message.role === "user");
     const userMessage: ChatMessage = {
@@ -1245,6 +1255,11 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         : {}),
     };
     const messagesForRequest = [...committed, userMessage];
+    // In local state the optimistic message is 'pending' until the final event
+    // commits the turn: pending messages are excluded from localStorage, so a
+    // tab killed mid-flight can't resurrect a message the server never saved.
+    // The request payload keeps the clean (status-free) copy.
+    const optimisticMessages = [...committed, { ...userMessage, status: "pending" as const }];
 
     if (!override) {
       setInput("");
@@ -1278,7 +1293,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         if (session.id !== sessionLocalId) return session;
         return {
           ...session,
-          messages: messagesForRequest,
+          messages: optimisticMessages,
           title: isFirstUserMessage ? generateTitle(userMessage.content) : session.title,
         };
       }),
@@ -1435,13 +1450,23 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
 
             // Commit the answer and drop this session's live draft in the same
             // render so the bubble swaps cleanly (no duplicate-text frame).
+            // The backend has persisted the turn by the time it emits `final`,
+            // so the optimistic user message graduates from 'pending' to
+            // committed here (otherwise localStorage would strip it).
             setSessions((prev) =>
               prev.map((session) => {
                 if (session.id !== sessionLocalId) return session;
                 return {
                   ...session,
                   backendSessionId: event.sessionId ?? session.backendSessionId ?? chatId,
-                  messages: [...session.messages, assistantMessage],
+                  messages: [
+                    ...session.messages.map((message) =>
+                      message.status === "pending"
+                        ? { ...message, status: undefined }
+                        : message,
+                    ),
+                    assistantMessage,
+                  ],
                   projectId: event.projectId ?? session.projectId ?? selectedProjectId,
                 };
               }),
@@ -1490,18 +1515,16 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         setPendingRequest(null);
       }
       
-      // Mark the in-flight user message (the last one) as failed instead of
+      // Mark the in-flight (pending) user message as failed instead of
       // appending a bot error reply. It stays retryable and is dropped from
       // history/localStorage, so the on-screen history never diverges from what
       // the backend persisted — a failed turn is persisted nowhere.
       setSessions((prev) =>
         prev.map((session) => {
           if (session.id !== sessionLocalId) return session;
-          const messages = [...session.messages];
-          const lastIndex = messages.length - 1;
-          if (lastIndex >= 0 && messages[lastIndex].role === "user") {
-            messages[lastIndex] = { ...messages[lastIndex], status: "failed" };
-          }
+          const messages = session.messages.map((message) =>
+            message.status === "pending" ? { ...message, status: "failed" as const } : message,
+          );
           return { ...session, messages };
         }),
       );
