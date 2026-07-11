@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { Agent, fetch as undiciFetch } from 'undici';
 import { createClient } from '@/lib/supabase/server';
 import { getAuthorizedChatSession } from '@/lib/chat-access';
 import { checkRateLimit } from '@/lib/rate-limit';
@@ -19,6 +20,17 @@ const SSE_HEADERS = {
   Connection: 'keep-alive',
   'X-Accel-Buffering': 'no',
 } as const;
+
+// Yandex Serverless buffers the backend's entire SSE body, so response HEADERS
+// only reach us when the whole turn finishes. Node's built-in fetch (undici)
+// applies a 300s headersTimeout by default — which killed every turn longer
+// than 5 minutes with "TypeError: fetch failed" (AbortSignal.timeout below does
+// NOT override it). Use undici's own fetch with limits sized to the backend
+// container's 1800s execution timeout.
+const chatBackendAgent = new Agent({
+  headersTimeout: 1_900_000,
+  bodyTimeout: 1_900_000,
+});
 
 function getSessionIdFromRequest(req: NextRequest) {
   const segments = req.nextUrl.pathname.split('/').filter(Boolean);
@@ -177,7 +189,7 @@ export async function POST(req: NextRequest) {
   const forwardBody = { ...rest, userId, utm };
 
   try {
-    const upstream = await fetch(
+    const upstream = await undiciFetch(
       `${backendUrl.replace(/\/$/, '')}/chats/${encodeURIComponent(sessionId)}/messages`,
       {
         method: 'POST',
@@ -189,6 +201,7 @@ export async function POST(req: NextRequest) {
         },
         body: JSON.stringify(forwardBody),
         signal: AbortSignal.timeout(2100000),
+        dispatcher: chatBackendAgent,
       },
     );
 
@@ -204,7 +217,7 @@ export async function POST(req: NextRequest) {
     }
 
     logger.info('Chat message proxied to backend', { chat_id: sessionId, request_id: requestId, event: 'chat_proxied', status: upstream.status, duration_ms: Date.now() - startedAt });
-    return new Response(upstream.body, { headers: SSE_HEADERS });
+    return new Response(upstream.body as unknown as ReadableStream, { headers: SSE_HEADERS });
   } catch (error) {
     logger.error('Failed to reach chat backend', { chat_id: sessionId, request_id: requestId, event: 'backend_unreachable', err: error });
     return NextResponse.json({ error: 'Не удалось получить ответ. Попробуйте ещё раз.' }, { status: 502 });
