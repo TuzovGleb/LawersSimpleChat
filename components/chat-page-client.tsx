@@ -727,7 +727,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
       });
       toast({
         variant: "destructive",
-        title: "Доступ приостановлен",
+        title: "Доступ закончился",
         description: "Свяжитесь с нами, чтобы продолжить работу.",
       });
       return true;
@@ -1017,7 +1017,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
               // handleSubscriptionRequired уже показал toast — помечаем ошибку,
               // чтобы catch не дублировал его на каждый файл (чип с ошибкой остаётся).
               const subscriptionError = new Error(
-                "Доступ приостановлен. Свяжитесь с нами, чтобы продолжить работу.",
+                "Доступ закончился. Свяжитесь с нами, чтобы продолжить работу.",
               );
               subscriptionError.name = "SubscriptionRequiredError";
               throw subscriptionError;
@@ -1094,7 +1094,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
           if (!response.ok) {
             if (await handleSubscriptionRequired(response)) {
               const subscriptionError = new Error(
-                "Доступ приостановлен. Свяжитесь с нами, чтобы продолжить работу.",
+                "Доступ закончился. Свяжитесь с нами, чтобы продолжить работу.",
               );
               subscriptionError.name = "SubscriptionRequiredError";
               throw subscriptionError;
@@ -1167,7 +1167,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
                 : entry,
             ),
           );
-          // Для 402 toast «Доступ приостановлен» уже показан в
+          // Для 402 toast «Доступ закончился» уже показан в
           // handleSubscriptionRequired — второй (да ещё по одному на файл)
           // не нужен; остаётся только чип с ошибкой.
           if (!(error instanceof Error && error.name === "SubscriptionRequiredError")) {
@@ -1333,7 +1333,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
 
       if (!response.ok) {
         if (await handleSubscriptionRequired(response)) {
-          throw new Error("Доступ приостановлен. Свяжитесь с нами, чтобы продолжить работу.");
+          throw new Error("Доступ закончился. Свяжитесь с нами, чтобы продолжить работу.");
         }
         throw new Error("Не удалось отправить сообщение");
       }

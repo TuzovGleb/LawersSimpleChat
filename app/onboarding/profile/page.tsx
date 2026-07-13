@@ -132,7 +132,9 @@ export default function OnboardingProfilePage() {
     <AuthShell>
       <h1>Представьтесь, пожалуйста</h1>
       <p className="lede">
-        Эти данные нужны, чтобы мы могли связаться с вами
+        Мы обновили сервис — теперь для работы нужен заполненный профиль.
+        Укажите имя, фамилию и телефон: это займёт меньше минуты и
+        потребуется только один раз, после чего вы сразу вернётесь к работе.
       </p>
 
       <form onSubmit={handleSubmit} autoComplete="off" className="space-y-4">
@@ -221,8 +223,13 @@ export default function OnboardingProfilePage() {
           disabled={submitting || !isValid}
         >
           {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          {submitting ? "Сохраняем…" : "Продолжить"}
+          {submitting ? "Сохраняем…" : "Сохранить и продолжить"}
         </Button>
+
+        <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)" }}>
+          Эти данные видны только команде сервиса — мы используем их, чтобы
+          связаться с вами по вопросам доступа и поддержки.
+        </p>
       </form>
     </AuthShell>
   );

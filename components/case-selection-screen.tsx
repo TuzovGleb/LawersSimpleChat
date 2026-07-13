@@ -174,7 +174,7 @@ export function CaseSelectionScreen({
               size="cta"
               className="w-full shrink-0 sm:w-auto"
               disabled={accessExpired}
-              title={accessExpired ? "Доступ приостановлен" : undefined}
+              title={accessExpired ? "Доступ закончился" : undefined}
             >
               <FolderPlus className="h-5 w-5" />
               Новое дело
@@ -226,7 +226,7 @@ export function CaseSelectionScreen({
                 variant="brand"
                 size="cta"
                 disabled={accessExpired}
-                title={accessExpired ? "Доступ приостановлен" : undefined}
+                title={accessExpired ? "Доступ закончился" : undefined}
               >
                 <FolderPlus className="h-4 w-4" />
                 Создать первое дело

@@ -608,7 +608,7 @@ export function CaseWorkspace({
               type="button"
               onClick={onNewChat}
               disabled={accessExpired}
-              title={accessExpired ? "Доступ приостановлен" : undefined}
+              title={accessExpired ? "Доступ закончился" : undefined}
               className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--brand-accent)] bg-transparent px-3 py-3 text-[13.5px] font-medium text-[var(--brand-accent)] transition-colors hover:bg-[var(--brand-accent-bg)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent md:py-[9px]"
             >
               <Plus className="h-4 w-4" />
@@ -1189,7 +1189,7 @@ export function CaseWorkspace({
                   rows={1}
                   placeholder={
                     accessExpired
-                      ? "Доступ приостановлен"
+                      ? "Доступ закончился"
                       : "Опишите ситуацию, вопрос или запрос…"
                   }
                   className="flex-1 resize-none border-0 bg-transparent text-base shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 focus:outline-none outline-none min-h-0 md:text-[15px]"
@@ -1211,7 +1211,7 @@ export function CaseWorkspace({
                     size="icon"
                     onClick={handleAttachButtonClick}
                     disabled={!activeSession || accessExpired}
-                    title={accessExpired ? "Доступ приостановлен" : "Прикрепить файл"}
+                    title={accessExpired ? "Доступ закончился" : "Прикрепить файл"}
                     className="size-11 border border-[var(--border-strong)] text-[var(--text-secondary)] md:size-9"
                   >
                     <Paperclip className="h-4 w-4" />
@@ -1228,7 +1228,7 @@ export function CaseWorkspace({
                       (!input.trim() && pendingDocuments.length === 0)
                     }
                     size="icon"
-                    title={accessExpired ? "Доступ приостановлен" : "Отправить"}
+                    title={accessExpired ? "Доступ закончился" : "Отправить"}
                     className="size-11 bg-[var(--brand-accent)] text-white hover:bg-[var(--brand-accent-hover)] md:size-9"
                   >
                     {isLoading || isLoadingChats || isLoadingMessages ? (
@@ -1245,7 +1245,7 @@ export function CaseWorkspace({
                 style={{ fontSize: 12, color: "var(--text-muted)" }}
               >
                 {accessExpired
-                  ? "Доступ приостановлен. Свяжитесь с нами, чтобы продолжить работу."
+                  ? "Доступ закончился. Свяжитесь с нами, чтобы продолжить работу."
                   : "Enter — отправить · Shift+Enter — новая строка"}
               </p>
             </form>
