@@ -26,9 +26,11 @@ chat:
     #
     # ``caching`` (optional, default "auto") controls prompt-cache markup per
     # model: "auto" picks the vendor's strategy from the model id prefix
-    # (anthropic/* gets explicit cache_control breakpoints — system prompt +
-    # the last two user turns; google/openai/z-ai/deepseek cache automatically
-    # on the provider side, no markup); "off" disables markup. See
+    # (anthropic/* gets explicit cache_control breakpoints — system prompt,
+    # the last user turn and the last two tool results, which keeps the tool
+    # loop cached incrementally even when the web plugin injects volatile
+    # search results; google/openai/z-ai/deepseek cache automatically on the
+    # provider side, no markup); "off" disables markup. See
     # app/rag_core/caching.py.
     models:
       fast:

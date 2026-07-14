@@ -42,12 +42,21 @@ session_affinity_id: ContextVar[str | None] = ContextVar("session_affinity_id", 
 # and retries may rebuild payloads from shared structures.
 CacheStrategy = Callable[[list[dict]], list[dict]]
 
-# Anthropic allows at most 4 explicit breakpoints per request. We spend 3:
-# one on the system prompt (caches tools+system — tools render before system
-# in Anthropic's prefix) and one on each of the last two user messages. The
-# previous-turn breakpoint guarantees a cache hit across turns even when the
-# current turn appended more blocks than the provider's lookback window.
-_TRAILING_USER_BREAKPOINTS = 2
+# Anthropic allows at most 4 explicit breakpoints per request. Allocation:
+# 1 on the system prompt (caches tools+system — tools render before system in
+# Anthropic's prefix), 1 on the last user message, and 1 on each of the last
+# two TOOL results. Tool-result breakpoints are what make the tool loop
+# incremental — iteration N+1 reads everything through iteration N's newest
+# tool result instead of re-paying the whole history — and they are the part
+# that stays robust when the OpenRouter web plugin (engine=exa) injects
+# volatile search results into the latest user message: the polluted segment
+# then costs at most one re-write, while the chain of tool entries keeps
+# caching everything downstream of it (verified live 2026-07-14; the plugin
+# rewrote ~4.5k tokens per call with different bytes each time). At a turn
+# boundary the previous turn's tool breakpoints double as deep read points
+# for the new turn's first call.
+_TRAILING_USER_BREAKPOINTS = 1
+_TRAILING_TOOL_BREAKPOINTS = 2
 
 _CACHE_CONTROL = {"type": "ephemeral"}
 
@@ -72,11 +81,13 @@ def _cached_content(content) -> list[dict] | None:
 
 
 def _annotate_explicit(messages: list[dict]) -> list[dict]:
-    """Anthropic-style explicit breakpoints: system + the last two user turns."""
+    """Anthropic-style breakpoints: system + last user + last two tool results."""
     annotated = [dict(message) for message in messages]
 
     user_indexes = [i for i, m in enumerate(annotated) if m.get("role") == "user"]
+    tool_indexes = [i for i, m in enumerate(annotated) if m.get("role") == "tool"]
     targets = set(user_indexes[-_TRAILING_USER_BREAKPOINTS:])
+    targets.update(tool_indexes[-_TRAILING_TOOL_BREAKPOINTS:])
     targets.update(i for i, m in enumerate(annotated) if m.get("role") in ("system", "developer"))
 
     for index in targets:

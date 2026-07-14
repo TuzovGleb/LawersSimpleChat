@@ -50,32 +50,36 @@ def test_resolve_strategy_rejects_unknown_name():
 # ---- explicit annotation on wire-format dicts --------------------------------
 
 
-def test_explicit_marks_system_and_last_two_users():
+def test_explicit_marks_system_last_user_and_last_two_tools():
     messages = _payload_messages(
         {"role": "system", "content": "SYSTEM"},
         {"role": "user", "content": "u1"},
         {"role": "assistant", "content": "a1"},
         {"role": "user", "content": "u2"},
-        {"role": "assistant", "content": "a2"},
-        {"role": "user", "content": "u3"},
+        {"role": "tool", "tool_call_id": "t1", "content": "res1"},
+        {"role": "tool", "tool_call_id": "t2", "content": "res2"},
+        {"role": "tool", "tool_call_id": "t3", "content": "res3"},
     )
 
     out = annotate_payload_messages("explicit", messages)
 
     assert out[0]["content"] == [{"type": "text", "text": "SYSTEM", "cache_control": CC}]
-    # Oldest user untouched; the last two carry breakpoints.
+    # Older user untouched; only the LAST user carries a breakpoint.
     assert out[1]["content"] == "u1"
     assert out[3]["content"] == [{"type": "text", "text": "u2", "cache_control": CC}]
-    assert out[5]["content"] == [{"type": "text", "text": "u3", "cache_control": CC}]
-    # Assistant turns untouched.
+    # Assistant untouched; oldest tool untouched; the last two tools marked —
+    # this is what makes the tool loop cache incrementally.
     assert out[2]["content"] == "a1"
-    assert out[4]["content"] == "a2"
+    assert out[4]["content"] == "res1"
+    assert out[5]["content"] == [{"type": "text", "text": "res2", "cache_control": CC}]
+    assert out[6]["content"] == [{"type": "text", "text": "res3", "cache_control": CC}]
 
 
 def test_explicit_never_exceeds_four_breakpoints():
     messages = _payload_messages(
         {"role": "system", "content": "SYSTEM"},
-        *({"role": "user", "content": f"u{i}"} for i in range(10)),
+        *({"role": "user", "content": f"u{i}"} for i in range(5)),
+        *({"role": "tool", "tool_call_id": f"t{i}", "content": f"r{i}"} for i in range(5)),
     )
 
     out = annotate_payload_messages("explicit", messages)
@@ -167,11 +171,13 @@ def test_payload_annotated_for_explicit_strategy():
     assert system["content"][0]["cache_control"] == CC
 
     users = [m for m in payload["messages"] if m["role"] == "user"]
-    assert all(m["content"][-1]["cache_control"] == CC for m in users[-2:])
+    assert users[-1]["content"][-1]["cache_control"] == CC
+    assert "cache_control" not in str(users[0]["content"]) or len(users) == 1
 
-    # Tool/assistant rows pass through the standard conversion untouched.
+    # Tool results ARE marked (post-conversion, past langchain's sanitizer) —
+    # the incremental intra-turn cache rides on these.
     tool = next(m for m in payload["messages"] if m["role"] == "tool")
-    assert "cache_control" not in str(tool)
+    assert tool["content"][-1]["cache_control"] == CC
 
 
 def test_payload_untouched_for_none_strategy():
