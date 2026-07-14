@@ -3,6 +3,7 @@ import { Inter, Lora } from "next/font/google";
 import "./globals.css";
 import { metadataStrings } from "./metadata-strings";
 import { ClientErrorReporter } from "@/components/client-error-reporter";
+import { YandexMetrica } from "@/components/yandex-metrica";
 
 const inter = Inter({
   subsets: ["latin", "cyrillic"],
@@ -90,6 +91,7 @@ export default function RootLayout({
       <body className={bodyClassName}>
         <ClientErrorReporter />
         {children}
+        <YandexMetrica />
       </body>
     </html>
   );

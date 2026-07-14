@@ -250,6 +250,7 @@ jobs:
             --build-arg NEXT_PUBLIC_SITE_URL="${{ vars.NEXT_PUBLIC_SITE_URL }}" \
             --build-arg NEXT_PUBLIC_PROXY_URL="${{ vars.NEXT_PUBLIC_PROXY_URL }}" \
             --build-arg NEXT_PUBLIC_ENABLE_SIGNUP="${{ vars.NEXT_PUBLIC_ENABLE_SIGNUP }}" \
+            --build-arg NEXT_PUBLIC_YM_ID="${{ vars.NEXT_PUBLIC_YM_ID }}" \
             -t cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-bot:prod-pyarch-${{ github.sha }} .
           docker tag cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-bot:prod-pyarch-${{ github.sha }} \
                      cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-bot:prod-pyarch
