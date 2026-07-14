@@ -6,11 +6,12 @@ is passed through OpenRouter's ``plugins`` request field, exactly like the
 Next.js implementation (lib/response-chunker.ts).
 """
 from functools import lru_cache
-from typing import Literal
+from typing import Any, Literal
 
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
+from app.rag_core.caching import annotate_payload_messages, resolve_strategy
 from app.rag_core.proxy import get_proxy_client
 
 
@@ -25,6 +26,11 @@ class ModelConfig(BaseModel):
     max_tokens: int | None = None
     reasoning_effort: Literal["low", "medium", "high"] | None = None
     web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
+    # Prompt-cache markup: "auto" derives the strategy from the model id's
+    # vendor prefix (anthropic -> explicit breakpoints, google/openai -> the
+    # provider caches on its own), "off" disables markup, or an explicit
+    # strategy name from app.rag_core.caching.registry.
+    caching: str = "auto"
     # Ordered list of other model keys to try if this one errors or returns an
     # empty response. Unknown keys are ignored at resolve time.
     fallback: list[str] = Field(default_factory=list)
@@ -43,6 +49,31 @@ class ChatProviderParams(BaseModel):
     models: dict[str, ModelConfig]
 
 
+class CachingChatOpenAI(ChatOpenAI):
+    """ChatOpenAI that injects vendor-appropriate prompt-cache markup.
+
+    The markup is applied to the wire-format payload right before the request
+    is built, so it survives langchain's message conversion, applies to both
+    ``ainvoke`` and ``astream`` (both funnel through ``_get_request_payload``),
+    and stays per-model: a Gemini fallback candidate builds its own payload
+    from the same shared message list without Anthropic breakpoints.
+
+    NB: ``_get_request_payload`` is private langchain-openai API (1.2.2). The
+    override is a pure post-processing step, and ``tests/test_caching.py``
+    exercises the real conversion path, so a breaking upstream change surfaces
+    as a test failure rather than silently uncached (= 10x costlier) prompts.
+    """
+
+    cache_strategy: str = "none"
+
+    def _get_request_payload(self, input_: Any, *, stop: list[str] | None = None, **kwargs: Any) -> dict:
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        messages = payload.get("messages")
+        if messages and self.cache_strategy != "none":
+            payload["messages"] = annotate_payload_messages(self.cache_strategy, messages)
+        return payload
+
+
 def build_chat_llm(provider: ProviderConfig, model: ModelConfig) -> ChatOpenAI:
     default_headers: dict[str, str] = {}
     if provider.site_url:
@@ -52,6 +83,7 @@ def build_chat_llm(provider: ProviderConfig, model: ModelConfig) -> ChatOpenAI:
 
     kwargs: dict = {
         "model": model.name,
+        "cache_strategy": resolve_strategy(model.name, model.caching),
         "api_key": provider.api_key,
         "base_url": provider.base_url,
         "max_retries": 2,
@@ -96,7 +128,7 @@ def build_chat_llm(provider: ProviderConfig, model: ModelConfig) -> ChatOpenAI:
     if proxy_client is not None:
         kwargs["http_async_client"] = proxy_client
 
-    return ChatOpenAI(**kwargs)
+    return CachingChatOpenAI(**kwargs)
 
 
 class ChatModelRegistry:

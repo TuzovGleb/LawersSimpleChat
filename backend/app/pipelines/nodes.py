@@ -178,6 +178,10 @@ async def generate(state: dict, *, registry: ChatModelRegistry, tools: list[Base
 
     metadata = _extract_metadata(model_used, response, response_time_ms, tool_rounds=tool_rounds)
     metadata["fallbackOccurred"] = fallback_occurred
+    # Server-log only (the metadata dict is forwarded to the browser verbatim):
+    # prompt-cache hit/miss per call, to monitor the cache-adapter layer.
+    usage = getattr(response, "usage_metadata", None) or {}
+    input_details = usage.get("input_token_details") or {}
     logger.info(
         "Generation complete",
         extra={
@@ -185,6 +189,8 @@ async def generate(state: dict, *, registry: ChatModelRegistry, tools: list[Base
             "response_chars": len(content),
             "tool_calls": len(tool_calls),
             "total_tokens": metadata["totalTokens"],
+            "input_tokens": usage.get("input_tokens", 0),
+            "cache_read_tokens": input_details.get("cache_read", 0),
             "finish_reason": metadata["finishReason"],
             "response_time_ms": response_time_ms,
             "fallback_occurred": fallback_occurred,

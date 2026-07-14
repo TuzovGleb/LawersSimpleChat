@@ -23,6 +23,13 @@ chat:
     # (transient API/5xx) or returns an empty response. Defaults below prefer a
     # different provider first (to survive a single-provider outage) then the
     # strongest model. Adjust freely.
+    #
+    # ``caching`` (optional, default "auto") controls prompt-cache markup per
+    # model: "auto" picks the vendor's strategy from the model id prefix
+    # (anthropic/* gets explicit cache_control breakpoints — system prompt +
+    # the last two user turns; google/openai/z-ai/deepseek cache automatically
+    # on the provider side, no markup); "off" disables markup. See
+    # app/rag_core/caching.py.
     models:
       fast:
         name: "anthropic/claude-sonnet-4.6"
