@@ -47,6 +47,7 @@ def build_segmenter_llm(params: ChatProviderParams) -> ChatOpenAI:
             temperature=0,
             max_tokens=16000,
             web_search=WebSearchConfig(enabled=False),
+            provider_order=base.provider_order,
         ),
     )
 
@@ -63,6 +64,7 @@ def build_drafting_llm(params: ChatProviderParams) -> ChatOpenAI:
             temperature=0.2,
             max_tokens=32000,
             web_search=WebSearchConfig(enabled=False),
+            provider_order=base.provider_order,
         ),
     )
 

@@ -253,3 +253,28 @@ def test_build_chat_llm_honours_off():
         _provider(), ModelConfig(name="anthropic/claude-sonnet-4.6", caching="off")
     )
     assert llm.cache_strategy == "none"
+
+
+def test_build_chat_llm_provider_pin_merges_with_plugins():
+    from app.rag_core.llm import WebSearchConfig
+
+    llm = build_chat_llm(
+        _provider(),
+        ModelConfig(
+            name="anthropic/claude-sonnet-4.6",
+            provider_order=["anthropic"],
+            web_search=WebSearchConfig(enabled=True, max_results=5),
+        ),
+    )
+    assert llm.extra_body["provider"] == {"order": ["anthropic"], "allow_fallbacks": False}
+    assert llm.extra_body["plugins"] == [{"id": "web", "max_results": 5}]
+
+    # And session affinity must not clobber the pin at request-build time.
+    token = session_affinity_id.set("chat-9")
+    try:
+        payload = llm._get_request_payload(_conversation())
+        assert payload["extra_body"]["provider"]["order"] == ["anthropic"]
+        assert payload["extra_body"]["session_id"] == "chat-9"
+        assert payload["extra_body"]["plugins"]
+    finally:
+        session_affinity_id.reset(token)

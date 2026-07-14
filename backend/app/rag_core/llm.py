@@ -5,6 +5,7 @@ name, optional reasoning effort, and an optional web-search plugin. Web search
 is passed through OpenRouter's ``plugins`` request field, exactly like the
 Next.js implementation (lib/response-chunker.ts).
 """
+import logging
 from functools import lru_cache
 from typing import Any, Literal
 
@@ -17,6 +18,8 @@ from app.rag_core.caching import (
     session_affinity_id,
 )
 from app.rag_core.proxy import get_proxy_client
+
+logger = logging.getLogger(__name__)
 
 
 class WebSearchConfig(BaseModel):
@@ -35,6 +38,14 @@ class ModelConfig(BaseModel):
     # provider caches on its own), "off" disables markup, or an explicit
     # strategy name from app.rag_core.caching.registry.
     caching: str = "auto"
+    # Pin OpenRouter to specific upstream providers (e.g. ["anthropic"]), in
+    # order, with OpenRouter-side fallbacks disabled. Makes prompt caching
+    # deterministic: every request of every conversation lands on the same
+    # provider's cache. Provider outages then surface as errors and degrade
+    # through OUR model fallback chain instead of OpenRouter silently routing
+    # to a provider with a cold (or unsupported) cache. None = OpenRouter
+    # routes freely.
+    provider_order: list[str] | None = None
     # Ordered list of other model keys to try if this one errors or returns an
     # empty response. Unknown keys are ignored at resolve time.
     fallback: list[str] = Field(default_factory=list)
@@ -85,6 +96,20 @@ class CachingChatOpenAI(ChatOpenAI):
         affinity = session_affinity_id.get()
         if affinity:
             payload["extra_body"] = {**(payload.get("extra_body") or {}), "session_id": affinity}
+        # One line per LLM call so the deployed environment shows what markup
+        # actually left the building — the difference between "cache broken"
+        # and "old build deployed" has burned hours before.
+        extra = payload.get("extra_body") or {}
+        logger.info(
+            "Cache markup applied",
+            extra={
+                "cache_strategy": self.cache_strategy,
+                "breakpoints": str(payload.get("messages", "")).count("cache_control"),
+                "session_affinity": bool(affinity),
+                "provider_pinned": bool(extra.get("provider")),
+                "model": payload.get("model"),
+            },
+        )
         return payload
 
 
@@ -126,13 +151,16 @@ def build_chat_llm(provider: ProviderConfig, model: ModelConfig) -> ChatOpenAI:
         kwargs["reasoning_effort"] = model.reasoning_effort
     if default_headers:
         kwargs["default_headers"] = default_headers
+    # OpenRouter-specific params are not part of the OpenAI API surface, so
+    # they must go through extra_body (model_kwargs would be passed as
+    # top-level kwargs to the SDK and rejected).
+    extra_body: dict = {}
     if model.web_search.enabled:
-        # OpenRouter-specific params are not part of the OpenAI API surface, so
-        # they must go through extra_body (model_kwargs would be passed as
-        # top-level kwargs to the SDK and rejected).
-        kwargs["extra_body"] = {
-            "plugins": [{"id": "web", "max_results": model.web_search.max_results}]
-        }
+        extra_body["plugins"] = [{"id": "web", "max_results": model.web_search.max_results}]
+    if model.provider_order:
+        extra_body["provider"] = {"order": model.provider_order, "allow_fallbacks": False}
+    if extra_body:
+        kwargs["extra_body"] = extra_body
 
     # Route egress through the rotating proxy pool when enabled (our Yandex
     # Cloud IP is 403'd by OpenRouter's edge). One shared client for all models;
