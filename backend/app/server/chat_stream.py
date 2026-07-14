@@ -50,6 +50,7 @@ from langchain_core.tracers.langchain import wait_for_all_tracers
 
 from app.pipelines.messages import messages_to_rows, split_generated, text_of
 from app.pipelines.tools.drafting import DRAFT_TOOL_NAME
+from app.rag_core.caching import session_affinity_id
 from app.server.schema import ChatRequest
 from app.services.supabase_repo import SupabaseRepo, unique_document_ids
 
@@ -257,6 +258,11 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
 
     # Initial heartbeat so the client sees data immediately.
     yield b": heartbeat\n\n"
+
+    # Pin OpenRouter provider routing to this conversation so prompt-cache
+    # writes and reads land on the same provider (see rag_core/caching.py).
+    # Set before the graph runs: every LLM task of the turn inherits it.
+    session_affinity_id.set(chat_id)
 
     graph, state, config = await _prepare_graph_run(request, payload, chat_id, project_id, history)
 

@@ -11,7 +11,11 @@ from typing import Any, Literal
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
-from app.rag_core.caching import annotate_payload_messages, resolve_strategy
+from app.rag_core.caching import (
+    annotate_payload_messages,
+    resolve_strategy,
+    session_affinity_id,
+)
 from app.rag_core.proxy import get_proxy_client
 
 
@@ -71,6 +75,16 @@ class CachingChatOpenAI(ChatOpenAI):
         messages = payload.get("messages")
         if messages and self.cache_strategy != "none":
             payload["messages"] = annotate_payload_messages(self.cache_strategy, messages)
+        # Provider affinity for ALL strategies (automatic-caching vendors keep
+        # per-provider caches too): pins OpenRouter's routing to one provider
+        # per conversation so cache entries are written and read on the same
+        # side. Without it, sticky routing engages only after a lucky hit.
+        # Merged into extra_body (NOT a top-level kwarg — the openai SDK
+        # rejects unknown parameters); extra_body lands in the JSON body
+        # top-level, alongside the web-search plugins already configured there.
+        affinity = session_affinity_id.get()
+        if affinity:
+            payload["extra_body"] = {**(payload.get("extra_body") or {}), "session_id": affinity}
         return payload
 
 

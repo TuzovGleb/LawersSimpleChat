@@ -7,7 +7,11 @@ that breaks the private-API override fails loudly here.
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-from app.rag_core.caching import annotate_payload_messages, resolve_strategy
+from app.rag_core.caching import (
+    annotate_payload_messages,
+    resolve_strategy,
+    session_affinity_id,
+)
 from app.rag_core.llm import CachingChatOpenAI, ModelConfig, ProviderConfig, build_chat_llm
 
 CC = {"type": "ephemeral"}
@@ -188,6 +192,38 @@ def test_payload_annotation_survives_bind_tools():
     payload = bound.bound._get_request_payload(_conversation(), **bound.kwargs)
     assert payload["messages"][0]["content"][0]["cache_control"] == CC
     assert payload["tools"], "tools must still be present in the payload"
+
+
+# ---- provider affinity (OpenRouter session_id) --------------------------------
+
+
+def test_payload_carries_session_id_from_context():
+    token = session_affinity_id.set("chat-123")
+    try:
+        payload = _make_llm()._get_request_payload(_conversation())
+        assert payload["extra_body"]["session_id"] == "chat-123"
+        # Affinity helps automatic-caching vendors too — injected for "none".
+        payload = _make_llm(cache_strategy="none")._get_request_payload(_conversation())
+        assert payload["extra_body"]["session_id"] == "chat-123"
+    finally:
+        session_affinity_id.reset(token)
+
+
+def test_session_id_merges_with_existing_extra_body():
+    # The web-search plugin already rides in extra_body — it must survive.
+    token = session_affinity_id.set("chat-123")
+    try:
+        llm = _make_llm(extra_body={"plugins": [{"id": "web", "max_results": 5}]})
+        payload = llm._get_request_payload(_conversation())
+        assert payload["extra_body"]["plugins"] == [{"id": "web", "max_results": 5}]
+        assert payload["extra_body"]["session_id"] == "chat-123"
+    finally:
+        session_affinity_id.reset(token)
+
+
+def test_payload_has_no_session_id_outside_chat_context():
+    payload = _make_llm()._get_request_payload(_conversation())
+    assert "session_id" not in str(payload.get("extra_body", ""))
 
 
 # ---- build_chat_llm wiring ----------------------------------------------------

@@ -21,7 +21,21 @@ annotating small prompts is harmless.
 """
 from __future__ import annotations
 
+from contextvars import ContextVar
 from typing import Callable
+
+# OpenRouter routes each request to one of several providers serving the same
+# model, and every provider keeps its OWN prompt cache. Without affinity the
+# first requests of a conversation play provider roulette: a prefix written on
+# provider A misses when the next call lands on provider B (observed live:
+# intra-turn cache_read=0 on calls whose prefix was written seconds earlier).
+# OpenRouter's ``session_id`` pins the provider from the FIRST successful
+# request (without it, sticky routing engages only after a lucky cache hit).
+#
+# The chat handler sets this to the conversation id before running the graph;
+# asyncio tasks inherit the context, so every LLM call of the turn — including
+# the drafting tool's — carries the same affinity key.
+session_affinity_id: ContextVar[str | None] = ContextVar("session_affinity_id", default=None)
 
 # A strategy takes the OpenAI-format message dicts and returns the (possibly
 # rewritten) list. It must not mutate the input blocks in place: bind_tools
