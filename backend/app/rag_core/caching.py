@@ -58,10 +58,19 @@ CacheStrategy = Callable[[list[dict]], list[dict]]
 _TRAILING_USER_BREAKPOINTS = 1
 _TRAILING_TOOL_BREAKPOINTS = 2
 
+# Per-conversation breakpoints (user turns, tool results) live at the default
+# 5-minute TTL: their entries are rewritten every loop iteration anyway, and
+# the 1h write premium (2x vs 1.25x input price) on ~50k-token history entries
+# would cost more than the occasional between-turns gap it saves.
 _CACHE_CONTROL = {"type": "ephemeral"}
+# The system breakpoint (tools+system prefix, shared by EVERY user and chat)
+# gets a 1-hour TTL: any read refreshes it, so one 2x write in the morning
+# keeps it warm across request gaps all day, where the 5m entry expired on
+# every >5-minute quiet spell and re-billed the whole prefix at 1.25x.
+_SYSTEM_CACHE_CONTROL = {"type": "ephemeral", "ttl": "1h"}
 
 
-def _cached_content(content) -> list[dict] | None:
+def _cached_content(content, cache_control: dict) -> list[dict] | None:
     """Content -> block list with ``cache_control`` on the last text block.
 
     Returns ``None`` when there is nothing to annotate (empty content or a
@@ -70,12 +79,12 @@ def _cached_content(content) -> list[dict] | None:
     if isinstance(content, str):
         if not content:
             return None
-        return [{"type": "text", "text": content, "cache_control": dict(_CACHE_CONTROL)}]
+        return [{"type": "text", "text": content, "cache_control": dict(cache_control)}]
     if isinstance(content, list):
         blocks = [dict(block) if isinstance(block, dict) else block for block in content]
         for block in reversed(blocks):
             if isinstance(block, dict) and block.get("type") == "text":
-                block["cache_control"] = dict(_CACHE_CONTROL)
+                block["cache_control"] = dict(cache_control)
                 return blocks
     return None
 
@@ -88,10 +97,13 @@ def _annotate_explicit(messages: list[dict]) -> list[dict]:
     tool_indexes = [i for i, m in enumerate(annotated) if m.get("role") == "tool"]
     targets = set(user_indexes[-_TRAILING_USER_BREAKPOINTS:])
     targets.update(tool_indexes[-_TRAILING_TOOL_BREAKPOINTS:])
-    targets.update(i for i, m in enumerate(annotated) if m.get("role") in ("system", "developer"))
+    system_indexes = {i for i, m in enumerate(annotated) if m.get("role") in ("system", "developer")}
 
-    for index in targets:
-        content = _cached_content(annotated[index].get("content"))
+    # NB: Anthropic requires longer-TTL breakpoints to precede shorter-TTL
+    # ones; the system message is physically first, so 1h-then-5m holds.
+    for index in targets | system_indexes:
+        cache_control = _SYSTEM_CACHE_CONTROL if index in system_indexes else _CACHE_CONTROL
+        content = _cached_content(annotated[index].get("content"), cache_control)
         if content is not None:
             annotated[index]["content"] = content
     return annotated

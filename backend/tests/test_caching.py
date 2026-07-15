@@ -15,6 +15,7 @@ from app.rag_core.caching import (
 from app.rag_core.llm import CachingChatOpenAI, ModelConfig, ProviderConfig, build_chat_llm
 
 CC = {"type": "ephemeral"}
+CC_1H = {"type": "ephemeral", "ttl": "1h"}
 
 
 def _payload_messages(*messages):
@@ -63,7 +64,7 @@ def test_explicit_marks_system_last_user_and_last_two_tools():
 
     out = annotate_payload_messages("explicit", messages)
 
-    assert out[0]["content"] == [{"type": "text", "text": "SYSTEM", "cache_control": CC}]
+    assert out[0]["content"] == [{"type": "text", "text": "SYSTEM", "cache_control": CC_1H}]
     # Older user untouched; only the LAST user carries a breakpoint.
     assert out[1]["content"] == "u1"
     assert out[3]["content"] == [{"type": "text", "text": "u2", "cache_control": CC}]
@@ -168,7 +169,7 @@ def test_payload_annotated_for_explicit_strategy():
 
     system = payload["messages"][0]
     assert system["role"] in ("system", "developer")
-    assert system["content"][0]["cache_control"] == CC
+    assert system["content"][0]["cache_control"] == CC_1H
 
     users = [m for m in payload["messages"] if m["role"] == "user"]
     assert users[-1]["content"][-1]["cache_control"] == CC
@@ -196,7 +197,7 @@ def test_payload_annotation_survives_bind_tools():
     bound = _make_llm().bind_tools([dummy])
     # RunnableBinding delegates payload building to the underlying model.
     payload = bound.bound._get_request_payload(_conversation(), **bound.kwargs)
-    assert payload["messages"][0]["content"][0]["cache_control"] == CC
+    assert payload["messages"][0]["content"][0]["cache_control"] == CC_1H
     assert payload["tools"], "tools must still be present in the payload"
 
 
