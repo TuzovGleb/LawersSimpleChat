@@ -65,6 +65,11 @@ def build_drafting_llm(params: ChatProviderParams) -> ChatOpenAI:
             max_tokens=32000,
             web_search=WebSearchConfig(enabled=False),
             provider_order=base.provider_order,
+            # No cache markup: drafting fires rarely and its system message
+            # embeds the serialized chat history, so the prompt is one-shot —
+            # a cache write (1.25x, or 2x with the system breakpoint's 1h TTL)
+            # on a ~100k-token prompt would never be read back.
+            caching="off",
         ),
     )
 

@@ -256,6 +256,19 @@ def test_build_chat_llm_honours_off():
     assert llm.cache_strategy == "none"
 
 
+def test_drafting_llm_caching_disabled():
+    from app.rag_core.llm import ChatProviderParams
+    from app.services.docx_drafting import build_drafting_llm
+
+    params = ChatProviderParams(
+        provider=_provider(),
+        default_model="fast",
+        models={"fast": ModelConfig(name="anthropic/claude-sonnet-4.6")},
+    )
+    llm = build_drafting_llm(params)
+    assert llm.cache_strategy == "none"
+
+
 def test_build_chat_llm_provider_pin_merges_with_plugins():
     from app.rag_core.llm import WebSearchConfig
 
