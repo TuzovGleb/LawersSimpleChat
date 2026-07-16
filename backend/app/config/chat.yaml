@@ -34,18 +34,10 @@ chat:
     # app/rag_core/caching.py.
     models:
       fast:
-        # STAGING EXPERIMENT (2026-07-17): kimi-k3 instead of Sonnet — reasoning
-        # model, 1M context, tools OK, provider-side automatic prompt caching
-        # (reads 0.1x, writes free, no cache_control markup needed — the cache
-        # adapter resolves moonshotai -> "none" on its own). No provider_order:
-        # the anthropic pin would break routing, and kimi-k3 has a single
-        # upstream anyway. Revert this entry before promoting main.
-        name: "moonshotai/kimi-k3"
+        name: "anthropic/claude-sonnet-4.6"
         temperature: 0.7
         max_tokens: 16000
-        # Hot upstream sheds load in 1s bursts (Retry-After: 1); a bigger SDK
-        # retry budget keeps turns on this model instead of falling to alt.
-        max_retries: 5
+        provider_order: [anthropic]
         fallback: [alt, power]
         web_search:
           enabled: true
@@ -60,7 +52,7 @@ chat:
           enabled: true
           max_results: 5
       alt:
-        name: "google/gemini-2.5-flash"
+        name: "google/gemini-3.5-flash"
         temperature: 0.7
         max_tokens: 16000
         fallback: [fast, power]
