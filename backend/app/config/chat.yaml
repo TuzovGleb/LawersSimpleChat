@@ -43,6 +43,9 @@ chat:
         name: "moonshotai/kimi-k3"
         temperature: 0.7
         max_tokens: 16000
+        # Hot upstream sheds load in 1s bursts (Retry-After: 1); a bigger SDK
+        # retry budget keeps turns on this model instead of falling to alt.
+        max_retries: 5
         fallback: [alt, power]
         web_search:
           enabled: true

@@ -38,6 +38,11 @@ class ModelConfig(BaseModel):
     # provider caches on its own), "off" disables markup, or an explicit
     # strategy name from app.rag_core.caching.registry.
     caching: str = "auto"
+    # OpenAI-SDK retry budget for transient errors (429/5xx, respects the
+    # Retry-After header). Worth raising for hot upstreams that shed load in
+    # 1-second bursts (e.g. a freshly released model) so a turn stays on the
+    # selected model instead of degrading down the fallback chain.
+    max_retries: int = 2
     # Pin OpenRouter to specific upstream providers (e.g. ["anthropic"]), in
     # order, with OpenRouter-side fallbacks disabled. Makes prompt caching
     # deterministic: every request of every conversation lands on the same
@@ -125,7 +130,7 @@ def build_chat_llm(provider: ProviderConfig, model: ModelConfig) -> ChatOpenAI:
         "cache_strategy": resolve_strategy(model.name, model.caching),
         "api_key": provider.api_key,
         "base_url": provider.base_url,
-        "max_retries": 2,
+        "max_retries": model.max_retries,
         # Per-call ceiling (heavy legal queries can run long), but well under the
         # Yandex Serverless Container --execution-timeout of 1800s so a stalled
         # upstream errors out and closes its LangSmith run instead of hanging.
