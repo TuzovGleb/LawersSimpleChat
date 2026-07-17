@@ -204,7 +204,7 @@ export function SubscriptionBanner({ entitlement, onRedeemed, className }: Subsc
     // Текст зависит от того, ПОЧЕМУ доступа нет: кончился бесплатный период,
     // кончился оплаченный доступ или доступа ещё не было вовсе.
     if (entitlement.status === "expired" && (entitlement.kind === "trial" || entitlement.kind === "promo")) {
-      message = "У вас закончился бесплатный период. Свяжитесь с нами для получения доступа";
+      message = "Срок вашего доступа истёк. Запишитесь на короткий звонок с командой — обсудим ваш опыт и подберём вариант, как продолжить работу.";
     } else if (entitlement.status === "expired") {
       message = "Срок вашего доступа истёк. Свяжитесь с нами, чтобы продлить его";
     } else {
