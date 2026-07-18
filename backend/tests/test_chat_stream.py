@@ -102,9 +102,11 @@ async def test_stream_emits_tokens_status_and_final():
     # Token deltas stream through, in order.
     assert [e["delta"] for e in by_type["token"]] == ["Соглас", "но", " практике"]
 
-    # Tool start is announced once, with the human label.
+    # Tool start is announced once, with the human label. The raw internal
+    # tool name must NOT be on the wire (prompt-extraction hardening; see the
+    # wire-contract note at the top of chat_stream.py).
     assert len(by_type["status"]) == 1
-    assert by_type["status"][0]["tool"] == "search_court_practice"
+    assert "tool" not in by_type["status"][0]
     assert by_type["status"][0]["label"] == "Ищу судебную практику…"
 
     # Exactly one final event carrying the answer + metadata (+ legacy `message`).

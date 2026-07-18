@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import ReactMarkdown from "react-markdown";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 // Render single newlines as <br>, like LangSmith / most chat UIs. Without this,
 // CommonMark folds a soft line break into a space, so label lines the model
@@ -35,6 +35,183 @@ import {
 
 // Max height of the auto-growing composer textarea before it starts scrolling.
 const COMPOSER_MAX_HEIGHT = 160;
+
+// Общая карта markdown-компонентов: ею рендерятся И закоммиченные сообщения,
+// И живой стриминговый черновик — иначе черновик показывает голый markdown,
+// а текст «перескакивает» в стилях в момент коммита ответа.
+const markdownComponents: Components = {
+  p: ({ children }) => (
+    <p
+      className="text-sm leading-relaxed mb-3 last:mb-0"
+      style={{ color: "var(--text-primary)" }}
+    >
+      {children}
+    </p>
+  ),
+  h1: ({ children }) => (
+    <h1
+      style={{
+        fontFamily: "var(--font-serif-family)",
+        fontSize: 22,
+        fontWeight: 500,
+        margin: "16px 0 8px",
+        color: "var(--text-primary)",
+      }}
+    >
+      {children}
+    </h1>
+  ),
+  h2: ({ children }) => (
+    <h2
+      style={{
+        fontFamily: "var(--font-serif-family)",
+        fontSize: 19,
+        fontWeight: 500,
+        margin: "14px 0 6px",
+        color: "var(--text-primary)",
+      }}
+    >
+      {children}
+    </h2>
+  ),
+  h3: ({ children }) => (
+    <h3
+      style={{
+        fontFamily: "var(--font-serif-family)",
+        fontSize: 17,
+        fontWeight: 500,
+        margin: "12px 0 6px",
+        color: "var(--text-primary)",
+      }}
+    >
+      {children}
+    </h3>
+  ),
+  ul: ({ children }) => (
+    <ul className="list-disc list-outside mb-3 space-y-1 ml-6">{children}</ul>
+  ),
+  ol: ({ children }) => (
+    <ol className="list-decimal list-outside mb-3 space-y-1 ml-6">{children}</ol>
+  ),
+  li: ({ children }) => (
+    <li
+      className="text-sm leading-relaxed"
+      style={{ color: "var(--text-primary)" }}
+    >
+      {children}
+    </li>
+  ),
+  blockquote: ({ children }) => (
+    <blockquote
+      style={{
+        borderLeft: "3px solid var(--brand-accent)",
+        background: "#FBFAF5",
+        padding: "10px 14px",
+        margin: "12px 0",
+        fontSize: 14.5,
+        color: "#2A313D",
+        borderRadius: "0 6px 6px 0",
+      }}
+    >
+      {children}
+    </blockquote>
+  ),
+  code: ({ className, children, ...props }) => {
+    const isInline = !className;
+    if (isInline) {
+      return (
+        <code
+          className="px-1.5 py-0.5 rounded text-xs font-mono"
+          style={{ background: "var(--bg-soft)" }}
+          {...props}
+        >
+          {children}
+        </code>
+      );
+    }
+    return (
+      <code
+        className="block p-3 rounded text-xs font-mono overflow-x-auto my-2"
+        style={{ background: "var(--bg-soft)" }}
+        {...props}
+      >
+        {children}
+      </code>
+    );
+  },
+  pre: ({ children }) => <pre className="mb-2">{children}</pre>,
+  strong: ({ children }) => <strong className="font-bold">{children}</strong>,
+  em: ({ children }) => <em className="italic">{children}</em>,
+  a: ({ children, href }) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      style={{ color: "var(--brand-accent)", textDecoration: "underline" }}
+    >
+      {children}
+    </a>
+  ),
+  hr: () => (
+    <hr
+      style={{
+        margin: "16px 0",
+        border: 0,
+        borderTop: "1px solid var(--border-soft)",
+      }}
+    />
+  ),
+  table: ({ children }) => (
+    <div className="overflow-x-auto my-2">
+      <table
+        className="min-w-full border-collapse"
+        style={{ border: "1px solid var(--border-strong)" }}
+      >
+        {children}
+      </table>
+    </div>
+  ),
+  thead: ({ children }) => (
+    <thead style={{ background: "var(--bg-soft)" }}>{children}</thead>
+  ),
+  tbody: ({ children }) => <tbody>{children}</tbody>,
+  tr: ({ children }) => (
+    <tr style={{ borderBottom: "1px solid var(--border-soft)" }}>{children}</tr>
+  ),
+  th: ({ children }) => (
+    <th
+      className="px-2 py-1 text-left font-bold text-sm"
+      style={{
+        color: "var(--text-primary)",
+        border: "1px solid var(--border-soft)",
+      }}
+    >
+      {children}
+    </th>
+  ),
+  td: ({ children }) => (
+    <td
+      className="px-2 py-1 text-sm"
+      style={{
+        color: "var(--text-primary)",
+        border: "1px solid var(--border-soft)",
+      }}
+    >
+      {children}
+    </td>
+  ),
+};
+
+// memo: во время стрима каждый token-ивент перерендеривает CaseWorkspace —
+// без мемоизации remark заново парсил бы ВСЕ закоммиченные сообщения на
+// каждую дельту (O(n²) по стриму), а не только растущий черновик.
+const MessageMarkdown = memo(function MessageMarkdown({ content }: { content: string }) {
+  return (
+    <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownComponents}>
+      {content}
+    </ReactMarkdown>
+  );
+});
 
 type LocalChatSession = {
   id: string;
@@ -864,173 +1041,7 @@ export function CaseWorkspace({
                             color: "var(--text-primary)",
                           }}
                         >
-                          <ReactMarkdown
-                            remarkPlugins={[remarkGfm, remarkBreaks]}
-                            components={{
-                              p: ({ children }) => (
-                                <p
-                                  className="text-sm leading-relaxed mb-3 last:mb-0"
-                                  style={{ color: "var(--text-primary)" }}
-                                >
-                                  {children}
-                                </p>
-                              ),
-                              h1: ({ children }) => (
-                                <h1
-                                  style={{
-                                    fontFamily: "var(--font-serif-family)",
-                                    fontSize: 22,
-                                    fontWeight: 500,
-                                    margin: "16px 0 8px",
-                                    color: "var(--text-primary)",
-                                  }}
-                                >
-                                  {children}
-                                </h1>
-                              ),
-                              h2: ({ children }) => (
-                                <h2
-                                  style={{
-                                    fontFamily: "var(--font-serif-family)",
-                                    fontSize: 19,
-                                    fontWeight: 500,
-                                    margin: "14px 0 6px",
-                                    color: "var(--text-primary)",
-                                  }}
-                                >
-                                  {children}
-                                </h2>
-                              ),
-                              h3: ({ children }) => (
-                                <h3
-                                  style={{
-                                    fontFamily: "var(--font-serif-family)",
-                                    fontSize: 17,
-                                    fontWeight: 500,
-                                    margin: "12px 0 6px",
-                                    color: "var(--text-primary)",
-                                  }}
-                                >
-                                  {children}
-                                </h3>
-                              ),
-                              ul: ({ children }) => (
-                                <ul className="list-disc list-outside mb-3 space-y-1 ml-6">{children}</ul>
-                              ),
-                              ol: ({ children }) => (
-                                <ol className="list-decimal list-outside mb-3 space-y-1 ml-6">{children}</ol>
-                              ),
-                              li: ({ children }) => (
-                                <li
-                                  className="text-sm leading-relaxed"
-                                  style={{ color: "var(--text-primary)" }}
-                                >
-                                  {children}
-                                </li>
-                              ),
-                              blockquote: ({ children }) => (
-                                <blockquote
-                                  style={{
-                                    borderLeft: "3px solid var(--brand-accent)",
-                                    background: "#FBFAF5",
-                                    padding: "10px 14px",
-                                    margin: "12px 0",
-                                    fontSize: 14.5,
-                                    color: "#2A313D",
-                                    borderRadius: "0 6px 6px 0",
-                                  }}
-                                >
-                                  {children}
-                                </blockquote>
-                              ),
-                              code: ({ className, children, ...props }) => {
-                                const isInline = !className;
-                                if (isInline) {
-                                  return (
-                                    <code
-                                      className="px-1.5 py-0.5 rounded text-xs font-mono"
-                                      style={{ background: "var(--bg-soft)" }}
-                                      {...props}
-                                    >
-                                      {children}
-                                    </code>
-                                  );
-                                }
-                                return (
-                                  <code
-                                    className="block p-3 rounded text-xs font-mono overflow-x-auto my-2"
-                                    style={{ background: "var(--bg-soft)" }}
-                                    {...props}
-                                  >
-                                    {children}
-                                  </code>
-                                );
-                              },
-                              pre: ({ children }) => <pre className="mb-2">{children}</pre>,
-                              strong: ({ children }) => <strong className="font-bold">{children}</strong>,
-                              em: ({ children }) => <em className="italic">{children}</em>,
-                              a: ({ children, href }) => (
-                                <a
-                                  href={href}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  style={{ color: "var(--brand-accent)", textDecoration: "underline" }}
-                                >
-                                  {children}
-                                </a>
-                              ),
-                              hr: () => (
-                                <hr
-                                  style={{
-                                    margin: "16px 0",
-                                    border: 0,
-                                    borderTop: "1px solid var(--border-soft)",
-                                  }}
-                                />
-                              ),
-                              table: ({ children }) => (
-                                <div className="overflow-x-auto my-2">
-                                  <table
-                                    className="min-w-full border-collapse"
-                                    style={{ border: "1px solid var(--border-strong)" }}
-                                  >
-                                    {children}
-                                  </table>
-                                </div>
-                              ),
-                              thead: ({ children }) => (
-                                <thead style={{ background: "var(--bg-soft)" }}>{children}</thead>
-                              ),
-                              tbody: ({ children }) => <tbody>{children}</tbody>,
-                              tr: ({ children }) => (
-                                <tr style={{ borderBottom: "1px solid var(--border-soft)" }}>{children}</tr>
-                              ),
-                              th: ({ children }) => (
-                                <th
-                                  className="px-2 py-1 text-left font-bold text-sm"
-                                  style={{
-                                    color: "var(--text-primary)",
-                                    border: "1px solid var(--border-soft)",
-                                  }}
-                                >
-                                  {children}
-                                </th>
-                              ),
-                              td: ({ children }) => (
-                                <td
-                                  className="px-2 py-1 text-sm"
-                                  style={{
-                                    color: "var(--text-primary)",
-                                    border: "1px solid var(--border-soft)",
-                                  }}
-                                >
-                                  {children}
-                                </td>
-                              ),
-                            }}
-                          >
-                            {message.content}
-                          </ReactMarkdown>
+                          <MessageMarkdown content={message.content} />
                         </div>
                         {Array.isArray(message.artifacts) && message.artifacts.length > 0 && (
                           <div className="mt-2 flex flex-wrap gap-2">
@@ -1070,7 +1081,9 @@ export function CaseWorkspace({
 
                 {isLoading && (
                   <div className="flex justify-start">
-                    <div className="max-w-full md:max-w-[80%]">
+                    {/* 85% — как у закоммиченного assistant-пузыря: иначе при
+                        коммите ответа текст переуплотняется на другой ширине. */}
+                    <div className="max-w-full md:max-w-[85%]">
                       {toolStatus ? (
                         // A tool is running — show what the agent is doing.
                         <div
@@ -1081,21 +1094,28 @@ export function CaseWorkspace({
                           <span>{toolStatus}</span>
                         </div>
                       ) : streamingDraft ? (
-                        // The answer is streaming — render it live (plain text;
-                        // full markdown renders once the message is committed).
-                        // SERVERLESS NOTE: this typewriter only animates if the
-                        // backend response actually streams. On Yandex Serverless
-                        // it's buffered, so the draft appears all at once; on a
-                        // normal server / VM it types out token by token.
+                        // The answer is streaming — render it live through the
+                        // SAME markdown pipeline as a committed message: the
+                        // user reads formatted text while it types, and the
+                        // bubble doesn't re-style at commit time. Mid-stream
+                        // markdown is fine: CommonMark renders an unclosed
+                        // **/``` as literals until the closer arrives.
                         <div
-                          className="whitespace-pre-wrap text-sm leading-relaxed"
-                          style={{ color: "var(--text-primary)" }}
+                          className="prose prose-sm prose-mobile max-w-none [&>:last-child]:after:ml-0.5 [&>:last-child]:after:inline-block [&>:last-child]:after:h-4 [&>:last-child]:after:w-[2px] [&>:last-child]:after:animate-pulse [&>:last-child]:after:align-text-bottom [&>:last-child]:after:bg-[var(--brand-accent)] [&>:last-child]:after:content-['']"
+                          style={{
+                            background: "#fff",
+                            border: "1px solid var(--border-strong)",
+                            padding: "18px 22px",
+                            borderRadius: 12,
+                            wordBreak: "normal",
+                            overflowWrap: "break-word",
+                            color: "var(--text-primary)",
+                          }}
                         >
-                          {streamingDraft}
-                          <span
-                            className="ml-0.5 inline-block h-4 w-[2px] animate-pulse align-text-bottom"
-                            style={{ background: "var(--brand-accent)" }}
-                          />
+                          {/* Каретка — через ::after у последнего блока, чтобы
+                              мигать сразу за последним символом текста, а не
+                              на отдельной строке под абзацем. */}
+                          <MessageMarkdown content={streamingDraft} />
                         </div>
                       ) : isThinking ? (
                         <ThinkingIndicator isThinking={true} startedAt={thinkingStartedAt} />

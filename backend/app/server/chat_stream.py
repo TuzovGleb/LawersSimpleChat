@@ -144,10 +144,11 @@ async def _assemble_history(
     last_user = next((m for m in reversed(client_messages) if m.get("role") == "user"), None)
     history = stored + ([last_user] if last_user else [])
 
-    # Compare only user-facing rows. Tool rows and intermediate assistant
-    # messages are context-only, BUT a draft turn's note (an assistant row that
-    # carries a draft_document call) IS shown — count it like get_messages does,
-    # else this diagnostic logs spurious "history differs" warnings.
+    # Compare only user-facing rows, mirroring get_messages: tool rows and
+    # TEXT-LESS tool-call assistant rows are context-only; a draft turn's note
+    # and a preamble with content (streamed live, committed by the client) ARE
+    # shown — count them the same way, else this diagnostic logs spurious
+    # "history differs" warnings.
     def _is_displayed(row: dict) -> bool:
         if row.get("role") == "user":
             return True
@@ -156,7 +157,9 @@ async def _assemble_history(
         calls = row.get("tool_calls") or []
         if not calls:
             return True
-        return any(isinstance(c, dict) and c.get("name") == DRAFT_TOOL_NAME for c in calls)
+        if any(isinstance(c, dict) and c.get("name") == DRAFT_TOOL_NAME for c in calls):
+            return True
+        return bool((row.get("content") or "").strip())
 
     stored_display = sum(1 for row in stored if _is_displayed(row))
     if stored_display != len(client_messages) - 1:
@@ -393,8 +396,14 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
 
     assistant_message = result.get("response", "")
     if not assistant_message:
+        # Fall back only to trailing AI text WITHOUT tool calls: text on a
+        # tool-call message is the streamed preamble — the client already
+        # committed it live on the status event (and get_messages shows it on
+        # reload), so carrying it in `final` would display it twice.
         for message in reversed(generated):
             if isinstance(message, AIMessage):
+                if getattr(message, "tool_calls", None):
+                    continue
                 content = text_of(message.content).strip()
                 if content:
                     assistant_message = content
