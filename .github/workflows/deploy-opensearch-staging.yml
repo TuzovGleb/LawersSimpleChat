@@ -158,8 +158,11 @@ jobs:
 
           for SG_ID in $SG_IDS; do
             echo "Allowing TCP 9200 on security group $SG_ID"
+            # v4-cidrs — правильное имя свойства (с v4-cidr-blocks yc падает на
+            # парсинге ещё до API, т.е. правило никогда не добавлялось; порт
+            # был открыт текущей политикой сети, а не этим шагом).
             yc vpc security-group update-rules --id "$SG_ID" \
-              --add-rule "direction=ingress,port=9200,protocol=tcp,v4-cidr-blocks=0.0.0.0/0,description=opensearch-staging" \
+              --add-rule "direction=ingress,port=9200,protocol=tcp,v4-cidrs=[0.0.0.0/0],description=opensearch-staging" \
               || echo "Warning: could not update $SG_ID (rule may already exist)"
           done
 

@@ -1,0 +1,207 @@
+# Docker Compose спека для COI VM jhelper-app-staging: бэкенд + фронт + Caddy
+# (TLS + reverse proxy) + unified-agent (логи контейнеров → Cloud Logging, та же
+# лог-группа, куда шлют Serverless Containers).
+#
+# Это ШАБЛОН. В CI его рендерит infra/staging-coi/render_compose.py:
+#   __KV:ИМЯ__ -> - "ИМЯ=<значение из env CI>" (строка удаляется, если пусто)
+#   __ИМЯ__    -> прямая подстановка (образы, домен)
+# В метаданные VM уходит уже отрендеренный файл — docker compose на VM не должен
+# видеть ни токенов, ни доллар-скобочных подстановок (рендер падает, если
+# что-то осталось).
+#
+# Зачем VM вместо Serverless Containers: живой SSE (serverless буферизует ответ
+# целиком, кап 3,5 МБ), фоновые задачи после ответа (serverless морозит CPU),
+# OCR дольше платформенного лимита в 1 час, нетронутый Authorization-заголовок.
+
+# ВАЖНО: у долгоживущих сервисов явный logging-драйвер json-file с ротацией.
+# Дефолт COI — драйвер `local`, при котором unified-agent (file input по
+# */*-json.log) молча не видит НИ ОДНОЙ строки; json-file без ротации со
+# временем съел бы диск.
+x-app-logging: &app-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
+services:
+  backend:
+    image: __BACKEND_IMAGE__
+    container_name: jhelper-backend
+    restart: always
+    logging: *app-logging
+    # Хост-портов нет намеренно: бэкенд доступен только внутри compose-сети
+    # (frontend и caddy ходят по service-имени backend:8080).
+    environment:
+      - LOGS_PATH=/tmp/app-logs
+      - OPENSEARCH_INDEX_ALIAS=court_decisions
+      - OPENSEARCH_TOP_K=8
+      - __KV:OPENROUTER_API_KEY__
+      - __KV:SUPABASE_URL__
+      - __KV:SUPABASE_SERVICE_ROLE_KEY__
+      - __KV:BACKEND_SHARED_SECRET__
+      - __KV:SITE_URL__
+      - __KV:S3_BUCKET_NAME__
+      - __KV:S3_ACCESS_KEY_ID__
+      - __KV:S3_SECRET_ACCESS_KEY__
+      - __KV:OPENSEARCH_URL__
+      # LangSmith: CI выставляет LANGSMITH_TRACING=true только при заданном
+      # ключе; пустые значения рендер выбрасывает целиком (паритет с тем, как
+      # serverless-деплой просто не добавлял их в --environment).
+      - __KV:LANGSMITH_TRACING__
+      - __KV:LANGCHAIN_TRACING_V2__
+      - __KV:LANGSMITH_API_KEY__
+      - __KV:LANGCHAIN_API_KEY__
+      - __KV:LANGSMITH_PROJECT__
+      - __KV:LANGCHAIN_PROJECT__
+      - __KV:LANGSMITH_ENDPOINT__
+      # Egress-прокси для OpenRouter (RU-IP режется на его edge)
+      - __KV:PROXY_ENABLED__
+      - __KV:PROXY_LIST_B64__
+
+  frontend:
+    image: __FRONTEND_IMAGE__
+    container_name: jhelper-frontend
+    restart: always
+    logging: *app-logging
+    depends_on:
+      - backend
+    environment:
+      # Связка с бэкендом по внутренней compose-сети — публичный URL не нужен
+      - BACKEND_URL=http://backend:8080
+      - __KV:BACKEND_SHARED_SECRET__
+      - __KV:NEXT_PUBLIC_SUPABASE_URL__
+      - __KV:NEXT_PUBLIC_SUPABASE_ANON_KEY__
+      - __KV:NEXT_PUBLIC_SITE_URL__
+      - __KV:NEXT_PUBLIC_ENABLE_SIGNUP__
+      - __KV:NEXT_PUBLIC_PROXY_URL__
+      - __KV:S3_BUCKET_NAME__
+      - __KV:S3_ACCESS_KEY_ID__
+      - __KV:S3_SECRET_ACCESS_KEY__
+      - __KV:OPENROUTER_API_KEY__
+      - __KV:OPENAI_API_KEY__
+
+  # Пишет Caddyfile на диск VM (тот же приём, что unified-agent-config на
+  # OpenSearch-VM). Квотированный heredoc (<<'EOF') — без shell-подстановок;
+  # домен вшивается рендером ещё в CI. ВАЖНО: внутри heredoc не должно быть
+  # '$' — compose интерполирует его из пустого окружения демона.
+  caddy-config:
+    image: busybox:1.36
+    command:
+      - sh
+      - -c
+      - |
+        cat > /config/Caddyfile <<'EOF'
+        __SITE_DOMAIN__ {
+                encode zstd gzip
+
+                # Смоук бэкенда из CI: handle_path срезает префикс,
+                # /infra/backend/health -> backend:8080/health
+                handle_path /infra/backend/* {
+                        reverse_proxy backend:8080
+                }
+
+                # Всё остальное — Next.js BFF. flush_interval -1 = отдавать
+                # байты клиенту сразу (живой SSE — ради него и переезд).
+                handle {
+                        reverse_proxy frontend:8080 {
+                                flush_interval -1
+                        }
+                }
+        }
+        EOF
+    volumes:
+      - /home/yc-user/caddy:/config
+
+  # TLS-терминация + reverse proxy. Auto-HTTPS: Caddy сам получает и продлевает
+  # Let's Encrypt сертификат для домена (нужен A-record на IP VM и открытые
+  # 80/443). /data — сертификаты; bind-mount на диск VM, чтобы пересоздание
+  # контейнера не выжигало rate-limit Let's Encrypt повторной выдачей.
+  caddy:
+    image: caddy:2
+    container_name: jhelper-caddy
+    restart: always
+    logging: *app-logging
+    depends_on:
+      caddy-config:
+        condition: service_completed_successfully
+      frontend:
+        condition: service_started
+    # Caddy читает Caddyfile только на старте, а COI-демон пересоздаёт лишь
+    # ИЗМЕНЁННЫЕ сервисы. SITE_DOMAIN здесь — маркер: смена домена меняет
+    # определение caddy и заставляет демон пересоздать контейнер (иначе он
+    # молча остался бы на старом домене/сертификате).
+    environment:
+      - SITE_DOMAIN=__SITE_DOMAIN__
+    ports:
+      - "80:80"
+      - "443:443"
+      # UDP — HTTP/3 (QUIC): образ caddy анонсирует h3 через Alt-Svc; без
+      # опубликованного UDP-порта клиенты слали бы QUIC в никуда.
+      - "443:443/udp"
+    volumes:
+      - /home/yc-user/caddy:/etc/caddy:ro
+      - /home/yc-user/caddy-data:/data
+      - /home/yc-user/caddy-state:/config
+
+  # Конфиг unified-agent — копия паттерна с OpenSearch-VM: хвостит json-логи
+  # всех docker-контейнеров этой VM и шлёт в ТУ ЖЕ лог-группу Cloud Logging,
+  # куда пишут Serverless Containers (лог-группа по умолчанию каталога).
+  # Auth через сервисный аккаунт VM (cloud_meta) — без API-ключей.
+  # Cloud Logging закрывается во II кв. 2027 → следующий шаг: обновить агент
+  # до >=26.04 и переключить output yc_logs -> otel_logs (Monium), см. README.
+  unified-agent-config:
+    image: busybox:1.36
+    command:
+      - sh
+      - -c
+      - |
+        cat > /config/config.yml <<'EOF'
+        status:
+          port: 16241
+        storages:
+          - name: main
+            plugin: fs
+            config:
+              directory: /data
+              max_partition_size: 100mb
+        routes:
+          - input:
+              plugin: file
+              config:
+                path: /var/lib/docker/containers/*/*-json.log
+            channel:
+              pipe:
+                - storage_ref:
+                    name: main
+              output:
+                plugin: yc_logs
+                config:
+                  iam:
+                    cloud_meta: {}
+                  log_group_id: e23402ls0pgcs27coi91
+                  resource_type: jhelper-app-staging
+                  resource_id: jhelper-app
+        EOF
+    volumes:
+      - /home/yc-user/unified-agent:/config
+
+  unified-agent:
+    # Тег запинен: плавающий latest мог бы молча перепрыгнуть мажорную версию
+    # при любом пересоздании контейнера. Обновлять осознанно (>=26.04 уже
+    # умеет otel_logs/Monium для будущей миграции с Cloud Logging).
+    image: cr.yandex/yc/unified-agent:26.07.02
+    container_name: jhelper-unified-agent
+    restart: always
+    logging: *app-logging
+    depends_on:
+      unified-agent-config:
+        condition: service_completed_successfully
+    # CONFIG_REV — маркер пересоздания: агент читает конфиг только на старте,
+    # поэтому при правке heredoc в unified-agent-config инкрементируй ревизию,
+    # иначе агент продолжит работать со старым конфигом до случайного ребута.
+    environment:
+      - CONFIG_REV=1
+    volumes:
+      - /home/yc-user/unified-agent:/etc/yandex/unified_agent:ro
+      - /home/yc-user/unified-agent-data:/data
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro

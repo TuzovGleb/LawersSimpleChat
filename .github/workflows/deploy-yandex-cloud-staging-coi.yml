@@ -1,0 +1,404 @@
+name: Deploy to Yandex Cloud (Staging, COI VM)
+
+# Деплоит стейджинг на COI VM (jhelper-app-staging) вместо Serverless Containers:
+#   - Python-бэкенд + Next.js фронт + Caddy (TLS) + unified-agent — одна VM,
+#     один docker-compose в метаданных (infra/staging-coi/docker-compose.tpl.yml).
+#   - OpenSearch ПЕРЕИСПОЛЬЗУЕТСЯ (lawers-opensearch-staging) — тут только читаем IP.
+#
+# Serverless-стейджинг (deploy-yandex-cloud-staging-python.yml) живёт параллельно
+# и НЕ трогается этим воркфлоу — откат = вернуться на старый URL.
+#
+# Порядок шагов не случаен: статический IP и DNS-проверка идут ДО сборки образов
+# и создания VM — первый прогон падает быстро и дёшево, напечатав IP для
+# A-записи, а Caddy стартует уже с рабочим DNS и получает сертификат с первой
+# попытки (иначе он копит exponential backoff у Let's Encrypt).
+#
+# Зачем VM: живой SSE без буферизации, фоновые задачи после ответа, OCR дольше
+# 1 часа, нетронутый Authorization. Разовые шаги (домен, DNS, Supabase allowlist)
+# — в infra/staging-coi/README.md.
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Ветка или SHA коммита для деплоя (SHA — для отката)'
+        required: true
+        default: 'staging'
+        type: string
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: Staging ENV
+
+    env:
+      VM_NAME: jhelper-app-staging
+      STATIC_IP_NAME: jhelper-app-staging-ip
+      ZONE: ru-central1-a
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.inputs.branch }}
+
+      - name: Check STAGING_COI_DOMAIN is configured
+        run: |
+          if [ -z "${{ vars.STAGING_COI_DOMAIN }}" ]; then
+            echo "Error: repository/environment variable STAGING_COI_DOMAIN is required"
+            echo "(домен стейджинга, напр. staging.example.com — см. infra/staging-coi/README.md)"
+            exit 1
+          fi
+
+      # github.sha при re-run и при dispatch со старого коммита НЕ совпадает с
+      # реально выкачанным кодом (checkout берёт inputs.branch) — теги образов
+      # обязаны следовать фактическому коду, иначе «откат» молча собирает и
+      # деплоит новый код под старой меткой.
+      - name: Resolve build SHA
+        id: sha
+        run: |
+          SHA=$(git rev-parse HEAD)
+          echo "Build SHA: $SHA"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Install Yandex Cloud CLI
+        run: |
+          mkdir -p $HOME/.local/bin
+          curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s
+          if [ -f "$HOME/.local/bin/yc" ]; then
+            chmod +x $HOME/.local/bin/yc
+            echo "$HOME/.local/bin" >> $GITHUB_PATH
+          else
+            YC_PATH=$(find $HOME -name yc -type f -executable 2>/dev/null | head -1)
+            if [ -n "$YC_PATH" ]; then
+              echo "$(dirname $YC_PATH)" >> $GITHUB_PATH
+            else
+              echo "Error: yc not found after installation"
+              exit 1
+            fi
+          fi
+
+      - name: Setup Yandex Cloud CLI with JSON key
+        env:
+          YC_SA_JSON: ${{ secrets.YC_SA_JSON }}
+          YC_CLOUD_ID: ${{ secrets.YC_CLOUD_ID }}
+          YC_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+
+          if [ -z "$YC_SA_JSON" ]; then
+            echo "Error: YC_SA_JSON secret is empty or not set"
+            exit 1
+          fi
+
+          printf '%s' "$YC_SA_JSON" | sed 's/[[:space:]]*$//' > /tmp/sa-key.json
+          chmod 600 /tmp/sa-key.json
+
+          if ! python3 -m json.tool /tmp/sa-key.json > /dev/null 2>&1; then
+            echo "Error: Invalid JSON format in YC_SA_JSON"
+            exit 1
+          fi
+
+          yc config profile create deploy-profile || true
+          yc config set service-account-key /tmp/sa-key.json
+          yc config set cloud-id "$YC_CLOUD_ID"
+          yc config set folder-id "$YC_FOLDER_ID"
+
+      # ---------- 1. Статический IP и DNS — ДО сборки и создания VM ----------
+
+      - name: Reserve static public IP
+        id: ip
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          if ! yc vpc address get --name "$STATIC_IP_NAME" >/dev/null 2>&1; then
+            echo "Creating static address $STATIC_IP_NAME..."
+            yc vpc address create --name "$STATIC_IP_NAME" --external-ipv4 zone="$ZONE"
+          fi
+          STATIC_IP=$(yc vpc address get --name "$STATIC_IP_NAME" --format json | python3 -c "
+          import sys, json
+          print(json.load(sys.stdin)['external_ipv4_address']['address'])
+          ")
+          echo "Static IP: $STATIC_IP"
+          echo "address=$STATIC_IP" >> "$GITHUB_OUTPUT"
+
+      - name: Check DNS points to the static IP
+        run: |
+          DOMAIN="${{ vars.STAGING_COI_DOMAIN }}"
+          EXPECTED="${{ steps.ip.outputs.address }}"
+          # Все A-записи, не только первая: у домена их может быть несколько
+          RESOLVED=$(python3 -c "
+          import socket
+          try:
+              addrs = sorted({ai[4][0] for ai in socket.getaddrinfo('$DOMAIN', None, socket.AF_INET)})
+          except OSError:
+              addrs = []
+          print(' '.join(addrs))
+          ")
+
+          for ADDR in $RESOLVED; do
+            if [ "$ADDR" = "$EXPECTED" ]; then
+              echo "DNS OK: $DOMAIN -> $EXPECTED"
+              exit 0
+            fi
+          done
+
+          echo "Error: DNS for $DOMAIN resolves to '${RESOLVED:-<nothing>}', expected $EXPECTED"
+          echo ""
+          echo "Создайте A-запись:  $DOMAIN -> $EXPECTED  и перезапустите воркфлоу."
+          echo "На первом прогоне это ожидаемо: VM ещё НЕ создана (и не будет, пока"
+          echo "DNS не указывает на зарезервированный IP) — Caddy должен стартовать"
+          echo "с рабочим DNS, чтобы сразу получить TLS-сертификат Let's Encrypt."
+          exit 1
+
+      # ---------- 2. OpenSearch (только чтение, провижн — отдельный воркфлоу) ----------
+
+      - name: Resolve OpenSearch URL (read-only — never provisions)
+        id: opensearch
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          VM="lawers-opensearch-staging"
+
+          if ! yc compute instance get --name "$VM" >/dev/null 2>&1; then
+            echo "Error: OpenSearch VM '$VM' not found."
+            echo "Run the 'Deploy OpenSearch (Staging)' workflow once to provision it, then re-run this deploy."
+            exit 1
+          fi
+
+          PUBLIC_IP=$(yc compute instance get --name "$VM" --format json | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          for iface in data.get('network_interfaces', []):
+              nat = iface.get('primary_v4_address', {}).get('one_to_one_nat') or {}
+              if nat.get('address'):
+                  print(nat['address'])
+                  raise SystemExit(0)
+          print('')
+          ")
+
+          if [ -z "$PUBLIC_IP" ]; then
+            echo "Error: could not resolve public IP for $VM"
+            exit 1
+          fi
+
+          echo "OpenSearch public IP: $PUBLIC_IP"
+          echo "url=http://${PUBLIC_IP}:9200" >> "$GITHUB_OUTPUT"
+
+      # ---------- 3. Сборка и пуш образов ----------
+
+      - name: Login to Yandex Container Registry
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          IAM_TOKEN=$(yc iam create-token)
+          echo "$IAM_TOKEN" | docker login --username iam --password-stdin cr.yandex
+
+      - name: Build and push backend image
+        run: |
+          IMG=cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-backend
+          docker build -t "$IMG:staging-coi-${{ steps.sha.outputs.sha }}" backend
+          docker tag "$IMG:staging-coi-${{ steps.sha.outputs.sha }}" "$IMG:staging-coi"
+          docker push "$IMG:staging-coi-${{ steps.sha.outputs.sha }}"
+          docker push "$IMG:staging-coi"
+
+      - name: Build and push frontend image
+        run: |
+          IMG=cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-bot
+          # NEXT_PUBLIC_SITE_URL вшивается в бандл на сборке -> образ COI-стейджинга
+          # отличается от serverless-образа и живёт под своим тегом.
+          docker build \
+            --build-arg NEXT_PUBLIC_SUPABASE_URL="${{ vars.NEXT_PUBLIC_SUPABASE_URL }}" \
+            --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY="${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}" \
+            --build-arg NEXT_PUBLIC_SITE_URL="https://${{ vars.STAGING_COI_DOMAIN }}" \
+            --build-arg NEXT_PUBLIC_PROXY_URL="${{ vars.STAGING_COI_PROXY_URL }}" \
+            --build-arg NEXT_PUBLIC_ENABLE_SIGNUP="${{ vars.NEXT_PUBLIC_ENABLE_SIGNUP }}" \
+            --build-arg NEXT_PUBLIC_YM_ID="${{ vars.NEXT_PUBLIC_YM_ID }}" \
+            -t "$IMG:staging-coi-${{ steps.sha.outputs.sha }}" .
+          docker tag "$IMG:staging-coi-${{ steps.sha.outputs.sha }}" "$IMG:staging-coi"
+          docker push "$IMG:staging-coi-${{ steps.sha.outputs.sha }}"
+          docker push "$IMG:staging-coi"
+
+      # ---------- 4. Рендер docker-compose и провижн/обновление VM ----------
+
+      - name: Render docker-compose from template
+        env:
+          BACKEND_IMAGE: cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-backend:staging-coi-${{ steps.sha.outputs.sha }}
+          FRONTEND_IMAGE: cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-bot:staging-coi-${{ steps.sha.outputs.sha }}
+          SITE_DOMAIN: ${{ vars.STAGING_COI_DOMAIN }}
+          # --- backend ---
+          OPENROUTER_API_KEY: ${{ vars.OPENROUTER_API_KEY }}
+          SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          BACKEND_SHARED_SECRET: ${{ secrets.BACKEND_SHARED_SECRET }}
+          SITE_URL: https://${{ vars.STAGING_COI_DOMAIN }}
+          S3_BUCKET_NAME: ${{ vars.S3_BUCKET_NAME }}
+          S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+          S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+          OPENSEARCH_URL: ${{ steps.opensearch.outputs.url }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          PROXY_ENABLED: ${{ vars.PROXY_ENABLED }}
+          PROXY_LIST_B64: ${{ secrets.PROXY_LIST_B64 }}
+          # --- frontend ---
+          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_SITE_URL: https://${{ vars.STAGING_COI_DOMAIN }}
+          NEXT_PUBLIC_ENABLE_SIGNUP: ${{ vars.NEXT_PUBLIC_ENABLE_SIGNUP }}
+          NEXT_PUBLIC_PROXY_URL: ${{ vars.STAGING_COI_PROXY_URL }}
+          OPENAI_API_KEY: ${{ vars.OPENAI_API_KEY }}
+        run: |
+          if [ -z "${SUPABASE_SERVICE_ROLE_KEY}" ] || [ -z "${BACKEND_SHARED_SECRET}" ]; then
+            echo "Error: SUPABASE_SERVICE_ROLE_KEY and BACKEND_SHARED_SECRET secrets are required"
+            exit 1
+          fi
+
+          # LangSmith — опционально: включаем флаги только при заданном ключе,
+          # пустые переменные рендер выбрасывает из environment целиком.
+          if [ -n "${LANGSMITH_API_KEY}" ]; then
+            export LANGSMITH_TRACING=true LANGCHAIN_TRACING_V2=true
+            export LANGCHAIN_API_KEY="${LANGSMITH_API_KEY}"
+            export LANGSMITH_PROJECT=lawers-chat-staging LANGCHAIN_PROJECT=lawers-chat-staging
+            export LANGSMITH_ENDPOINT=https://api.smith.langchain.com
+          fi
+
+          python3 infra/staging-coi/render_compose.py \
+            infra/staging-coi/docker-compose.tpl.yml \
+            /tmp/docker-compose.staging-coi.yml
+
+      - name: Provision or update COI VM
+        env:
+          YC_SERVICE_ACCOUNT_ID: ${{ secrets.YC_SERVICE_ACCOUNT_ID }}
+          YC_SUBNET_ID: ${{ secrets.YC_SUBNET_ID }}
+          STAGING_SSH_PUBLIC_KEY: ${{ secrets.STAGING_SSH_PUBLIC_KEY }}
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          RENDERED=/tmp/docker-compose.staging-coi.yml
+
+          if yc compute instance get --name "$VM_NAME" >/dev/null 2>&1; then
+            echo "Updating containers on existing VM (VM is NOT recreated)..."
+            yc compute instance update-container --name "$VM_NAME" \
+              --docker-compose-file "$RENDERED"
+          else
+            if [ -z "$YC_SUBNET_ID" ]; then
+              echo "Error: YC_SUBNET_ID secret is required (subnet for the COI VM)"
+              exit 1
+            fi
+
+            SSH_FLAG=""
+            if [ -n "$STAGING_SSH_PUBLIC_KEY" ]; then
+              printf '%s\n' "$STAGING_SSH_PUBLIC_KEY" > /tmp/staging-ssh-key.pub
+              SSH_FLAG="--ssh-key /tmp/staging-ssh-key.pub"
+            else
+              echo "Warning: STAGING_SSH_PUBLIC_KEY is not set — на VM нельзя будет зайти по SSH для отладки"
+            fi
+
+            echo "Creating COI VM $VM_NAME..."
+            # 2 vCPU 50% / 8 GB: RAM с запасом под пик OCR (замер по факту —
+            # потом можно ужать; прод планируем 100% vCPU). Диск 30 GB — образы
+            # + сертификаты Caddy + буфер unified-agent + ротируемые логи.
+            yc compute instance create-with-container \
+              --name "$VM_NAME" \
+              --zone "$ZONE" \
+              --platform standard-v3 \
+              --cores 2 \
+              --core-fraction 50 \
+              --memory 8 \
+              --create-boot-disk size=30,type=network-ssd \
+              --network-interface "subnet-id=${YC_SUBNET_ID},nat-ip-version=ipv4,nat-address=${{ steps.ip.outputs.address }}" \
+              --service-account-id "$YC_SERVICE_ACCOUNT_ID" \
+              --docker-compose-file "$RENDERED" \
+              $SSH_FLAG
+          fi
+
+      - name: Open security group ports (80/tcp, 443/tcp, 443/udp)
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          SG_IDS=$(yc compute instance get --name "$VM_NAME" --format json | python3 -c "
+          import sys, json
+          ids = set()
+          for iface in json.load(sys.stdin).get('network_interfaces', []):
+              ids.update(iface.get('security_group_ids', []))
+          print(' '.join(ids))
+          ")
+
+          if [ -z "$SG_IDS" ]; then
+            echo "No security groups attached — traffic is governed by the default network policy, nothing to open."
+            exit 0
+          fi
+
+          # ВАЖНО: правильное свойство — v4-cidrs (НЕ v4-cidr-blocks: с ним yc
+          # падает на парсинге ещё до API). Сначала проверяем существующие
+          # правила, добавляем только недостающие; ошибки НЕ глотаем.
+          for SG_ID in $SG_IDS; do
+            RULES_JSON=$(yc vpc security-group get --id "$SG_ID" --format json)
+            MISSING=$(printf '%s' "$RULES_JSON" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          wanted = [(80, 'tcp'), (443, 'tcp'), (443, 'udp')]
+          def covered(port, proto):
+              for r in data.get('rules', []):
+                  if r.get('direction') != 'INGRESS':
+                      continue
+                  name = (r.get('protocol_name') or '').lower()
+                  if name not in (proto, 'any'):
+                      continue
+                  ports = r.get('ports') or {}
+                  lo = int(ports.get('from_port', -1))
+                  hi = int(ports.get('to_port', -1))
+                  if not (lo <= port <= hi):
+                      continue
+                  cidrs = (r.get('cidr_blocks') or {}).get('v4_cidr_blocks') or []
+                  if '0.0.0.0/0' in cidrs:
+                      return True
+              return False
+          print(' '.join(f'{p}/{pr}' for p, pr in wanted if not covered(p, pr)))
+          ")
+
+            if [ -z "$MISSING" ]; then
+              echo "Security group $SG_ID already allows 80/tcp, 443/tcp, 443/udp"
+              continue
+            fi
+
+            for RULE in $MISSING; do
+              PORT="${RULE%%/*}"
+              PROTO="${RULE##*/}"
+              echo "Allowing ${PROTO} ${PORT} on security group $SG_ID"
+              yc vpc security-group update-rules --id "$SG_ID" \
+                --add-rule "direction=ingress,port=${PORT},protocol=${PROTO},v4-cidrs=[0.0.0.0/0],description=jhelper-staging-${PORT}-${PROTO}"
+            done
+          done
+
+      # ---------- 5. Смоук ----------
+
+      - name: Smoke check backend through Caddy
+        run: |
+          URL="https://${{ vars.STAGING_COI_DOMAIN }}/infra/backend/health"
+          # Первый прогон: docker pull образов + выпуск LE-сертификата — даём до ~7 минут
+          for i in $(seq 1 40); do
+            if curl -fsS --max-time 10 "$URL"; then
+              echo "" && echo "Backend is healthy through Caddy"
+              exit 0
+            fi
+            echo "Attempt $i/40 - waiting for VM containers + TLS..."
+            sleep 10
+          done
+          echo "Error: backend health did not respond at $URL"
+          echo "Диагностика по SSH: ssh yc-user@${{ steps.ip.outputs.address }} ; docker ps -a ; docker logs jhelper-caddy"
+          exit 1
+
+      - name: Smoke check frontend
+        run: |
+          CODE=$(curl -fsSL --max-time 15 -o /dev/null -w '%{http_code}' "https://${{ vars.STAGING_COI_DOMAIN }}/")
+          echo "Frontend responded with HTTP $CODE"
+
+      - name: Deployment summary
+        run: |
+          {
+            echo "## Staging (COI VM) deploy complete"
+            echo ""
+            echo "- **App:** https://${{ vars.STAGING_COI_DOMAIN }}"
+            echo "- **VM:** $VM_NAME (static IP ${{ steps.ip.outputs.address }})"
+            echo "- **Build SHA:** ${{ steps.sha.outputs.sha }}"
+            echo "- **OpenSearch:** ${{ steps.opensearch.outputs.url }}"
+            echo ""
+            echo "Приёмка живого стриминга: открыть чат — токены должны печататься"
+            echo "по мере генерации, статусы инструментов («Ищу практику…») видны live."
+            echo "Serverless-стейджинг не тронут — откат = вернуться на старый URL,"
+            echo "либо перезапустить этот воркфлоу с input branch=<старый SHA>."
+          } >> "$GITHUB_STEP_SUMMARY"
