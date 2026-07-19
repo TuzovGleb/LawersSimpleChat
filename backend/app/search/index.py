@@ -150,9 +150,15 @@ def normalize_case(case: dict, page_meta: dict) -> dict | None:
     }
 
 
-def ensure_index(client: OpenSearch, *, index_name: str = INDEX_VERSION, alias: str = INDEX_ALIAS) -> None:
+def ensure_index(
+    client: OpenSearch,
+    *,
+    index_name: str = INDEX_VERSION,
+    alias: str = INDEX_ALIAS,
+    body: dict | None = None,
+) -> None:
     if not client.indices.exists(index=index_name):
-        client.indices.create(index=index_name, body=INDEX_BODY)
+        client.indices.create(index=index_name, body=body or INDEX_BODY)
         logger.info("Created index", extra={"index": index_name})
 
     if client.indices.exists_alias(name=alias):

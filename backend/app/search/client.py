@@ -7,6 +7,9 @@ class OpenSearchConfig(BaseModel):
     url: str = "http://localhost:9200"
     index_alias: str = "court_decisions"
     top_k: int = Field(default=8, ge=1, le=50)
+    # Нормативка (statutes) lives in a sibling index on the same instance.
+    normativka_index_alias: str = "legal_acts"
+    normativka_top_k: int = Field(default=8, ge=1, le=50)
 
 
 def build_opensearch_client(config: OpenSearchConfig) -> OpenSearch:

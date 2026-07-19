@@ -17,4 +17,9 @@ def test_opensearch_config_builds_court_practice_specs():
 
 def test_load_tool_specs_aggregates_builders():
     specs = load_tool_specs({"opensearch": {"url": "http://localhost:9200"}})
-    assert {spec.tool.name for spec in specs} == {"search_court_practice", "get_court_decision"}
+    assert {spec.tool.name for spec in specs} == {
+        "search_court_practice",
+        "get_court_decision",
+        "search_normativka",
+        "get_statute_article",
+    }

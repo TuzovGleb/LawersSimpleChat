@@ -1,0 +1,106 @@
+# Нормативка: scheduled scrape of pravo.gov.ru ИПС + reindex into OpenSearch.
+#
+# The nightly run is incremental: it fetches each act's wrapper (~40-100КБ),
+# compares the current redaction id (rdk) with what the index holds and
+# re-fetches only the acts that actually changed. A manual dispatch can force
+# a full re-scrape.
+#
+# Requirements in the "Staging ENV" environment:
+#   var    OPENSEARCH_URL           — e.g. http://1.2.3.4:9200 (used by schedule
+#                                     runs; a dispatch input overrides it)
+#   var    S3_BUCKET_NAME           — snapshot archive bucket (same as court practice)
+#   secret S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY
+
+name: Scrape normativka (Staging OpenSearch)
+
+on:
+  schedule:
+    - cron: '0 3 * * *'   # nightly, 03:00 UTC (06:00 МСК)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Scrape mode'
+        required: false
+        default: update
+        type: choice
+        options: [update, full]
+      opensearch_url:
+        description: 'OpenSearch URL (default: OPENSEARCH_URL variable)'
+        required: false
+        type: string
+
+jobs:
+  scrape-and-index:
+    runs-on: ubuntu-latest
+    environment: Staging ENV
+    # Full scrape of all codices takes ~30 min (НК ч.2 export alone is minutes).
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Resolve parameters
+        id: params
+        env:
+          INPUT_URL: ${{ github.event.inputs.opensearch_url }}
+          VAR_URL: ${{ vars.OPENSEARCH_URL }}
+          INPUT_MODE: ${{ github.event.inputs.mode }}
+        run: |
+          URL="${INPUT_URL:-$VAR_URL}"
+          if [ -z "$URL" ]; then
+            echo "Error: no OpenSearch URL (set the OPENSEARCH_URL variable or pass the input)"
+            exit 1
+          fi
+          MODE="${INPUT_MODE:-update}"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "stamp=$(date -u +%Y%m%d-%H%M)" >> "$GITHUB_OUTPUT"
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          uv sync
+
+      - name: Scrape pravo.gov.ru
+        working-directory: backend
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          uv run python scripts/scrape_normativka.py \
+            --out /tmp/normativka-${{ steps.params.outputs.stamp }}.zip \
+            --mode "${{ steps.params.outputs.mode }}" \
+            --opensearch-url "${{ steps.params.outputs.url }}"
+
+      - name: Archive snapshot to Object Storage
+        env:
+          S3_BUCKET_NAME: ${{ vars.S3_BUCKET_NAME }}
+          S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+          S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+        run: |
+          if [ -z "$S3_BUCKET_NAME" ]; then
+            echo "S3_BUCKET_NAME not set — skipping snapshot archive"
+            exit 0
+          fi
+          pip install --quiet awscli
+          aws configure set default.s3.signature_version s3v4
+          export AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY_ID"
+          export AWS_SECRET_ACCESS_KEY="$S3_SECRET_ACCESS_KEY"
+          aws --endpoint-url=https://storage.yandexcloud.net s3 cp \
+            /tmp/normativka-${{ steps.params.outputs.stamp }}.zip \
+            "s3://${S3_BUCKET_NAME}/normativka/normativka-${{ steps.params.outputs.stamp }}.zip"
+
+      - name: Index snapshot
+        working-directory: backend
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          uv run python scripts/index_normativka.py \
+            --source /tmp/normativka-${{ steps.params.outputs.stamp }}.zip \
+            --opensearch-url "${{ steps.params.outputs.url }}"
+
+      - name: Verify document count
+        run: |
+          curl -fsS "${{ steps.params.outputs.url }}/legal_acts/_count"

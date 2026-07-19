@@ -16,11 +16,14 @@ app:
   # When all traffic goes through the Next.js proxy this can stay empty.
   cors_origins: ${env.get('BACKEND_CORS_ORIGINS', '')}
 
-  # OpenSearch for court practice full-text search.
+  # OpenSearch for court practice + нормативка full-text search (one instance,
+  # sibling indices).
   opensearch:
     url: ${env.get('OPENSEARCH_URL', 'http://localhost:9200')}
     index_alias: ${env.get('OPENSEARCH_INDEX_ALIAS', 'court_decisions')}
     top_k: ${env.get('OPENSEARCH_TOP_K', '8')}
+    normativka_index_alias: ${env.get('OPENSEARCH_NORMATIVKA_INDEX_ALIAS', 'legal_acts')}
+    normativka_top_k: ${env.get('OPENSEARCH_NORMATIVKA_TOP_K', '8')}
 
   # S3 / Yandex Object Storage — read uploaded documents to extract their text.
   # endpoint/region default to Yandex Object Storage (no separate secret needed),
