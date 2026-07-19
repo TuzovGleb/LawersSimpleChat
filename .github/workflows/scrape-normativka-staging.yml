@@ -66,7 +66,12 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           uv sync
 
+      # continue-on-error: one flaky act (the ИПС stalls intermittently) must
+      # not discard the successfully scraped acts — the snapshot still gets
+      # archived and indexed, and the final step turns the run red afterwards.
       - name: Scrape pravo.gov.ru
+        id: scrape
+        continue-on-error: true
         working-directory: backend
         run: |
           export PATH="$HOME/.local/bin:$PATH"
@@ -104,3 +109,11 @@ jobs:
       - name: Verify document count
         run: |
           curl -fsS "${{ steps.params.outputs.url }}/legal_acts/_count"
+
+      # The scrape step is continue-on-error so partial results still land in
+      # the index; this step makes a partial night visibly red afterwards.
+      - name: Fail the run if the scrape had errors
+        if: steps.scrape.outcome == 'failure'
+        run: |
+          echo "Часть актов не скрейпнулась (см. шаг Scrape) — успешные проиндексированы, но ночь неполная"
+          exit 1

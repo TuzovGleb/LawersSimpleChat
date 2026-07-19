@@ -32,26 +32,24 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.normativka.acts import CODICES, KnownAct  # noqa: E402
-from app.normativka.fetch import fetch_act_meta, fetch_act_text  # noqa: E402
+from app.normativka.acts import CODICES, KnownAct, normalize_ref  # noqa: E402
+from app.normativka.fetch import ActMeta, fetch_act_meta, fetch_act_text  # noqa: E402
 from app.normativka.ips_client import IpsClient, IpsError  # noqa: E402
 from app.normativka.parse import split_articles  # noqa: E402
+from app.search.normativka_index import NORMATIVKA_INDEX_ALIAS  # noqa: E402
 
 logger = logging.getLogger("scrape_normativka")
 
 # Title sanity check: the first N normalized chars of the canonical name must
 # appear in the fetched wrapper title. Codex titles in the ИПС match their
 # canonical names, so this catches a re-pointed/stale nd without being brittle
-# about punctuation.
+# about punctuation. Normalization is shared with the runtime alias resolver
+# (acts.normalize_ref) so the two rules cannot drift apart.
 _TITLE_CHECK_CHARS = 20
 
 
-def _norm(value: str) -> str:
-    return " ".join(value.lower().replace("ё", "е").split())
-
-
 def _title_matches(expected_name: str, fetched_title: str) -> bool:
-    return _norm(expected_name)[:_TITLE_CHECK_CHARS] in _norm(fetched_title)
+    return normalize_ref(expected_name)[:_TITLE_CHECK_CHARS] in normalize_ref(fetched_title)
 
 
 def _indexed_rdk_by_nd(opensearch_url: str, alias: str) -> dict[str, str]:
@@ -67,7 +65,7 @@ def _indexed_rdk_by_nd(opensearch_url: str, alias: str) -> dict[str, str]:
         "aggs": {
             "acts": {
                 "terms": {"field": "act_nd", "size": 10_000},
-                "aggs": {"rdk": {"terms": {"field": "rdk", "size": 1}}},
+                "aggs": {"rdk": {"terms": {"field": "rdk", "size": 10}}},
             }
         },
     }
@@ -75,14 +73,28 @@ def _indexed_rdk_by_nd(opensearch_url: str, alias: str) -> dict[str, str]:
     result: dict[str, str] = {}
     for bucket in response.get("aggregations", {}).get("acts", {}).get("buckets", []):
         rdk_buckets = bucket.get("rdk", {}).get("buckets", [])
-        if rdk_buckets:
+        if len(rdk_buckets) == 1:
             result[bucket["key"]] = rdk_buckets[0]["key"]
+        elif rdk_buckets:
+            # Mixed rdk values = a previous index run died between bulk load
+            # and the superseded-articles purge. Whatever the majority rdk is,
+            # the act's state is inconsistent — leave it out of the map so it
+            # counts as changed and gets re-scraped/re-purged this run.
+            logger.warning(
+                "Акт %s в индексе со смешанными rdk (%s) — будет пересобран",
+                bucket["key"], [b["key"] for b in rdk_buckets],
+            )
     return result
 
 
-def scrape_act(client: IpsClient, act: KnownAct) -> dict:
-    """Fetch and parse one act; returns the per-act snapshot payload."""
-    meta = fetch_act_meta(client, act.nd)
+def scrape_act(client: IpsClient, act: KnownAct, *, meta: ActMeta | None = None) -> dict:
+    """Fetch and parse one act; returns the per-act snapshot payload.
+
+    ``meta`` lets update mode reuse the wrapper it already fetched for the rdk
+    comparison instead of paying a second round-trip to a flaky portal.
+    """
+    if meta is None:
+        meta = fetch_act_meta(client, act.nd)
     if not _title_matches(act.name, meta.title):
         raise IpsError(
             f"nd={act.nd}: заголовок «{meta.title}» не похож на «{act.name}» — "
@@ -117,7 +129,7 @@ def main() -> int:
     )
     parser.add_argument("--mode", choices=["full", "update"], default="full")
     parser.add_argument("--opensearch-url", help="Нужен для --mode update (сравнение rdk)")
-    parser.add_argument("--index-alias", default="legal_acts")
+    parser.add_argument("--index-alias", default=NORMATIVKA_INDEX_ALIAS)
     parser.add_argument("--pause", type=float, default=1.5, help="Пауза между запросами к ИПС, сек")
     args = parser.parse_args()
 
@@ -150,13 +162,14 @@ def main() -> int:
     ) as archive:
         for act in targets:
             try:
+                meta = None
                 if args.mode == "update":
                     meta = fetch_act_meta(client, act.nd)
                     if indexed_rdk.get(act.nd) == meta.current_rdk:
                         logger.info("%s: rdk=%s не изменился — пропуск", act.name, meta.current_rdk)
                         skipped.append(act.nd)
                         continue
-                payload = scrape_act(client, act)
+                payload = scrape_act(client, act, meta=meta)
                 payload["act"]["fetched_at"] = fetched_at
                 archive.writestr(f"acts/{act.nd}.json", json.dumps(payload, ensure_ascii=False))
                 written.append(

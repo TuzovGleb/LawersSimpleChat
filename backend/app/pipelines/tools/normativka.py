@@ -75,8 +75,9 @@ def normativka_tool_specs(searcher: NormativkaSearcher) -> list[ToolSpec]:
         инициативе работодателя в период временной нетрудоспособности»).
         Each query is a focused noun phrase; do not repeat the same words
         across queries. Use acts to restrict to specific codes when the branch
-        of law is clear. Returns article snippets with ids; call
-        get_statute_article for the full text of a specific norm.
+        of law is clear. Returns article snippets; for the full text of a
+        specific norm call get_statute_article with the act and article number
+        shown in that snippet's «Норма» line.
         """
         if not queries:
             return "Не переданы поисковые запросы. Укажите от 1 до 4 запросов."

@@ -23,17 +23,47 @@ from dataclasses import dataclass
 # Superscript index -> dotted numbering («346<W9>11</W9>» -> «346.11»). The
 # index itself may be composite: «284<W9>2.1</W9>», «333<W9>4-1</W9>» — dots
 # and dashes inside the superscript are normalized to a dotted chain, giving
-# the canonical citation form («284.2.1», «333.4.1»).
+# the canonical citation form («284.2.1», «333.4.1»). The digit lookbehind is
+# essential: W9 superscripts after a DIGIT are article/chapter indices (both
+# in headers and in body cross-references «в соответствии со статьей 346.15»),
+# while after a letter they are units of measure («кг/м³» = м<W9>3</W9>) —
+# those must NOT gain a dot. Remaining non-index superscripts are unwrapped
+# in place («кг/м3») by _SUP_PLAIN_RE.
 _SUP_RE = re.compile(
-    r'<span[^>]*class="W9"[^>]*>\s*(\d+(?:\s*[.\-]\s*\d+)*)\s*</span>'
-    r"|<sup[^>]*>\s*(\d+(?:\s*[.\-]\s*\d+)*)\s*</sup>",
+    r'(?<=\d)<span[^>]*class="W9"[^>]*>\s*(\d+(?:\s*[.\-]\s*\d+)*)\s*</span>'
+    r"|(?<=\d)<sup[^>]*>\s*(\d+(?:\s*[.\-]\s*\d+)*)\s*</sup>",
     re.I,
 )
+_SUP_PLAIN_RE = re.compile(r'<span[^>]*class="W9"[^>]*>\s*([^<]*?)\s*</span>', re.I)
+
+# Tables (tax-rate scales, amortization groups, fee schedules) sit BETWEEN
+# <p> blocks in the renderer's markup, so a paragraph-only splitter would drop
+# them silently (verified on НК ч.2: all 15 tables lost). They are flattened
+# into row-per-paragraph text («cell | cell | cell») before paragraph
+# splitting, which attaches them to the current article as body text.
+_TABLE_RE = re.compile(r"<table[^>]*>(.*?)</table>", re.I | re.S)
+_TR_RE = re.compile(r"<tr[^>]*>(.*?)</tr>", re.I | re.S)
+_CELL_RE = re.compile(r"<t[dh][^>]*>(.*?)</t[dh]>", re.I | re.S)
 
 
 def _normalize_sup(match: re.Match) -> str:
     index = (match.group(1) or match.group(2) or "").strip()
     return "." + re.sub(r"\s*[.\-]\s*", ".", index)
+
+
+def _flatten_tables(html: str) -> str:
+    def replace(match: re.Match) -> str:
+        rows: list[str] = []
+        for tr in _TR_RE.findall(match.group(1)):
+            cells = [_clean_text(cell) for cell in _CELL_RE.findall(tr)]
+            cells = [cell for cell in cells if cell]
+            if cells:
+                rows.append(" | ".join(cells))
+        if not rows:
+            return " "
+        return "".join(f"<p>{row}</p>" for row in rows)
+
+    return _TABLE_RE.sub(replace, html)
 _TAG_RE = re.compile(r"<[^>]+>")
 _P_SPLIT_RE = re.compile(r"<p\b([^>]*)>", re.I)
 _CLASS_RE = re.compile(r'class="([^"]*)"')
@@ -66,6 +96,8 @@ def _clean_text(fragment: str) -> str:
 def _paragraphs(html: str) -> list[tuple[str, str]]:
     """Split document HTML into (css_class, plain_text) paragraphs."""
     html = _SUP_RE.sub(_normalize_sup, html)
+    html = _SUP_PLAIN_RE.sub(lambda m: m.group(1), html)
+    html = _flatten_tables(html)
     parts = _P_SPLIT_RE.split(html)
     # parts = [prefix, attrs1, body1, attrs2, body2, ...]
     result: list[tuple[str, str]] = []
@@ -94,6 +126,8 @@ def split_articles(html: str) -> list[Article]:
     current: dict | None = None
 
     def flush() -> None:
+        # ``path`` is safe to read here: structure headers always flush()
+        # BEFORE mutating it, so an open article sees its own path.
         nonlocal current
         if current is None:
             return
@@ -104,19 +138,17 @@ def split_articles(html: str) -> list[Article]:
                     number=current["number"],
                     title=current["title"],
                     text=body,
-                    chapter_path=" › ".join(p for p in path_snapshot if p),
+                    chapter_path=" › ".join(p for p in path if p),
                 )
             )
         current = None
 
-    path_snapshot: list[str | None] = list(path)
     for css_class, text in _paragraphs(html):
         is_header = "H" in css_class.split()
         if is_header:
             article_match = _ARTICLE_HEAD_RE.match(text)
             if article_match:
                 flush()
-                path_snapshot = list(path)
                 current = {
                     "number": article_match.group(1),
                     "title": article_match.group(2).strip(),

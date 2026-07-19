@@ -9,6 +9,7 @@ a superseded redaction.
 Lives next to (not inside) the court-practice index module: same OpenSearch
 instance, same analyzer, different corpus and lifecycle.
 """
+import copy
 import hashlib
 
 from app.search.index import INDEX_BODY as _COURT_INDEX_BODY
@@ -18,8 +19,10 @@ NORMATIVKA_INDEX_ALIAS = "legal_acts"
 
 NORMATIVKA_INDEX_BODY = {
     # Same single-shard settings and the same custom russian analyzer as the
-    # court-practice index — one cluster, one analysis convention.
-    "settings": _COURT_INDEX_BODY["settings"],
+    # court-practice index — one cluster, one analysis convention. Deep-copied,
+    # not referenced: a court-motivated analyzer change (with its own index
+    # version bump) must not silently redefine what legal_acts_v1 means.
+    "settings": copy.deepcopy(_COURT_INDEX_BODY["settings"]),
     "mappings": {
         "properties": {
             "article_id": {"type": "keyword"},

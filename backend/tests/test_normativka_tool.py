@@ -34,7 +34,6 @@ def searcher():
     mock = MagicMock()
     mock.search = AsyncMock(return_value=[])
     mock.resolve = AsyncMock(return_value=None)
-    mock.get_article = AsyncMock(return_value=None)
     return mock
 
 

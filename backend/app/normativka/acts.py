@@ -83,14 +83,17 @@ CODICES: tuple[KnownAct, ...] = (
 )
 
 
-def _norm(value: str) -> str:
+def normalize_ref(value: str) -> str:
+    """One normalization rule for act references — used both by the runtime
+    alias resolver and by the scraper's fetched-title sanity check, so the two
+    can never drift apart."""
     return " ".join(value.lower().replace("ё", "е").split())
 
 
 _ALIAS_INDEX: dict[str, KnownAct] = {}
 for _act in CODICES:
     for _key in (_act.name, *_act.aliases):
-        _ALIAS_INDEX[_norm(_key)] = _act
+        _ALIAS_INDEX[normalize_ref(_key)] = _act
 
 
 def resolve_act(act: str) -> KnownAct | None:
@@ -103,7 +106,7 @@ def resolve_act(act: str) -> KnownAct | None:
     """
     if not act or not act.strip():
         return None
-    key = _norm(act)
+    key = normalize_ref(act)
     if key in _ALIAS_INDEX:
         return _ALIAS_INDEX[key]
     prefix_hits = {a.nd: a for name, a in _ALIAS_INDEX.items() if name.startswith(key)}

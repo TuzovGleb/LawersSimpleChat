@@ -17,7 +17,6 @@ its frame src and the complete redaction picker — the change-detection key:
 an act whose current rdk equals the indexed rdk has not changed.
 """
 import email
-import email.message
 import logging
 import re
 from dataclasses import dataclass
@@ -79,11 +78,12 @@ def _mht_to_html(raw: bytes) -> str:
     return "".join(chunks)
 
 
-def _fetch_html_export(nd: str, *, pause: float) -> str:
+def _fetch_html_export(client: IpsClient, nd: str) -> str:
     # The export endpoint always serves the CURRENT redaction; the caller
-    # records which rdk the wrapper reported alongside the fetched text.
-    with IpsClient(timeout=_EXPORT_TIMEOUT, retries=2, pause=pause) as export_client:
-        raw = export_client.get_raw(f"savertf=&nd={nd}&page=all", min_bytes=_MIN_DOC_BYTES)
+    # records which rdk the wrapper reported alongside the fetched text. The
+    # per-request timeout (instead of a second client) keeps the module's
+    # one-serial-client-per-IP invariant intact.
+    raw = client.get_raw(f"savertf=&nd={nd}&page=all", min_bytes=_MIN_DOC_BYTES, timeout=_EXPORT_TIMEOUT)
     head = raw[:512].lstrip()
     if head.startswith(b"MIME-Version") or b"multipart/related" in raw[:512]:
         return _mht_to_html(raw)
@@ -99,7 +99,7 @@ def _fetch_html_view(client: IpsClient, nd: str, rdk: str) -> str:
 def fetch_act_text(client: IpsClient, nd: str, *, rdk: str) -> str:
     """Full-document HTML of an act's current redaction. Export first, view fallback."""
     try:
-        return _fetch_html_export(nd, pause=getattr(client, "_pause", 1.0))
+        return _fetch_html_export(client, nd)
     except IpsError as exc:
         logger.warning(
             "MHT-экспорт не удался, переходим на doc_itself",

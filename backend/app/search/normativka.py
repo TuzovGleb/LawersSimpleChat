@@ -154,17 +154,6 @@ class NormativkaSearcher:
     async def resolve(self, act_nd: str, article_number: str) -> dict | None:
         return await asyncio.to_thread(self.resolve_sync, act_nd, article_number)
 
-    def get_article_sync(self, article_id: str) -> dict | None:
-        try:
-            response = self._client.get(index=self._index, id=article_id)
-        except Exception:
-            logger.exception("Failed to fetch article", extra={"article_id": article_id})
-            return None
-        return response.get("_source")
-
-    async def get_article(self, article_id: str) -> dict | None:
-        return await asyncio.to_thread(self.get_article_sync, article_id)
-
 
 def _article_ref(source: dict) -> str:
     """«ст. 81 — Трудовой кодекс Российской Федерации (197-ФЗ)»."""
@@ -182,9 +171,10 @@ def format_statute_results(results: list[RankedDocument]) -> str:
     for index, doc in enumerate(results, start=1):
         source = doc.source
         snippet = doc.highlights[0] if doc.highlights else (source.get("article_text") or "")[:SNIPPET_CHARS]
+        # No internal ids in the output: the full-text tool is addressed by
+        # (акт, номер статьи) from the «Норма» line, nothing consumes an id.
         lines = [
-            f"{index}. id: {source.get('article_id', doc.doc_id)}",
-            f"   Норма: {_article_ref(source)}",
+            f"{index}. Норма: {_article_ref(source)}",
             f"   Заголовок: {source.get('article_title', '—')}",
         ]
         if source.get("chapter_path"):
@@ -202,7 +192,6 @@ def format_statute_article(source: dict) -> str:
         truncated = True
 
     lines = [
-        f"id: {source.get('article_id', '—')}",
         f"Норма: {_article_ref(source)}",
         f"Заголовок: {source.get('article_title', '—')}",
     ]

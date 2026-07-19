@@ -58,6 +58,40 @@ def test_amendment_marks_are_kept_in_text():
     assert "В редакции Федерального закона" in articles["1"].text
 
 
+def test_tables_between_paragraphs_are_kept_as_article_text():
+    # Rate scales (амортизационные группы, ставки сборов) sit in <table>
+    # elements BETWEEN <p> blocks; verified lost on НК ч.2 before the fix.
+    html = """
+    <p class="H">Статья 259. Нормы амортизации</p>
+    <p>Вводный абзац.</p>
+    <table><tr><td>Амортизационная группа</td><td>Норма (месячная)</td></tr>
+    <tr><td>Первая</td><td>14,3</td></tr>
+    <tr><td>Вторая</td><td>8,8</td></tr></table>
+    <p>Замыкающий абзац.</p>
+    <p class="H">Статья 260. Следующая</p>
+    <p>Текст.</p>
+    """
+    articles = {a.number: a for a in split_articles(html)}
+    text = articles["259"].text
+    assert "Первая | 14,3" in text
+    assert "Вторая | 8,8" in text
+    # порядок сохранён: таблица между абзацами
+    assert text.index("Вводный абзац.") < text.index("Первая | 14,3") < text.index("Замыкающий абзац.")
+
+
+def test_letter_preceded_superscript_is_a_unit_not_an_index():
+    # «650 кг/м<W9>3</W9>» — единица измерения, НЕ номер статьи: точка не
+    # добавляется. Цифро-предшествуемый W9 остаётся индексом (346.15).
+    html = """
+    <p class="H">Статья 193. Ставки акцизов</p>
+    <p>плотностью не менее 650 кг/м<span class="W9">3</span> при температуре 20 градусов,
+    в порядке статьи 346<span class="W9">15</span> настоящего Кодекса.</p>
+    """
+    articles = split_articles(html)
+    assert "650 кг/м3" in articles[0].text
+    assert "статьи 346.15" in articles[0].text
+
+
 def test_structural_reference_inside_text_does_not_split():
     html = """
     <p class="H">Статья 5. Заголовок</p>

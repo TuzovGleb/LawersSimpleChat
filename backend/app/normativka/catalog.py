@@ -26,7 +26,7 @@ _BLOCK_RE = re.compile(r'class="list_elem[^"]*"', re.I)
 _ND_RE = re.compile(r"nd=(\d+)")
 _TITLE_RE = re.compile(r'class="bold"[^>]*>\s*([^<]{5,200}?)\s*</a>', re.S)
 _FULLNAME_RE = re.compile(r'<span class="bold">([^<]{3,300})</span>', re.S)
-_STATUS_RE = re.compile(r'class="tiny_italic_bold">\s*([^<]{3,60}?)\s*</td>|class="tiny_italic_bold">\s*([^<]{3,60}?)\s*<', re.S)
+_STATUS_RE = re.compile(r'class="tiny_italic_bold">\s*([^<]{3,60}?)\s*<', re.S)
 
 
 @dataclass(frozen=True)
@@ -47,9 +47,7 @@ def _parse_page(html: str) -> list[CatalogEntry]:
             continue
         fullname_match = _FULLNAME_RE.search(block, title_match.end())
         status_match = _STATUS_RE.search(block)
-        status = ""
-        if status_match:
-            status = (status_match.group(1) or status_match.group(2) or "").strip()
+        status = status_match.group(1).strip() if status_match else ""
         entries.append(
             CatalogEntry(
                 nd=nd_match.group(1),
@@ -70,10 +68,12 @@ def enumerate_acts(
 ) -> list[CatalogEntry]:
     """List every document of a kind in the given statuses, with text present.
 
-    Pages through ``start=N`` until a page adds nothing new. ``max_pages`` is a
-    runaway guard for the ИПС echoing the same page regardless of offset (its
-    known failure mode), not a result cap — 1000 pages covers the largest
-    corpus (все ФЗ) several times over.
+    Pages through ``start=N`` until a page adds nothing new. That is the ONLY
+    stop condition: stopping early on a short page would let a single
+    unparseable row (odd title markup) silently truncate the whole
+    enumeration. ``max_pages`` is a runaway guard for the ИПС echoing the same
+    page regardless of offset (its known failure mode), not a result cap —
+    1000 pages covers the largest corpus (все ФЗ) several times over.
     """
     overrides = {"a3": doc_kind_id, "a4": ";".join(status_ids)}
     seen: dict[str, CatalogEntry] = {}
@@ -83,13 +83,10 @@ def enumerate_acts(
             extra["start"] = str(page * PAGE_SIZE)
         query = build_query("list_itself", overrides, extra=extra)
         html = client.get_text(query, min_bytes=2000)
-        entries = _parse_page(html)
-        fresh = [e for e in entries if e.nd not in seen]
+        fresh = [e for e in _parse_page(html) if e.nd not in seen]
         if not fresh:
             break
         for entry in fresh:
             seen[entry.nd] = entry
-        if len(entries) < PAGE_SIZE:
-            break
     logger.info("Каталог перечислен", extra={"doc_kind": doc_kind_id, "count": len(seen)})
     return list(seen.values())

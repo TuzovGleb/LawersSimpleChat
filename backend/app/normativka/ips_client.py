@@ -107,18 +107,20 @@ class IpsClient:
     def __exit__(self, *exc) -> None:
         self.close()
 
-    def get_raw(self, query: str, *, min_bytes: int = 0) -> bytes:
+    def get_raw(self, query: str, *, min_bytes: int = 0, timeout: float | None = None) -> bytes:
         """GET ``?{query}`` with retries; returns the raw (cp1251) body.
 
         ``min_bytes`` guards against the portal's known failure shapes: stub
         pages (~6KB for an invalid rdk) and truncated streams from mid-response
         stalls both come back as HTTP 200, so status alone proves nothing.
+        ``timeout`` overrides the client default per request (the MHT export
+        of the biggest acts takes minutes server-side).
         """
         url = f"{self._base_url}?{query}"
         last_error: Exception | None = None
         for attempt in range(1, self._retries + 1):
             try:
-                response = self._client.get(url)
+                response = self._client.get(url, timeout=timeout or self._timeout)
                 if response.status_code == 200 and len(response.content) >= min_bytes:
                     return response.content
                 last_error = IpsError(
