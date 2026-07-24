@@ -1,9 +1,19 @@
 # Стейджинг на COI VM (переезд с Serverless Containers)
 
-Одна Compute VM `jhelper-app-staging` (2 vCPU 50% / 8 GB, COI) с docker-compose:
-бэкенд + фронт + Caddy (TLS) + unified-agent (логи → Cloud Logging). Деплой —
-workflow **Deploy to Yandex Cloud (Staging, COI VM)**. Serverless-стейджинг
-живёт параллельно и не трогается: откат = вернуться на старый URL.
+Одна Compute VM `jhelper-app-staging` (2 vCPU 20% / 4 GB + 4 GB swap, COI) с
+docker-compose: бэкенд + фронт + Caddy (TLS) + unified-agent (логи → Cloud
+Logging). Деплой — workflow **Deploy to Yandex Cloud (Staging, COI VM)**.
+Serverless-стейджинг живёт параллельно и не трогается: откат = вернуться на
+старый URL.
+
+Сайзинг минимальный по замеру 2026-07-25 (в простое ~0.7 GB на всё); страховка
+от пика OCR — swap. ВАЖНО: swap-файл живёт на boot-диске и при ПЕРЕСОЗДАНИИ VM
+исчезает — завести заново по SSH:
+```bash
+sudo fallocate -l 4G /swapfile && sudo chmod 600 /swapfile \
+  && sudo mkswap /swapfile && sudo swapon /swapfile \
+  && echo "/swapfile none swap sw 0 0" | sudo tee -a /etc/fstab
+```
 
 Зачем VM (кратко; полное исследование — memory `yc-fargate-migration-research`):
 Serverless Containers буферизуют весь ответ (SSE мёртв), морозят CPU после

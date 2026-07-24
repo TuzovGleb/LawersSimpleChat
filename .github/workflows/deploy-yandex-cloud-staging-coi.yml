@@ -289,16 +289,18 @@ jobs:
             fi
 
             echo "Creating COI VM $VM_NAME..."
-            # 2 vCPU 50% / 8 GB: RAM с запасом под пик OCR (замер по факту —
-            # потом можно ужать; прод планируем 100% vCPU). Диск 30 GB — образы
-            # + сертификаты Caddy + буфер unified-agent + ротируемые логи.
+            # 2 vCPU 20% / 4 GB — минимальный стейджинг (замер 2026-07-25: в
+            # простое ~0.7 GB на всё). Страховка от пика OCR — 4 GB swap-файл,
+            # который после ПЕРЕСОЗДАНИЯ VM нужно завести руками (см. README).
+            # Прод планируем отдельно: 100% vCPU, сайзинг по замеру под нагрузкой.
+            # Диск 30 GB — образы + сертификаты Caddy + буфер агента + логи.
             yc compute instance create-with-container \
               --name "$VM_NAME" \
               --zone "$ZONE" \
               --platform standard-v3 \
               --cores 2 \
-              --core-fraction 50 \
-              --memory 8 \
+              --core-fraction 20 \
+              --memory 4 \
               --create-boot-disk size=30,type=network-ssd \
               --network-interface "subnet-id=${YC_SUBNET_ID},nat-ip-version=ipv4,nat-address=${{ steps.ip.outputs.address }}" \
               --service-account-id "$YC_SERVICE_ACCOUNT_ID" \
