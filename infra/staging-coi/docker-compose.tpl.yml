@@ -155,7 +155,7 @@ services:
       - sh
       - -c
       - |
-        cat > /config/config.yml <<'EOF'
+        cat > /config/config.tmpl.yml <<'EOF'
         status:
           port: 16241
         storages:
@@ -200,8 +200,12 @@ services:
     # поэтому при правке heredoc в unified-agent-config инкрементируй ревизию,
     # иначе агент продолжит работать со старым конфигом до случайного ребута.
     environment:
-      - CONFIG_REV=1
+      - CONFIG_REV=2
     volumes:
-      - /home/yc-user/unified-agent:/etc/yandex/unified_agent:ro
+      # Каталог ЗАПИСЫВАЕМЫЙ и файл называется config.tmpl.yml: entrypoint
+      # образа 26.07.02 рендерит config.tmpl.yml -> config.yml (envsubst;
+      # долларов в нашем конфиге нет). С :ro-монтированием готового config.yml
+      # агент уходил в рестарт-луп «Read-only file system».
+      - /home/yc-user/unified-agent:/etc/yandex/unified_agent
       - /home/yc-user/unified-agent-data:/data
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
