@@ -43,9 +43,17 @@ jobs:
 
       - name: Check STAGING_COI_DOMAIN is configured
         run: |
-          if [ -z "${{ vars.STAGING_COI_DOMAIN }}" ]; then
+          DOMAIN="${{ vars.STAGING_COI_DOMAIN }}"
+          if [ -z "$DOMAIN" ]; then
             echo "Error: repository/environment variable STAGING_COI_DOMAIN is required"
             echo "(домен стейджинга, напр. staging.example.com — см. infra/staging-coi/README.md)"
+            exit 1
+          fi
+          # Голый хост, без схемы/пробелов: пробел или https:// в переменной
+          # иначе уронит сборку фронта невнятным 'Invalid URL' на 10-й минуте.
+          if ! printf '%s' "$DOMAIN" | grep -Eq '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$'; then
+            echo "Error: STAGING_COI_DOMAIN должен быть голым хостом (staging.example.com),"
+            echo "получено: '$DOMAIN' (проверь пробелы и префикс https://)"
             exit 1
           fi
 

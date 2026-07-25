@@ -53,8 +53,16 @@ jobs:
 
       - name: Check PROD_COI_DOMAIN is configured
         run: |
-          if [ -z "${{ vars.PROD_COI_DOMAIN }}" ]; then
+          DOMAIN="${{ vars.PROD_COI_DOMAIN }}"
+          if [ -z "$DOMAIN" ]; then
             echo "Error: environment variable PROD_COI_DOMAIN is required (напр. jhelper.ru)"
+            exit 1
+          fi
+          # Голый хост, без схемы/пробелов: пробел или https:// в переменной
+          # иначе уронит сборку фронта невнятным 'Invalid URL' на 10-й минуте.
+          if ! printf '%s' "$DOMAIN" | grep -Eq '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$'; then
+            echo "Error: PROD_COI_DOMAIN должен быть голым хостом (jhelper.ru),"
+            echo "получено: '$DOMAIN' (проверь пробелы и префикс https://)"
             exit 1
           fi
 
