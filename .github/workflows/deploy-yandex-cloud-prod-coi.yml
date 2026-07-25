@@ -307,6 +307,9 @@ jobs:
             # OCR ~2 GB). После создания завести 4 GB swap-файл руками (см.
             # infra/staging-coi/README.md) — страховка от OOM на больших PDF.
             # Ресайз при необходимости — in-place: stop -> update -> start.
+            # Диск network-hdd: SSD-квота облака выбрана OpenSearch (100 GB) и
+            # стейджингом (30 GB); нагрузка диск-некритичная (образы + логи +
+            # сертификаты), для SSD — поднять квоту и пересоздать VM до флипа.
             yc compute instance create-with-container \
               --name "$VM_NAME" \
               --zone "$ZONE" \
@@ -314,7 +317,7 @@ jobs:
               --cores 2 \
               --core-fraction 100 \
               --memory 4 \
-              --create-boot-disk size=30,type=network-ssd \
+              --create-boot-disk size=30,type=network-hdd \
               --network-interface "subnet-id=${YC_SUBNET_ID},nat-ip-version=ipv4,nat-address=${{ steps.ip.outputs.address }}" \
               --service-account-id "$YC_SERVICE_ACCOUNT_ID" \
               --docker-compose-file "$RENDERED" \
