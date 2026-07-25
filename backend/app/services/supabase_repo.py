@@ -178,10 +178,11 @@ class SupabaseRepo:
                 and row.get("tool_call_id")
             }
 
-            # User-facing rows: user messages, plain assistant answers, and the
+            # User-facing rows: user messages, plain assistant answers, the
             # short note of a draft turn (assistant row carrying a draft_document
-            # call). Intermediate assistant messages (other tool calls) and tool
-            # rows stay context-only.
+            # call), and assistant text that preceded a tool call (the streamed
+            # preamble — the client commits it live, so reload must match).
+            # Only text-less tool-call rows and tool rows stay context-only.
             messages = []
             artifacts_by_index: dict[int, list[dict]] = {}
             for row in rows:
@@ -201,7 +202,12 @@ class SupabaseRepo:
                 elif draft_call:
                     artifacts_by_index[len(messages)] = [_draft_artifact(draft_call, draft_states)]
                     messages.append(row)
-                # else: intermediate tool-call message (e.g. search) -> skip
+                elif (row.get("content") or "").strip():
+                    # Preamble before a (non-draft) tool call, e.g. reasoning
+                    # before a search: it streamed to the user live, so it must
+                    # survive a reload too.
+                    messages.append(row)
+                # else: text-less tool-call message (e.g. bare search) -> skip
 
             attached_ids: dict[str, None] = {}
             for message in messages:
@@ -218,9 +224,14 @@ class SupabaseRepo:
                         [{"attachedDocumentIds": list(attached_ids)}],
                     )
 
+            # The raw DB row carries internal machinery (tool_calls with real
+            # tool names/args, tool_state). Never put it on the wire: the UI
+            # ignores it, and exposing it undoes the prompt-extraction
+            # hardening (status events deliberately send only a human label).
+            internal_keys = {"tool_calls", "tool_call_id", "tool_name", "tool_state"}
             return [
                 {
-                    **message,
+                    **{k: v for k, v in message.items() if k not in internal_keys},
                     "attachedDocumentIds": [
                         doc_id
                         for doc_id in (message.get("attached_document_ids") or [])

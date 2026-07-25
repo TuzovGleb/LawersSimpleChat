@@ -490,6 +490,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         );
 
         // Merge database sessions with localStorage sessions
+        const dbIds = new Set(validSessions.map((s) => s.id));
         setSessions((prev) => {
           // Create a map of existing sessions by backend session ID
           const existingByBackendId = new Map(
@@ -523,8 +524,28 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
             }
           });
 
-          // Filter to only include sessions for this project
-          return merged.filter((s) => s.projectId === selectedProjectId);
+          // Server list is authoritative. Local sessions the DB does not know
+          // about are origin-bound phantoms (abandoned empty "Новый чат",
+          // turns whose persistence the old serverless runtime froze mid-save,
+          // adopted legacy chats) — prune them, keeping only live in-flight
+          // sessions and the active empty draft. The localStorage-save effect
+          // then persists the pruned list, cleaning the stale cache for good.
+          return merged.filter((s) => {
+            if (s.projectId !== selectedProjectId) return false;
+            if (dbIds.has(s.backendSessionId ?? s.id) || dbIds.has(s.id)) return true;
+            if (inflightSessionsRef.current.has(s.id)) return true;
+            // failed/pending-сообщение — живая работа пользователя (например,
+            // первый ход словил 429 до появления строки в БД) — не выкидываем.
+            if (s.messages.some((m) => m.status)) return true;
+            const keep = s.messages.length === 0 && s.id === activeSessionIdRef.current;
+            if (!keep) {
+              // Если сессия позже вернётся из БД (гонка со снапшотом /chats),
+              // её сообщения должны перезагрузиться, а не остаться пустыми.
+              loadedMessageSessionsRef.current.delete(s.id);
+              if (s.backendSessionId) loadedMessageSessionsRef.current.delete(s.backendSessionId);
+            }
+            return keep;
+          });
         });
 
         // If no sessions exist, create an empty one
@@ -1348,6 +1369,10 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
       }
 
       let data: any = null;
+      // Зеркало стримингового черновика в области цикла: setStreamStates
+      // апдейтеры нельзя читать синхронно, а при событии status накопленный
+      // текст нужен сразу, чтобы закоммитить его сообщением (см. ниже).
+      let liveDraft = '';
 
       while (true) {
         const { done, value } = await reader.read();
@@ -1389,6 +1414,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
           // typing out. On a normal server / VM this animates live, no changes.
           if (event.type === 'token' && typeof event.delta === 'string') {
             const delta = event.delta;
+            liveDraft += delta;
             setStreamStates((prev) => {
               const current = prev[sessionLocalId];
               return {
@@ -1404,13 +1430,38 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
             continue;
           }
 
-          // A tool started — surface its status. The pre-tool preamble is
-          // ephemeral, so reset the draft and show the status line instead.
-          // SERVERLESS NOTE: like tokens, these statuses are buffered by Yandex
-          // Serverless and only land at the end, so "Ищу практику…" doesn't show
-          // live in prod (that's why we discussed polling). Live on a VM.
+          // A tool started — surface its status. The preamble the model typed
+          // before calling the tool is a REAL assistant message (the backend
+          // persists it, and get_messages returns it on reload), so commit it
+          // to the transcript before clearing the draft — otherwise the text
+          // the user just watched stream in visibly vanishes.
           if (event.type === 'status') {
             const label = event.label || 'Работаю с источниками…';
+            const preamble = liveDraft.trim();
+            liveDraft = '';
+            if (preamble) {
+              // status:'pending' — как у оптимистичного user-сообщения: бэкенд
+              // сохраняет ход только при успешном final, поэтому до него
+              // преамбула не должна пережить перезагрузку/попасть в payload.
+              // final «повышает» её вместе с user-сообщением; catch — удаляет.
+              setSessions((prev) =>
+                prev.map((session) =>
+                  session.id === sessionLocalId
+                    ? {
+                        ...session,
+                        messages: [
+                          ...session.messages,
+                          {
+                            role: 'assistant' as const,
+                            content: preamble,
+                            status: 'pending' as const,
+                          },
+                        ],
+                      }
+                    : session,
+                ),
+              );
+            }
             setStreamStates((prev) => ({
               ...prev,
               [sessionLocalId]: {
@@ -1465,7 +1516,13 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
                         ? { ...message, status: undefined }
                         : message,
                     ),
-                    assistantMessage,
+                    // Оборванный по лимиту раундов ход может прийти без
+                    // финального текста (его преамбулы уже закоммичены выше) —
+                    // пустой пузырь не добавляем.
+                    ...(assistantMessage.content.trim() ||
+                    (assistantMessage.artifacts?.length ?? 0) > 0
+                      ? [assistantMessage]
+                      : []),
                   ],
                   projectId: event.projectId ?? session.projectId ?? selectedProjectId,
                 };
@@ -1522,9 +1579,16 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
       setSessions((prev) =>
         prev.map((session) => {
           if (session.id !== sessionLocalId) return session;
-          const messages = session.messages.map((message) =>
-            message.status === "pending" ? { ...message, status: "failed" as const } : message,
-          );
+          const messages = session.messages
+            // Преамбулы этого стрима — pending assistant-сообщения: бэкенд для
+            // упавшего хода не сохранил ничего, поэтому убираем их целиком
+            // (ретрай пере-стримит), а не оставляем сиротами в транскрипте.
+            .filter(
+              (message) => !(message.role === "assistant" && message.status === "pending"),
+            )
+            .map((message) =>
+              message.status === "pending" ? { ...message, status: "failed" as const } : message,
+            );
           return { ...session, messages };
         }),
       );
