@@ -179,7 +179,7 @@ services:
                   iam:
                     cloud_meta: {}
                   log_group_id: e23402ls0pgcs27coi91
-                  resource_type: jhelper-app-staging
+                  resource_type: __LOG_RESOURCE_TYPE__
                   resource_id: jhelper-app
         EOF
     volumes:

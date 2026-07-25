@@ -104,6 +104,13 @@ Serverless Containers буферизуют весь ответ (SSE мёртв),
 - **Лимиты памяти контейнеров** не выставлены — сначала замерить реальный пик
   бэкенда под OCR (8 GB взяты с запасом; 4 GB было бы впритык: worst-case
   ~3,0–3,4 GB суммарно).
-- **Прод**: после приёмки стейджинга — тот же шаблон (VM `jhelper-app-prod`,
-  100% vCPU, свой статический IP и домен, секреты через Lockbox), отдельным
-  воркфлоу.
+- **Прод**: workflow **Deploy to Yandex Cloud (Prod, COI VM)** — те же
+  шаблон/рендер, VM `jhelper-app-prod` (2 vCPU 100% / 4 GB + swap руками),
+  environment «Deploy ENV», переменная `PROD_COI_DOMAIN`, секрет
+  `PROD_SSH_PUBLIC_KEY`. Cutover без даунтайма: прогон со
+  `skip_dns_check=true` (домен ещё на API GW) → в зоне jhelper.ru заменить
+  ANAME на A-запись со статическим IP из прогона → `docker restart
+  jhelper-caddy` по SSH (сброс ACME-backoff) → повторный прогон без флага
+  (полные смоуки). Откат = вернуть ANAME на API Gateway; serverless-прод не
+  выключаем до приёмки. Секреты через Lockbox — отложенный follow-up (пока
+  паритет со стейджингом: env в метаданных VM).
