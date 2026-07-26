@@ -31,7 +31,13 @@ _MIN_WRAPPER_BYTES = 8_000
 _EXPORT_TIMEOUT = 600.0
 
 _TITLE_RE = re.compile(r"<title>([^<]{3,300})</title>", re.I)
-_CURRENT_RDK_RE = re.compile(r"doc_itself=&nd=\d+&page=1&rdk=(\d+)")
+def _current_rdk_re(nd: str) -> re.Pattern:
+    # The text-frame src carries «…&nd=<nd>&page=1&rdk=<N>». For most acts the
+    # URL starts with doc_itself=, but the biggest ones (КоАП, НК ч.1, БК)
+    # use a variant with an encoded-warning ``fostr=…`` prefix instead — so
+    # the anchor is the act's own nd, not the endpoint name. Anchoring on nd
+    # also guarantees we never pick up a foreign document's rdk.
+    return re.compile(rf"nd={re.escape(nd)}&page=1&rdk=(\d+)")
 _REDACTION_OPT_RE = re.compile(r'<option id="s1o\d+" value="(\d+)"[^>]*>([^<]{3,120})</option>')
 
 
@@ -45,12 +51,22 @@ class ActMeta:
     redactions: tuple[tuple[str, str], ...]
 
 
-def fetch_act_meta(client: IpsClient, nd: str) -> ActMeta:
-    html = client.get_text(f"docbody=&nd={nd}", min_bytes=_MIN_WRAPPER_BYTES, echo=f"nd={nd}")
-    title_match = _TITLE_RE.search(html)
-    rdk_match = _CURRENT_RDK_RE.search(html)
+def fetch_act_meta(client: IpsClient, nd: str, *, parse_retries: int = 2) -> ActMeta:
+    # Parse-level retry: the portal is known to serve truncated-but-HTTP-200
+    # wrapper pages under load. A page that decoded fine but lacks the rdk
+    # frame src is indistinguishable from a structural change, so refetch
+    # before giving up.
+    rdk_re = _current_rdk_re(nd)
+    html = ""
+    rdk_match = None
+    for _ in range(parse_retries):
+        html = client.get_text(f"docbody=&nd={nd}", min_bytes=_MIN_WRAPPER_BYTES, echo=f"nd={nd}")
+        rdk_match = rdk_re.search(html)
+        if rdk_match:
+            break
     if not rdk_match:
         raise IpsError(f"Обёртка nd={nd}: не найден текущий rdk (структура страницы изменилась?)")
+    title_match = _TITLE_RE.search(html)
     seen: dict[str, str] = {}
     for rdk, label in _REDACTION_OPT_RE.findall(html):
         seen.setdefault(rdk, " ".join(label.split()))
