@@ -1,9 +1,19 @@
 # Стейджинг на COI VM (переезд с Serverless Containers)
 
-Одна Compute VM `jhelper-app-staging` (2 vCPU 50% / 8 GB, COI) с docker-compose:
-бэкенд + фронт + Caddy (TLS) + unified-agent (логи → Cloud Logging). Деплой —
-workflow **Deploy to Yandex Cloud (Staging, COI VM)**. Serverless-стейджинг
-живёт параллельно и не трогается: откат = вернуться на старый URL.
+Одна Compute VM `jhelper-app-staging` (2 vCPU 20% / 4 GB + 4 GB swap, COI) с
+docker-compose: бэкенд + фронт + Caddy (TLS) + unified-agent (логи → Cloud
+Logging). Деплой — workflow **Deploy to Yandex Cloud (Staging, COI VM)**.
+Serverless-стейджинг живёт параллельно и не трогается: откат = вернуться на
+старый URL.
+
+Сайзинг минимальный по замеру 2026-07-25 (в простое ~0.7 GB на всё); страховка
+от пика OCR — swap. ВАЖНО: swap-файл живёт на boot-диске и при ПЕРЕСОЗДАНИИ VM
+исчезает — завести заново по SSH:
+```bash
+sudo fallocate -l 4G /swapfile && sudo chmod 600 /swapfile \
+  && sudo mkswap /swapfile && sudo swapon /swapfile \
+  && echo "/swapfile none swap sw 0 0" | sudo tee -a /etc/fstab
+```
 
 Зачем VM (кратко; полное исследование — memory `yc-fargate-migration-research`):
 Serverless Containers буферизуют весь ответ (SSE мёртв), морозят CPU после
@@ -94,6 +104,13 @@ Serverless Containers буферизуют весь ответ (SSE мёртв),
 - **Лимиты памяти контейнеров** не выставлены — сначала замерить реальный пик
   бэкенда под OCR (8 GB взяты с запасом; 4 GB было бы впритык: worst-case
   ~3,0–3,4 GB суммарно).
-- **Прод**: после приёмки стейджинга — тот же шаблон (VM `jhelper-app-prod`,
-  100% vCPU, свой статический IP и домен, секреты через Lockbox), отдельным
-  воркфлоу.
+- **Прод**: workflow **Deploy to Yandex Cloud (Prod, COI VM)** — те же
+  шаблон/рендер, VM `jhelper-app-prod` (2 vCPU 100% / 4 GB + swap руками),
+  environment «Deploy ENV», переменная `PROD_COI_DOMAIN`, секрет
+  `PROD_SSH_PUBLIC_KEY`. Cutover без даунтайма: прогон со
+  `skip_dns_check=true` (домен ещё на API GW) → в зоне jhelper.ru заменить
+  ANAME на A-запись со статическим IP из прогона → `docker restart
+  jhelper-caddy` по SSH (сброс ACME-backoff) → повторный прогон без флага
+  (полные смоуки). Откат = вернуть ANAME на API Gateway; serverless-прод не
+  выключаем до приёмки. Секреты через Lockbox — отложенный follow-up (пока
+  паритет со стейджингом: env в метаданных VM).

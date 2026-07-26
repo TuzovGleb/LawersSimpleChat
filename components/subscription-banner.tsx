@@ -16,7 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { cn, resolveApiUrl } from "@/lib/utils";
-import { CALENDLY_URL } from "@/lib/contact";
+import { CALENDLY_URL, TELEGRAM_HANDLE, TELEGRAM_URL } from "@/lib/contact";
 import { AlertCircle, Clock, Loader2 } from "lucide-react";
 import type { Entitlement } from "@/lib/entitlement";
 
@@ -76,6 +76,10 @@ export function SubscriptionBanner({ entitlement, onRedeemed, className }: Subsc
 
   const handleContactClick = () => {
     window.open(CALENDLY_URL, "_blank");
+  };
+
+  const handleTelegramClick = () => {
+    window.open(TELEGRAM_URL, "_blank");
   };
 
   const handlePromoOpenChange = (open: boolean) => {
@@ -204,9 +208,9 @@ export function SubscriptionBanner({ entitlement, onRedeemed, className }: Subsc
     // Текст зависит от того, ПОЧЕМУ доступа нет: кончился бесплатный период,
     // кончился оплаченный доступ или доступа ещё не было вовсе.
     if (entitlement.status === "expired" && (entitlement.kind === "trial" || entitlement.kind === "promo")) {
-      message = "Срок вашего доступа истёк. Запишитесь на короткий звонок с командой — обсудим ваш опыт и подберём вариант, как продолжить работу.";
+      message = `Срок вашего доступа истёк. Запишитесь на короткий звонок с командой или напишите нам в Telegram ${TELEGRAM_HANDLE} — обсудим ваш опыт и подберём вариант, как продолжить работу.`;
     } else if (entitlement.status === "expired") {
-      message = "Срок вашего доступа истёк. Свяжитесь с нами, чтобы продлить его";
+      message = `Срок вашего доступа истёк. Свяжитесь с нами или напишите в Telegram ${TELEGRAM_HANDLE}, чтобы продлить его`;
     } else {
       message = "Чтобы начать работу, свяжитесь с нами — или активируйте промокод";
     }
@@ -252,6 +256,14 @@ export function SubscriptionBanner({ entitlement, onRedeemed, className }: Subsc
         <div className="flex flex-wrap items-center gap-2">
           <Button type="button" variant="brandOutline" size="ctaSm" onClick={handleContactClick}>
             Связаться с нами
+          </Button>
+          <Button
+            type="button"
+            variant="outlineMuted"
+            size="ctaSm"
+            onClick={handleTelegramClick}
+          >
+            Написать в Telegram
           </Button>
           {showPromoButton && (
             <Button
