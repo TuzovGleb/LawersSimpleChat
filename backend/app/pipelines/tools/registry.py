@@ -9,10 +9,12 @@ from typing import Callable
 
 from app.pipelines.tools.base import ToolSpec
 from app.pipelines.tools.court_practice import try_build_tool_specs as court_practice_builder
+from app.pipelines.tools.normativka import try_build_tool_specs as normativka_builder
 
 # Each builder: (app_config) -> list[ToolSpec], returning [] when not configured.
 TOOL_BUILDERS: list[Callable[[dict], list[ToolSpec]]] = [
     court_practice_builder,
+    normativka_builder,
 ]
 
 

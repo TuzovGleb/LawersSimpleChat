@@ -150,9 +150,22 @@ def normalize_case(case: dict, page_meta: dict) -> dict | None:
     }
 
 
-def ensure_index(client: OpenSearch, *, index_name: str = INDEX_VERSION, alias: str = INDEX_ALIAS) -> None:
+def ensure_index(
+    client: OpenSearch,
+    *,
+    index_name: str = INDEX_VERSION,
+    alias: str = INDEX_ALIAS,
+    body: dict | None = None,
+) -> None:
+    # The body default is the COURT mapping; creating another corpus's index
+    # with it would silently break that corpus's term fields. Fail loudly
+    # instead: any non-court alias must bring its own body.
+    if body is None and alias != INDEX_ALIAS:
+        raise ValueError(
+            f"ensure_index: alias {alias!r} is not the court family — pass its index body explicitly"
+        )
     if not client.indices.exists(index=index_name):
-        client.indices.create(index=index_name, body=INDEX_BODY)
+        client.indices.create(index=index_name, body=body or INDEX_BODY)
         logger.info("Created index", extra={"index": index_name})
 
     if client.indices.exists_alias(name=alias):

@@ -1,0 +1,181 @@
+# Нормативка: scheduled scrape of pravo.gov.ru ИПС + reindex into OpenSearch.
+#
+# The nightly run is incremental: it fetches each act's wrapper (~40-100КБ),
+# compares the current redaction id (rdk) with what the index holds and
+# re-fetches only the acts that actually changed. A manual dispatch can force
+# a full re-scrape.
+#
+# Requirements in the "Staging ENV" environment (все уже настроены деплоями):
+#   secret YC_SA_JSON / YC_CLOUD_ID / YC_FOLDER_ID — авторезолв IP OpenSearch-VM
+#          (публичный IP эфемерный, поэтому не хардкодим и не держим в var;
+#          тот же механизм, что в deploy-yandex-cloud-staging-coi.yml)
+#   var    S3_BUCKET_NAME           — snapshot archive bucket (same as court practice)
+#   secret S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY
+# A dispatch input can override the resolved URL (e.g. для локального туннеля).
+
+name: Scrape normativka (Staging OpenSearch)
+
+on:
+  schedule:
+    - cron: '0 3 * * *'   # nightly, 03:00 UTC (06:00 МСК)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Scrape mode'
+        required: false
+        default: update
+        type: choice
+        options: [update, full]
+      opensearch_url:
+        description: 'OpenSearch URL (default: авторезолв IP VM через yc)'
+        required: false
+        type: string
+
+jobs:
+  scrape-and-index:
+    runs-on: ubuntu-latest
+    environment: Staging ENV
+    # Full scrape of all codices takes ~30 min (НК ч.2 export alone is minutes).
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Публичный IP OpenSearch-VM эфемерный (stop/start его меняет), поэтому
+      # он резолвится через yc на каждом запуске — тот же read-only механизм,
+      # что в deploy-yandex-cloud-staging-coi.yml. Явный inputs.opensearch_url
+      # обходит резолв (тогда yc-шаги не нужны и пропускаются).
+      - name: Install Yandex Cloud CLI
+        if: github.event.inputs.opensearch_url == ''
+        run: |
+          mkdir -p $HOME/.local/bin
+          curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s
+          if [ -f "$HOME/.local/bin/yc" ]; then
+            chmod +x $HOME/.local/bin/yc
+            echo "$HOME/.local/bin" >> $GITHUB_PATH
+          else
+            YC_PATH=$(find $HOME -name yc -type f -executable 2>/dev/null | head -1)
+            if [ -n "$YC_PATH" ]; then
+              echo "$(dirname $YC_PATH)" >> $GITHUB_PATH
+            else
+              echo "Error: yc not found after installation"
+              exit 1
+            fi
+          fi
+
+      - name: Setup Yandex Cloud CLI with JSON key
+        if: github.event.inputs.opensearch_url == ''
+        env:
+          YC_SA_JSON: ${{ secrets.YC_SA_JSON }}
+          YC_CLOUD_ID: ${{ secrets.YC_CLOUD_ID }}
+          YC_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          if [ -z "$YC_SA_JSON" ]; then
+            echo "Error: YC_SA_JSON secret is empty or not set"
+            exit 1
+          fi
+          printf '%s' "$YC_SA_JSON" | sed 's/[[:space:]]*$//' > /tmp/sa-key.json
+          chmod 600 /tmp/sa-key.json
+          yc config profile create scrape-profile || true
+          yc config set service-account-key /tmp/sa-key.json
+          yc config set cloud-id "$YC_CLOUD_ID"
+          yc config set folder-id "$YC_FOLDER_ID"
+
+      - name: Resolve parameters
+        id: params
+        env:
+          INPUT_URL: ${{ github.event.inputs.opensearch_url }}
+          INPUT_MODE: ${{ github.event.inputs.mode }}
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          URL="$INPUT_URL"
+          if [ -z "$URL" ]; then
+            VM="lawers-opensearch-staging"
+            if ! yc compute instance get --name "$VM" >/dev/null 2>&1; then
+              echo "Error: OpenSearch VM '$VM' not found (см. deploy-opensearch-staging.yml)"
+              exit 1
+            fi
+            PUBLIC_IP=$(yc compute instance get --name "$VM" --format json | python3 -c "
+            import sys, json
+            data = json.load(sys.stdin)
+            for iface in data.get('network_interfaces', []):
+                nat = iface.get('primary_v4_address', {}).get('one_to_one_nat') or {}
+                if nat.get('address'):
+                    print(nat['address'])
+                    raise SystemExit(0)
+            print('')
+            ")
+            if [ -z "$PUBLIC_IP" ]; then
+              echo "Error: could not resolve public IP for $VM"
+              exit 1
+            fi
+            URL="http://${PUBLIC_IP}:9200"
+          fi
+          MODE="${INPUT_MODE:-update}"
+          echo "OpenSearch URL: $URL | mode: $MODE"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "stamp=$(date -u +%Y%m%d-%H%M)" >> "$GITHUB_OUTPUT"
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          uv sync
+
+      # continue-on-error: one flaky act (the ИПС stalls intermittently) must
+      # not discard the successfully scraped acts — the snapshot still gets
+      # archived and indexed, and the final step turns the run red afterwards.
+      - name: Scrape pravo.gov.ru
+        id: scrape
+        continue-on-error: true
+        working-directory: backend
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          uv run python scripts/scrape_normativka.py \
+            --out /tmp/normativka-${{ steps.params.outputs.stamp }}.zip \
+            --mode "${{ steps.params.outputs.mode }}" \
+            --opensearch-url "${{ steps.params.outputs.url }}"
+
+      - name: Archive snapshot to Object Storage
+        env:
+          S3_BUCKET_NAME: ${{ vars.S3_BUCKET_NAME }}
+          S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+          S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+        run: |
+          if [ -z "$S3_BUCKET_NAME" ]; then
+            echo "S3_BUCKET_NAME not set — skipping snapshot archive"
+            exit 0
+          fi
+          pip install --quiet awscli
+          aws configure set default.s3.signature_version s3v4
+          export AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY_ID"
+          export AWS_SECRET_ACCESS_KEY="$S3_SECRET_ACCESS_KEY"
+          aws --endpoint-url=https://storage.yandexcloud.net s3 cp \
+            /tmp/normativka-${{ steps.params.outputs.stamp }}.zip \
+            "s3://${S3_BUCKET_NAME}/normativka/normativka-${{ steps.params.outputs.stamp }}.zip"
+
+      - name: Index snapshot
+        working-directory: backend
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          uv run python scripts/index_normativka.py \
+            --source /tmp/normativka-${{ steps.params.outputs.stamp }}.zip \
+            --opensearch-url "${{ steps.params.outputs.url }}"
+
+      - name: Verify document count
+        run: |
+          curl -fsS "${{ steps.params.outputs.url }}/legal_acts/_count"
+
+      # The scrape step is continue-on-error so partial results still land in
+      # the index; this step makes a partial night visibly red afterwards.
+      - name: Fail the run if the scrape had errors
+        if: steps.scrape.outcome == 'failure'
+        run: |
+          echo "Часть актов не скрейпнулась (см. шаг Scrape) — успешные проиндексированы, но ночь неполная"
+          exit 1
