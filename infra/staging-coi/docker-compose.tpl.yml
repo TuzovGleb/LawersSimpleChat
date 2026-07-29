@@ -157,18 +157,29 @@ services:
       - |
         cat > /config/config.tmpl.yml <<'EOF'
         status:
+          # host явно: дефолт localhost внутри контейнера резолвится в ::1,
+          # а IPv6 в compose-сети выключен → bind падает и агент не стартует
+          # («can't start status http server»). Наружу порт не публикуется.
+          host: 0.0.0.0
           port: 16241
         storages:
           - name: main
             plugin: fs
             config:
-              directory: /data
+              # Подкаталог, а не /data целиком: рядом живёт state file_input,
+              # fs-storage не должен принимать его файлы за свои партиции.
+              directory: /data/storage
               max_partition_size: 100mb
         routes:
           - input:
-              plugin: file
+              # Именно file_input: плагина `file` не существует, с ним агент
+              # уходит в рестарт-луп «unknown input plugin [file]» и лог-группа
+              # молча остаётся пустой (так и было до 2026-07-29).
+              plugin: file_input
               config:
                 path: /var/lib/docker/containers/*/*-json.log
+                multi_file: true
+                state_directory: /data/file-input-state
             channel:
               pipe:
                 - storage_ref:
@@ -200,7 +211,7 @@ services:
     # поэтому при правке heredoc в unified-agent-config инкрементируй ревизию,
     # иначе агент продолжит работать со старым конфигом до случайного ребута.
     environment:
-      - CONFIG_REV=2
+      - CONFIG_REV=3
     volumes:
       # Каталог ЗАПИСЫВАЕМЫЙ и файл называется config.tmpl.yml: entrypoint
       # образа 26.07.02 рендерит config.tmpl.yml -> config.yml (envsubst;
