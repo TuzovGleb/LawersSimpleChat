@@ -97,16 +97,12 @@ jobs:
               echo "Error: OpenSearch VM '$VM' not found (см. deploy-opensearch-staging.yml)"
               exit 1
             fi
-            PUBLIC_IP=$(yc compute instance get --name "$VM" --format json | python3 -c "
-            import sys, json
-            data = json.load(sys.stdin)
-            for iface in data.get('network_interfaces', []):
-                nat = iface.get('primary_v4_address', {}).get('one_to_one_nat') or {}
-                if nat.get('address'):
-                    print(nat['address'])
-                    raise SystemExit(0)
-            print('')
-            ")
+            # jq, а не inline-python: YAML срезает только общий отступ блока
+            # run, поэтому питон, вложенный в if/then, приезжает в интерпретатор
+            # с лишними пробелами и падает IndentationError (так и случилось на
+            # первом ночном запуске).
+            PUBLIC_IP=$(yc compute instance get --name "$VM" --format json \
+              | jq -r '[.network_interfaces[]?.primary_v4_address.one_to_one_nat.address // empty] | first // empty')
             if [ -z "$PUBLIC_IP" ]; then
               echo "Error: could not resolve public IP for $VM"
               exit 1
