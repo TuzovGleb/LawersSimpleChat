@@ -14,7 +14,7 @@ from typing import Annotated
 
 from langchain_core.tools import tool
 
-from app.normativka.acts import CODICES, resolve_act
+from app.normativka.acts import CODICES, aliases_for, resolve_act
 from app.pipelines.tools.base import InlineResultHandler, ToolResultHandler, ToolSpec
 from app.search import OpenSearchConfig, build_opensearch_client
 from app.search.normativka import (
@@ -70,7 +70,24 @@ async def _resolve_act_candidates(searcher: NormativkaSearcher, act_ref: str) ->
     known = resolve_act(act_ref)
     if known:
         return [{"act_nd": known.nd, "act_name": known.name, "act_number": known.number}]
-    return await searcher.resolve_act(act_ref)
+    candidates = await searcher.resolve_act(act_ref)
+    # Среди однофамильцев по номеру наверх поднимается тот, у кого есть
+    # курируемые аббревиатуры: именно его юристы называют этим номером
+    # («152-ФЗ» — «О персональных данных», а не «Об ипотечных ценных бумагах»
+    # того же номера, который иначе выигрывал по релевантности).
+    curated = [c for c in candidates if aliases_for(c.get("act_number") or "", c.get("act_name") or "")]
+    if len(curated) == 1:
+        candidates = curated + [c for c in candidates if c is not curated[0]]
+    return candidates
+
+
+def _needs_disambiguation(act_ref: str, candidates: list[dict]) -> bool:
+    """Спрашивать уточнение только когда выбрать действительно нельзя."""
+    if not _is_bare_number(act_ref) or len(candidates) < 2:
+        return False
+    top = candidates[0]
+    # Курируемый акт наверху — это и есть ответ на «что значит этот номер».
+    return not aliases_for(top.get("act_number") or "", top.get("act_name") or "")
 
 
 class StatuteArticleHandler(ToolResultHandler):
@@ -172,8 +189,9 @@ def normativka_tool_specs(searcher: NormativkaSearcher) -> list[ToolSpec]:
         # Номера федеральных законов повторяются каждый год: «14-ФЗ» — это и
         # «Об обществах с ограниченной ответственностью» (1998), и «Об
         # упразднении некоторых районных судов» (2013). По чистому номеру
-        # выбирать за юриста нельзя — показываем варианты.
-        if _is_bare_number(act) and len(candidates) > 1:
+        # выбирать за юриста нельзя — показываем варианты. Исключение —
+        # курируемый акт наверху (см. _resolve_act_candidates).
+        if _needs_disambiguation(act, candidates):
             return (
                 f"Номер «{act}» носят несколько актов (номера ФЗ повторяются по годам). "
                 f"Уточни, какой нужен — вызови инструмент с названием акта:\n"

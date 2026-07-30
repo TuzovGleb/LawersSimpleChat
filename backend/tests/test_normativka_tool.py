@@ -155,23 +155,43 @@ async def test_handler_rehydrates_by_reference(searcher):
 
 
 @pytest.mark.asyncio
-async def test_bare_number_with_several_acts_asks_to_disambiguate(tools, searcher):
-    # Проверено вживую: номера ФЗ повторяются по годам — «14-ФЗ» это и «Об ООО»
-    # (1998), и «Об упразднении районных судов Самарской области» (2013).
-    # Выбирать за юриста нельзя, надо показать варианты.
+async def test_bare_number_without_curated_act_asks_to_disambiguate(tools, searcher):
+    # Номера ФЗ повторяются по годам. Если ни один из однофамильцев не из
+    # курируемой таблицы, выбирать за юриста нельзя — показываем варианты.
     searcher.resolve_act = AsyncMock(
         return_value=[
-            {"act_nd": "1", "act_name": "Об обществах с ограниченной ответственностью",
-             "act_number": "14-ФЗ", "act_date": "1998-02-08", "articles": 59},
-            {"act_nd": "2", "act_name": "Об упразднении некоторых районных судов Самарской области",
-             "act_number": "14-ФЗ", "act_date": "2013-02-04", "articles": 3},
+            {"act_nd": "1", "act_name": "Об упразднении районных судов Самарской области",
+             "act_number": "77-ФЗ", "act_date": "2013-02-04", "articles": 3},
+            {"act_nd": "2", "act_name": "О внутренних морских водах",
+             "act_number": "77-ФЗ", "act_date": "1998-07-31", "articles": 48},
         ]
     )
-    result = await tools["get_statute_article"].tool.ainvoke({"act": "14-ФЗ", "article": "46"})
+    result = await tools["get_statute_article"].tool.ainvoke({"act": "77-ФЗ", "article": "5"})
     searcher.resolve.assert_not_awaited()  # не угадываем
     assert "несколько актов" in result
     assert "1998" in result and "2013" in result
-    assert "Об обществах с ограниченной ответственностью" in result
+
+
+@pytest.mark.asyncio
+async def test_curated_act_wins_its_number_without_asking(tools, searcher):
+    # «152-ФЗ» юристы называют закон о персональных данных, хотя тот же номер
+    # носят «Об ипотечных ценных бумагах» (2003) — и по релевантности названия
+    # выигрывали именно они. Курируемые аббревиатуры и решают этот спор.
+    searcher.resolve_act = AsyncMock(
+        return_value=[
+            {"act_nd": "ipo", "act_name": "Об ипотечных ценных бумагах",
+             "act_number": "152-ФЗ", "act_date": "2003-11-11", "articles": 46},
+            {"act_nd": "pd", "act_name": "О персональных данных",
+             "act_number": "152-ФЗ", "act_date": "2006-07-27", "articles": 29},
+        ]
+    )
+    searcher.resolve = AsyncMock(return_value={
+        "article_id": "x", "act_name": "О персональных данных", "act_number": "152-ФЗ",
+        "article_number": "9", "article_title": "Согласие субъекта", "article_text": "Текст"})
+    result = await tools["get_statute_article"].tool.ainvoke({"act": "152-ФЗ", "article": "9"})
+    searcher.resolve.assert_awaited_once_with("pd", "9")
+    assert "О персональных данных" in result
+    assert "несколько актов" not in result
 
 
 @pytest.mark.asyncio

@@ -30,17 +30,21 @@ from app.search.normativka import NormativkaSearcher  # noqa: E402
 
 logger = logging.getLogger("verify_normativka")
 
-# Acts that must NEVER be in the corpus: enacting wrappers of RSFSR-era codes.
-# Matched on the act name, since their nd differs between environments.
-FORBIDDEN_NAME_PARTS = (
-    "об утверждении кодекса законов о труде",
-    "об утверждении земельного кодекса рсфср",
-    "об утверждении водного кодекса рсфср",
-    "об утверждении уголовного кодекса рсфср",
-    "об утверждении уголовно-процессуального кодекса рсфср",
-    "об утверждении исправительно-трудового кодекса",
-    "о внесении изменени",
-    "о ратификации",
+# Acts that must NEVER be in the corpus. Matched as a PREFIX of the name, not
+# as a phrase anywhere in it: «О внесении изменений …» в НАЧАЛЕ — поправочный
+# акт, а те же слова в середине принадлежат нормальному закону («О междуна-
+# родном медицинском кластере И ВНЕСЕНИИ ИЗМЕНЕНИЙ в отдельные акты»), и
+# поиск по фразе забраковал бы корпус на ровном месте.
+FORBIDDEN_NAME_PREFIXES = (
+    "Об утверждении Кодекса законов о труде",
+    "Об утверждении Земельного кодекса РСФСР",
+    "Об утверждении Водного кодекса РСФСР",
+    "Об утверждении Уголовного кодекса РСФСР",
+    "Об утверждении Уголовно-процессуального кодекса РСФСР",
+    "Об утверждении Исправительно-трудового кодекса",
+    "О внесении изменени",
+    "О ратификации",
+    "О приведении",
 )
 
 # (акт, статья, что должно быть в заголовке статьи)
@@ -107,22 +111,21 @@ def main() -> int:
         print(f"   {bucket['key']:9}: актов {bucket['acts']['value']:5}, статей {bucket['doc_count']}")
 
     print("\n=== ЗАПРЕЩЁННЫЕ АКТЫ (обёртки и поправки) ===")
-    for part in FORBIDDEN_NAME_PARTS:
-        hits = client.search(
+    for prefix in FORBIDDEN_NAME_PREFIXES:
+        found = client.search(
             index=index,
             body={
                 "size": 1,
-                "query": {"match_phrase": {"act_name": part}},
+                "query": {"prefix": {"act_name.raw": prefix}},
                 "_source": ["act_name", "act_nd"],
             },
-        )["hits"]
-        found = hits["hits"]
+        )["hits"]["hits"]
         if found:
             name = found[0]["_source"].get("act_name", "")
             failures.append(f"в корпусе запрещённый акт: {name[:70]} (nd={found[0]['_source'].get('act_nd')})")
-            print(f"   ✗ {part!r} → {name[:66]}")
+            print(f"   ✗ {prefix!r} → {name[:62]}")
         else:
-            print(f"   ✓ {part!r} — отсутствует")
+            print(f"   ✓ {prefix!r} — отсутствует")
 
     print("\n=== ТОЧНЫЕ ССЫЛКИ ===")
     for act_ref, article, expect in EXACT_CHECKS:
