@@ -173,6 +173,27 @@ def _structure_level(text: str) -> tuple[int, str] | None:
     return None
 
 
+# Third renderer variant (1992-93 acts): no heading typography whatsoever —
+# the document is a run of class-less <span>s and articles read as plain text
+# («… постановляет: <span> Статья 1. Утвердить бюджет …»). Nothing in the
+# markup marks them, so the text itself is split on article boundaries. Used
+# ONLY when markup-based parsing found nothing, so it cannot affect documents
+# that already parse correctly.
+_ARTICLE_IN_TEXT_RE = re.compile(r"(?:^|(?<=[\s>;:.]))Статья\s+(\d+(?:\.\d+)*)\s*\.")
+
+
+def _split_articles_by_text(html: str) -> list[Article]:
+    text = _clean_text(_normalize_numbers(_flatten_tables(html)))
+    matches = list(_ARTICLE_IN_TEXT_RE.finditer(text))
+    articles: list[Article] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        body = text[match.start() : end].strip()
+        if body:
+            articles.append(Article(number=match.group(1), title="", text=body, chapter_path=""))
+    return articles
+
+
 def split_articles(html: str) -> list[Article]:
     articles: list[Article] = []
     path: list[str | None] = [None] * len(_STRUCTURE_LEVELS)
@@ -224,4 +245,4 @@ def split_articles(html: str) -> list[Article]:
             current["lines"].append(text)
 
     flush()
-    return articles
+    return articles or _split_articles_by_text(html)

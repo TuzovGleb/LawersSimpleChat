@@ -152,3 +152,30 @@ def test_new_renderer_still_parses_titles():
     articles = {a.number: a for a in split_articles(DOC_HTML)}
     assert articles["1"].title == "Предмет регулирования"
     assert articles["333.19"].title.startswith("Размеры государственной пошлины")
+
+
+# --- третий вариант: разметки заголовков нет вообще (акты 1992-93 гг.) ---
+PLAIN_DOC_HTML = """
+<p><span>Верховный Совет Российской Федерации п о с т а н о в л я е т:</span>
+<span> Статья 1. Утвердить бюджет Пенсионного фонда на I квартал 1992 года.</span>
+<span> Статья 2. Разрешить расходование средств в размере 65,07 млрд. рублей.</span>
+<span> В соответствии со статьей 5 настоящего Закона отчет представляется в срок.</span></p>
+"""
+
+
+def test_plain_text_fallback_finds_articles_without_any_markup():
+    # Ни class="H", ни W4 — фолбэк режет по тексту. Иначе акт уходил в «без
+    # статей» (так терялся «О бюджете Пенсионного фонда»).
+    articles = split_articles(PLAIN_DOC_HTML)
+    assert [a.number for a in articles] == ["1", "2"]
+    assert "Утвердить бюджет" in articles[0].text
+    # Ссылка «со статьей 5» — строчная, за границу статьи не принимается,
+    # и её текст остался внутри ст. 2.
+    assert "статьей 5" in articles[1].text
+
+
+def test_fallback_does_not_touch_documents_that_parse_by_markup():
+    # Фолбэк включается ТОЛЬКО когда разметка не дала ничего.
+    by_markup = split_articles(DOC_HTML)
+    assert [a.number for a in by_markup] == ["1", "2", "333.19", "333.32.1", "333.34.1"]
+    assert by_markup[0].title == "Предмет регулирования"  # заголовки не потеряны
