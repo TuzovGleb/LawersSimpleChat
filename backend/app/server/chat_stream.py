@@ -16,26 +16,29 @@ Wire contract the Next.js frontend consumes:
   - on failure, a single ``data: {"type": "error", "error"}`` event with a
     generic message only (the raw exception is logged server-side, never sent).
 
-The graph is consumed INLINE via ``graph.astream`` rather than a detached
-``asyncio.shield``-ed background task: on a client disconnect the stream is
-cancelled, which lets LangChain emit the run-end events and close the LangSmith
-run instead of orphaning it ("spinner forever"). ``asyncio.shield`` is used only
-so a heartbeat timeout cannot cancel the in-flight model call.
+The graph is driven by a detached worker task (``_run_turn``) that pushes wire
+events into a queue; this generator is only a relay that pumps the queue out to
+the client and injects heartbeats. That split is the whole point: when the
+browser goes away only the RELAY is cancelled, so the turn still runs to
+completion and still persists, and the user finds the answer waiting in the chat
+instead of a hole where their question used to be. It also retires the old
+``asyncio.shield`` dance — heartbeats no longer share a loop with the model call,
+so there is nothing left to shield it from.
 
-SERVERLESS NOTE — why this whole file looks the way it does:
-We run on Yandex Serverless Containers, which (1) FREEZE/RECLAIM the instance's
-CPU the moment the HTTP response ends, and (2) BUFFER the entire response body
-(3.5 MB cap) instead of streaming it out. On a normal always-on server NONE of
-the gymnastics below would be needed:
-  * No frozen CPU -> the old fire-and-forget ``asyncio.shield``-ed ``ainvoke``
-    would simply finish on its own and close the LangSmith run, so the "trace
-    hangs forever" bug wouldn't exist and the cancel-then-flush dance here would
-    be pointless.
-  * No response buffering -> the ``token`` / ``status`` events below would reach
-    the browser LIVE (real typewriter + "Ищу практику…" statuses). On serverless
-    they're correct on the wire but the platform holds them until the turn ends,
-    so the client effectively only sees the final answer. Moving the backend to
-    a regular VM would make true streaming work with ZERO changes to this code.
+Why it used to be inline: before the COI VM migration this file consumed
+``graph.astream`` inline, because Yandex Serverless Containers FREEZE/RECLAIM the
+instance's CPU the moment the HTTP response ends. A detached task there would be
+frozen mid-turn and its LangSmith run would hang forever ("spinner forever"), so
+the cancellation HAD to propagate into the model call and the trace had to be
+flushed by hand. On a VM nothing freezes and background work simply finishes.
+Rolling back to serverless would bring the hanging-trace bug back with it.
+
+SERVERLESS NOTE — the other half of that legacy: serverless also BUFFERED the
+whole response body (3.5 MB cap) instead of streaming it out, so the ``token`` /
+``status`` events below were correct on the wire but the platform held them until
+the turn ended and the client effectively saw only the final answer. On the VM
+they reach the browser live (real typewriter + "Ищу практику…" statuses) with
+zero changes to this code.
 """
 import asyncio
 import contextlib
@@ -53,6 +56,7 @@ from app.pipelines.tools.drafting import DRAFT_TOOL_NAME
 from app.rag_core.caching import session_affinity_id
 from app.server.schema import ChatRequest
 from app.services.supabase_repo import SupabaseRepo, unique_document_ids
+from app.utils import current_chat_id, current_request_id
 
 logger = logging.getLogger(__name__)
 
@@ -67,20 +71,9 @@ TOOL_STATUS_LABELS = {
 }
 DEFAULT_TOOL_STATUS = "Работаю с источниками…"
 
-# Sentinel so a StopAsyncIteration never has to cross an asyncio.wait_for / Task
-# boundary (which would otherwise surface as a confusing RuntimeError).
-_STREAM_DONE = object()
-
 
 def _sse(payload: dict) -> bytes:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
-
-
-async def _anext_or_done(agen):
-    try:
-        return await agen.__anext__()
-    except StopAsyncIteration:
-        return _STREAM_DONE
 
 
 def _token_delta(chunk) -> str:
@@ -208,6 +201,243 @@ async def _prepare_graph_run(
     return graph, state, config
 
 
+# Strong references to detached turn workers, so the event loop can't garbage
+# collect one mid-turn. Nothing more: an earlier version keyed this by chat_id and
+# cancelled the previous turn to keep `seq` in chat order, which caused strictly
+# worse problems than the ordering it fixed — a second turn arriving in the same
+# event-loop batch could cancel a worker before its first step (no sentinel ever
+# queued, so that client's SSE stream never terminated), the check-then-register
+# straddled an await so two workers could run and persist the same chat twice, and
+# a follow-up sent from a second tab silently killed the answer the first tab was
+# still streaming. Concurrent turns are now simply allowed: save_messages holds a
+# per-session lock and assigns monotonic seq, so the rows stay consistent.
+_INFLIGHT_TURNS: set[asyncio.Task] = set()
+
+
+async def _finalize_turn(
+    *,
+    result: dict,
+    repo: SupabaseRepo | None,
+    handlers: dict,
+    payload: ChatRequest,
+    session_id: str | None,
+    project_id: str | None,
+    started: float,
+) -> dict:
+    """Persist the finished turn and build its ``final`` wire payload.
+
+    Deliberately runs inside the turn worker, never in the SSE generator: a user
+    who walked away mid-turn must still get the answer saved to their history.
+    """
+    # Only THIS turn's generated messages (after the last human). Crucial: a
+    # terminal tool can leave an empty-content assistant message; falling back
+    # over the full rebuilt history would surface the PREVIOUS turn's answer
+    # (the "duplicated message" bug).
+    generated = split_generated(result.get("messages") or [])
+    artifacts = _draft_artifacts(generated)
+
+    assistant_message = result.get("response", "")
+    if not assistant_message:
+        # Fall back only to trailing AI text WITHOUT tool calls: text on a
+        # tool-call message is the streamed preamble — the client already
+        # committed it live on the status event (and get_messages shows it on
+        # reload), so carrying it in `final` would display it twice.
+        for message in reversed(generated):
+            if isinstance(message, AIMessage):
+                if getattr(message, "tool_calls", None):
+                    continue
+                content = text_of(message.content).strip()
+                if content:
+                    assistant_message = content
+                    break
+
+    # A drafting turn usually has NO assistant text (the model just calls the
+    # tool). Synthesize a short note so the bubble isn't empty / cross-turn.
+    # The note must match the artifact status: a failed draft next to a
+    # "Готово — подготовил" bubble reads as a broken product.
+    if not assistant_message.strip() and artifacts:
+        file_name = artifacts[0].get("fileName") or "документ"
+        if artifacts[0].get("status") == "ready":
+            assistant_message = f"Готово — подготовил «{file_name}». Скачать можно по кнопке ниже."
+        else:
+            assistant_message = (
+                "Не удалось подготовить документ. Попробуйте ещё раз — "
+                "при необходимости уточните, какой документ нужен."
+            )
+
+    metadata = result.get("metadata", {}) or {}
+    if "toolCallsCount" not in metadata:
+        metadata["toolCallsCount"] = result.get("tool_rounds", 0)
+
+    last_user = next((m for m in reversed(payload.messages) if m.role == "user"), None)
+    last_user_content = last_user.content if last_user else ""
+
+    if repo and session_id:
+        user_row = {
+            "role": "user",
+            "content": last_user_content,
+            "attached_document_ids": unique_document_ids(
+                last_user.model_dump() if last_user else None
+            ),
+        }
+        rows = [user_row] + await messages_to_rows(generated, handlers)
+        # Persist the synthesized note onto the (empty) drafting assistant row so
+        # reload shows it too — not an empty bubble.
+        if artifacts:
+            for row in rows:
+                if (
+                    row.get("role") == "assistant"
+                    and not (row.get("content") or "").strip()
+                    and any(
+                        isinstance(c, dict) and c.get("name") == DRAFT_TOOL_NAME
+                        for c in (row.get("tool_calls") or [])
+                    )
+                ):
+                    row["content"] = assistant_message
+                    break
+        await repo.save_messages(session_id, rows)
+
+    logger.info(
+        "Chat response sent",
+        extra={
+            "session_id": session_id,
+            "user_id": payload.userId,
+            "project_id": project_id,
+            "total_ms": int((time.time() - started) * 1000),
+            "model_used": metadata.get("modelUsed"),
+        },
+    )
+
+    return {
+        "type": "final",
+        "message": assistant_message,
+        "sessionId": session_id,
+        "projectId": project_id,
+        "metadata": metadata,
+        "artifacts": artifacts,
+    }
+
+
+async def _run_turn(
+    *,
+    agen,
+    queue: asyncio.Queue,
+    progress: dict,
+    repo: SupabaseRepo | None,
+    handlers: dict,
+    payload: ChatRequest,
+    session_id: str | None,
+    project_id: str | None,
+    started: float,
+) -> None:
+    """Drive the graph to completion, persist, and queue the wire events.
+
+    Detached from the request on purpose: a client disconnect cancels the SSE
+    relay, not this task, so the turn finishes and is saved rather than being
+    paid for and thrown away. Queue items are ``(kind, chunk)`` — the relay needs
+    ``kind`` to count what it actually sent and to know when to stop.
+    """
+    result: dict | None = None
+    announced_tool_calls: set[str] = set()
+    needs_flush = False
+
+    def emit(kind: str, chunk: bytes) -> None:
+        # Once the client is gone nobody drains the queue — keep finishing the
+        # turn (that is the whole point) but stop buffering wire events for an
+        # empty room, or a long answer piles up megabytes of dead tuples.
+        if not progress.get("detached"):
+            queue.put_nowait((kind, chunk))
+
+    try:
+        # stream_mode=["messages", "values"]:
+        #   - "messages" yields (AIMessageChunk, metadata) for token deltas;
+        #   - "values" yields the full state after each node — used to (a) announce
+        #     a tool BEFORE it runs (the generate snapshot carries the tool_calls)
+        #     and (b) capture the final state (== what graph.ainvoke would return).
+        async for mode, data in agen:
+            if mode == "messages":
+                chunk, meta = data
+                if meta.get("langgraph_node") == "generate":
+                    delta = _token_delta(chunk)
+                    if delta:
+                        emit("token", _sse({"type": "token", "delta": delta}))
+            elif mode == "values":
+                result = data
+                progress["tool_rounds"] = data.get("tool_rounds", 0)
+                messages = data.get("messages") or []
+                if messages:
+                    for call in getattr(messages[-1], "tool_calls", None) or []:
+                        key = call.get("id") or f"{call.get('name')}:{len(announced_tool_calls)}"
+                        if key in announced_tool_calls:
+                            continue
+                        announced_tool_calls.add(key)
+                        name = call.get("name", "")
+                        # last_tool stays server-side for the cancel diagnostic;
+                        # only the human-readable label goes on the wire. The raw
+                        # internal tool name (search_court_practice / draft_document…)
+                        # would disclose the system's machinery (prompt.py [12]).
+                        progress["last_tool"] = name
+                        emit(
+                            "status",
+                            _sse(
+                                {
+                                    "type": "status",
+                                    "label": TOOL_STATUS_LABELS.get(
+                                        name, DEFAULT_TOOL_STATUS
+                                    ),
+                                }
+                            ),
+                        )
+
+        if result is not None:
+            final = await _finalize_turn(
+                result=result,
+                repo=repo,
+                handlers=handlers,
+                payload=payload,
+                session_id=session_id,
+                project_id=project_id,
+                started=started,
+            )
+            emit("final", _sse(final))
+    except asyncio.CancelledError:
+        # A client disconnect cancels the relay, not this task, so in practice this
+        # only happens when the process is shutting down mid-deploy — the turn is
+        # lost, which is worth a log line since the user was waiting for it.
+        needs_flush = True
+        logger.info(
+            "Chat turn cancelled",
+            extra={"session_id": session_id, "elapsed_s": round(time.time() - started, 1)},
+        )
+        # Keep the wire contract intact: every stream ends with `final` or `error`,
+        # never in silence. `emit` is a no-op once the client is gone.
+        emit("error", _sse({"type": "error", "error": "Запрос отменён."}))
+        raise
+    except Exception:  # noqa: BLE001 - surface any generation failure to the client
+        needs_flush = True
+        # Log the full exception server-side (str(error) can embed upstream model
+        # ids / provider URLs from the fallback chain), but send the client only a
+        # generic, vendor-neutral message — never the raw error text (prompt.py [12]).
+        logger.exception("Chat generation failed", extra={"session_id": session_id})
+        emit(
+            "error",
+            _sse({"type": "error", "error": "Не удалось получить ответ. Попробуйте ещё раз."}),
+        )
+    finally:
+        # The relay also gets a "done" from this task's done-callback, so it can
+        # terminate even if this body never ran (a task cancelled before its first
+        # step skips try/finally entirely). A duplicate sentinel is harmless: the
+        # relay breaks on the first one.
+        queue.put_nowait(("done", b""))
+        with contextlib.suppress(Exception):
+            await agen.aclose()
+        if needs_flush:
+            # Push the (error / cancelled) run-end events to LangSmith now; on a
+            # normal completion its background queue flushes on its own.
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(wait_for_all_tracers)
+
+
 async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> AsyncIterator[bytes]:
     repo: SupabaseRepo | None = request.app.state.repo
 
@@ -269,211 +499,102 @@ async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> A
 
     graph, state, config = await _prepare_graph_run(request, payload, chat_id, project_id, history)
 
-    result: dict | None = None
-    announced_tool_calls: set[str] = set()
-    needs_flush = False
-    tokens_sent = 0  # how far the answer got — used to make a 499/cancel diagnosable
-    last_tool: str | None = None
-
-    # stream_mode=["messages", "values"]:
-    #   - "messages" yields (AIMessageChunk, metadata) for token deltas;
-    #   - "values" yields the full state after each node — used to (a) announce
-    #     a tool BEFORE it runs (the generate snapshot carries the tool_calls)
-    #     and (b) capture the final state (== what graph.ainvoke would return).
     agen = graph.astream(state, config=config, stream_mode=["messages", "values"])
-    pending = asyncio.ensure_future(_anext_or_done(agen))
+    queue: asyncio.Queue = asyncio.Queue()
+    # Written by the worker, read by the cancel diagnostic below.
+    progress: dict = {"last_tool": None, "tool_rounds": 0}
+    task = asyncio.create_task(
+        _run_turn(
+            agen=agen,
+            queue=queue,
+            progress=progress,
+            repo=repo,
+            handlers=getattr(request.app.state, "tool_handlers", {}) or {},
+            payload=payload,
+            session_id=session_id,
+            project_id=project_id,
+            started=started,
+        )
+    )
+    _INFLIGHT_TURNS.add(task)
+    # Belt and braces on the relay's exit: a task cancelled before its first step
+    # skips its own try/finally, so the sentinel has to come from the task object
+    # rather than from the coroutine body. Without this the relay's only exit is a
+    # sentinel that would never arrive and it heartbeats until the client gives up.
+    def _turn_done(finished: asyncio.Task) -> None:
+        _INFLIGHT_TURNS.discard(finished)
+        queue.put_nowait(("done", b""))
+
+    task.add_done_callback(_turn_done)
+
+    tokens_sent = 0  # how far the answer got — used to make a 499/cancel diagnosable
+    completed = False
+    # Stamped explicitly rather than left to the contextvars: the block below can
+    # end up running at garbage-collection time inside an unrelated request's task
+    # (see its comment), where the ambient chat_id/request_id belong to somebody
+    # else's chat and would misattribute this disconnect.
+    log_context = {"chat_id": current_chat_id(), "request_id": current_request_id()}
+    last_activity = started  # when the client last took something from us
     try:
         while True:
             try:
-                item = await asyncio.wait_for(
-                    asyncio.shield(pending), timeout=HEARTBEAT_INTERVAL_SECONDS
+                kind, chunk = await asyncio.wait_for(
+                    queue.get(), timeout=HEARTBEAT_INTERVAL_SECONDS
                 )
             except asyncio.TimeoutError:
                 # Still working (e.g. a slow OpenSearch tool); keep the connection
-                # warm WITHOUT cancelling the shielded in-flight step.
+                # warm. Nothing to shield: the model call lives in `task`, which
+                # this timeout cannot touch.
                 yield b": heartbeat\n\n"
+                last_activity = time.time()
                 continue
 
-            if item is _STREAM_DONE:
+            if kind == "done":
+                completed = True
                 break
-
-            mode, data = item
-            if mode == "messages":
-                chunk, meta = data
-                if meta.get("langgraph_node") == "generate":
-                    delta = _token_delta(chunk)
-                    if delta:
-                        # SERVERLESS NOTE: on a normal server this delta reaches
-                        # the browser live (typewriter); on Yandex Serverless the
-                        # response is buffered, so the client only sees it flushed
-                        # at the end. Same code works fully on a VM.
-                        yield _sse({"type": "token", "delta": delta})
-                        tokens_sent += 1
-            elif mode == "values":
-                result = data
-                messages = data.get("messages") or []
-                if messages:
-                    for call in getattr(messages[-1], "tool_calls", None) or []:
-                        key = call.get("id") or f"{call.get('name')}:{len(announced_tool_calls)}"
-                        if key in announced_tool_calls:
-                            continue
-                        announced_tool_calls.add(key)
-                        name = call.get("name", "")
-                        last_tool = name
-                        # Only the human-readable label goes to the client. The raw
-                        # internal tool name (search_court_practice / draft_document…)
-                        # would disclose the system's internal machinery, so it is
-                        # kept server-side (see prompt.py section [12]).
-                        yield _sse(
-                            {
-                                "type": "status",
-                                "label": TOOL_STATUS_LABELS.get(name, DEFAULT_TOOL_STATUS),
-                            }
-                        )
-
-            pending = asyncio.ensure_future(_anext_or_done(agen))
-    except asyncio.CancelledError:
-        # Client disconnected (closed tab / network drop). Let the cancellation
-        # propagate into the model call so its run-end events are emitted, then
-        # flush below — instead of orphaning the LangSmith run.
-        # SERVERLESS NOTE: this branch only matters because the serverless
-        # instance is frozen right after the response ends, so we must close +
-        # flush the trace NOW. On a normal server the run would close on its own.
-        needs_flush = True
-        # Make the 499/cancel diagnosable: how long the turn ran and where it was
-        # when the client vanished (request_id/chat_id are already attached by
-        # RequestContextMiddleware). Big elapsed_s with tokens_sent>0 ⇒ a long
-        # turn likely dropped by an idle timeout on the buffered connection;
-        # near-zero elapsed_s ⇒ the user just navigated away.
-        phase = (
-            "streaming_answer" if tokens_sent
-            else f"tool:{last_tool}" if last_tool
-            else "thinking"
-        )
-        logger.info(
-            "Chat stream cancelled (client disconnected)",
-            extra={
-                "session_id": session_id,
-                "elapsed_s": round(time.time() - started, 1),
-                "phase": phase,
-                "tokens_sent": tokens_sent,
-                "tool_rounds": (result or {}).get("tool_rounds", 0),
-            },
-        )
-        raise
-    except Exception as error:  # noqa: BLE001 - surface any generation failure to the client
-        needs_flush = True
-        # Log the full exception server-side (str(error) can embed upstream model
-        # ids / provider URLs from the fallback chain), but send the client only a
-        # generic, vendor-neutral message — never the raw error text (prompt.py [12]).
-        logger.exception("Chat generation failed", extra={"session_id": session_id})
-        yield _sse({"type": "error", "error": "Не удалось получить ответ. Попробуйте ещё раз."})
-        return
+            if kind == "token":
+                tokens_sent += 1
+            yield chunk
+            last_activity = time.time()
     finally:
-        # Cancel/await the in-flight __anext__ so aclose() doesn't trip over a
-        # running generator, then finalize the graph stream.
-        if not pending.done():
-            pending.cancel()
-        with contextlib.suppress(BaseException):
-            await pending
-        with contextlib.suppress(Exception):
-            await agen.aclose()
-        if needs_flush:
-            # Force the LangSmith background queue to upload the (error / cancelled)
-            # run-end events before this serverless instance is frozen/reclaimed.
-            with contextlib.suppress(Exception):
-                await asyncio.to_thread(wait_for_all_tracers)
-
-    if result is None:
-        return
-
-    # Only THIS turn's generated messages (after the last human). Crucial: a
-    # terminal tool can leave an empty-content assistant message; falling back
-    # over the full rebuilt history would surface the PREVIOUS turn's answer
-    # (the "duplicated message" bug).
-    generated = split_generated(result.get("messages") or [])
-    artifacts = _draft_artifacts(generated)
-
-    assistant_message = result.get("response", "")
-    if not assistant_message:
-        # Fall back only to trailing AI text WITHOUT tool calls: text on a
-        # tool-call message is the streamed preamble — the client already
-        # committed it live on the status event (and get_messages shows it on
-        # reload), so carrying it in `final` would display it twice.
-        for message in reversed(generated):
-            if isinstance(message, AIMessage):
-                if getattr(message, "tool_calls", None):
-                    continue
-                content = text_of(message.content).strip()
-                if content:
-                    assistant_message = content
-                    break
-
-    # A drafting turn usually has NO assistant text (the model just calls the
-    # tool). Synthesize a short note so the bubble isn't empty / cross-turn.
-    # The note must match the artifact status: a failed draft next to a
-    # "Готово — подготовил" bubble reads as a broken product.
-    if not assistant_message.strip() and artifacts:
-        file_name = artifacts[0].get("fileName") or "документ"
-        if artifacts[0].get("status") == "ready":
-            assistant_message = f"Готово — подготовил «{file_name}». Скачать можно по кнопке ниже."
-        else:
-            assistant_message = (
-                "Не удалось подготовить документ. Попробуйте ещё раз — "
-                "при необходимости уточните, какой документ нужен."
+        # Anything other than a clean "done" means the client went away mid-turn.
+        # This has to be a `finally`, not `except CancelledError`: how Starlette
+        # tears us down depends on the ASGI spec_version it negotiated — on <2.4 it
+        # cancels the task running the response (CancelledError arrives here, and
+        # that is what prod does today), on >=2.4 `send` raises OSError and we are
+        # closed with GeneratorExit at the `yield` instead. A cancel can also land
+        # on `send` rather than on our own await. `finally` covers every variant;
+        # no `await` in here, so it is safe under GeneratorExit.
+        #
+        # `task` is deliberately NOT cancelled: it finishes the turn and persists
+        # it, so the answer is waiting in the chat on the user's next visit. The
+        # flag tells the worker to stop queueing events nobody will ever read.
+        #
+        # Timing caveat: when the server is torn down while this generator sits at
+        # a `yield` (the ASGI app can simply return and drop it), Python finalizes
+        # it later, at GC, inside whatever task happened to trigger the collection.
+        # So treat this line as "the client stopped reading", not "it stopped at
+        # this instant" — hence elapsed_s is measured to the last drained event
+        # rather than to now, and the ids are stamped from `log_context`.
+        if not completed:
+            progress["detached"] = True
+            # Make the 499/cancel diagnosable: how far the answer got and where the
+            # turn was when the client vanished. Big elapsed_s with tokens_sent>0 ⇒
+            # a long turn likely dropped by an idle timeout; near-zero elapsed_s
+            # with tokens_sent==0 ⇒ the user gave up staring at a spinner.
+            phase = (
+                "streaming_answer" if tokens_sent
+                else f"tool:{progress['last_tool']}" if progress["last_tool"]
+                else "thinking"
             )
-
-    metadata = result.get("metadata", {}) or {}
-    if "toolCallsCount" not in metadata:
-        metadata["toolCallsCount"] = result.get("tool_rounds", 0)
-
-    last_user = next((m for m in reversed(payload.messages) if m.role == "user"), None)
-    last_user_content = last_user.content if last_user else ""
-
-    if repo and session_id:
-        handlers = getattr(request.app.state, "tool_handlers", {}) or {}
-        user_row = {
-            "role": "user",
-            "content": last_user_content,
-            "attached_document_ids": unique_document_ids(
-                last_user.model_dump() if last_user else None
-            ),
-        }
-        rows = [user_row] + await messages_to_rows(generated, handlers)
-        # Persist the synthesized note onto the (empty) drafting assistant row so
-        # reload shows it too — not an empty bubble.
-        if artifacts:
-            for row in rows:
-                if (
-                    row.get("role") == "assistant"
-                    and not (row.get("content") or "").strip()
-                    and any(
-                        isinstance(c, dict) and c.get("name") == DRAFT_TOOL_NAME
-                        for c in (row.get("tool_calls") or [])
-                    )
-                ):
-                    row["content"] = assistant_message
-                    break
-        await repo.save_messages(session_id, rows)
-
-    logger.info(
-        "Chat response sent",
-        extra={
-            "session_id": session_id,
-            "user_id": payload.userId,
-            "project_id": project_id,
-            "total_ms": int((time.time() - started) * 1000),
-            "model_used": metadata.get("modelUsed"),
-        },
-    )
-
-    yield _sse(
-        {
-            "type": "final",
-            "message": assistant_message,
-            "sessionId": session_id,
-            "projectId": project_id,
-            "metadata": metadata,
-            "artifacts": artifacts,
-        }
-    )
+            logger.info(
+                "Chat stream cancelled (client disconnected)",
+                extra={
+                    **log_context,
+                    "session_id": session_id,
+                    "elapsed_s": round(last_activity - started, 1),
+                    "phase": phase,
+                    "tokens_sent": tokens_sent,
+                    "tool_rounds": progress["tool_rounds"],
+                },
+            )
