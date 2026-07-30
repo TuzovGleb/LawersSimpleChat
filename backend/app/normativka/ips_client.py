@@ -85,7 +85,11 @@ class IpsClient:
         *,
         base_url: str = BASE_URL,
         timeout: float = 90.0,
-        retries: int = 3,
+        # Портал регулярно проваливается на десятки секунд (наблюдали серию
+        # HTTP 502 подряд на трёх актах). Линейный бэкофф 1.5+3+4.5 ≈ 9 с такое
+        # окно не переживал, поэтому повторов больше и пауза растёт по степени:
+        # 3+6+12+24 ≈ 45 с суммарного ожидания на запрос.
+        retries: int = 4,
         pause: float = 1.0,
     ):
         self._base_url = base_url
@@ -132,7 +136,7 @@ class IpsClient:
                 "ИПС request failed, retrying",
                 extra={"attempt": attempt, "url": url[:200], "error": str(last_error)},
             )
-            time.sleep(self._pause * attempt)
+            time.sleep(self._pause * 2**attempt)
         raise IpsError(f"ИПС не ответил после {self._retries} попыток: {last_error}") from last_error
 
     def get_text(self, query: str, *, min_bytes: int = 0, echo: str | None = None) -> str:
@@ -156,7 +160,7 @@ class IpsClient:
                 echo,
                 extra={"attempt": attempt, "query": query[:120]},
             )
-            time.sleep(self._pause * attempt)
+            time.sleep(self._pause * 2**attempt)
         raise IpsError(
             f"Ответ ИПС не содержит ожидаемый маркер {echo!r} после {self._retries} попыток — "
             "устойчивый cross-talk или чужая страница"
