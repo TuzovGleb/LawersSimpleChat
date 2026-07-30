@@ -87,12 +87,43 @@ def main() -> int:
     parser.add_argument("--index-name", default=NORMATIVKA_INDEX_VERSION)
     parser.add_argument("--alias", default=NORMATIVKA_INDEX_ALIAS)
     parser.add_argument("--batch-size", type=int, default=500)
+    parser.add_argument(
+        "--no-alias",
+        action="store_true",
+        help="Создать/наполнить индекс, НЕ переключая на него алиас — рабочий индекс "
+        "остаётся прежним, пока новый не пройдёт проверку качества",
+    )
+    parser.add_argument(
+        "--swap-alias-only",
+        action="store_true",
+        help="Ничего не загружать, только перевести алиас на --index-name (после проверки)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     client = build_opensearch_client(OpenSearchConfig(url=args.opensearch_url))
-    ensure_index(client, index_name=args.index_name, alias=args.alias, body=NORMATIVKA_INDEX_BODY)
+
+    if args.swap_alias_only:
+        if not client.indices.exists(index=args.index_name):
+            logger.error("Индекс %s не существует — переключать алиас не на что", args.index_name)
+            return 2
+        count = client.count(index=args.index_name).get("count", 0)
+        if not count:
+            logger.error("Индекс %s пуст — отказываюсь переводить на него алиас", args.index_name)
+            return 2
+        ensure_index(client, index_name=args.index_name, alias=args.alias, body=NORMATIVKA_INDEX_BODY)
+        logger.info("Алиас %s → %s (документов: %d)", args.alias, args.index_name, count)
+        return 0
+
+    # Загрузка без переключения алиаса: ensure_index иначе переводит алиас
+    # СРАЗУ, и прод оказался бы на полупустом индексе в момент заливки.
+    if args.no_alias:
+        if not client.indices.exists(index=args.index_name):
+            client.indices.create(index=args.index_name, body=NORMATIVKA_INDEX_BODY)
+            logger.info("Создан индекс %s (алиас не трогаем)", args.index_name)
+    else:
+        ensure_index(client, index_name=args.index_name, alias=args.alias, body=NORMATIVKA_INDEX_BODY)
 
     total_indexed = 0
     total_purged = 0
@@ -137,7 +168,8 @@ def main() -> int:
         set_index_refresh(client, index_name=args.index_name, interval="1s")
         client.indices.refresh(index=args.index_name)
 
-    count = client.count(index=args.alias).get("count")
+    # Считаем по конкретному индексу: при --no-alias алиас ещё смотрит на старый.
+    count = client.count(index=args.index_name).get("count")
     logger.info(
         "Готово: проиндексировано %d, вычищено %d, ошибок %d; всего в индексе: %s",
         total_indexed, total_purged, len(total_errors), count,
