@@ -138,10 +138,26 @@ class IpsClient:
     def get_text(self, query: str, *, min_bytes: int = 0, echo: str | None = None) -> str:
         """GET and decode from cp1251. ``echo``: substring that MUST be present
         in the decoded page — the guard against the per-IP cache returning a
-        response to someone else's query (observed live)."""
-        body = self.get_raw(query, min_bytes=min_bytes)
-        text = body.decode("cp1251", errors="replace")
-        if echo and echo not in text:
-            raise IpsError(f"Ответ ИПС не содержит ожидаемый маркер {echo!r} — cross-talk или чужая страница")
-        time.sleep(self._pause)
-        return text
+        response to someone else's query (observed live).
+
+        A mismatch is RETRIED rather than raised on the spot: the cross-talk
+        comes from a per-IP cache and is transient, so a repeat after a pause
+        normally lands the right page. Failing immediately cost ~2% of acts in
+        a full-corpus run (including the УПК) for a condition that heals by
+        itself.
+        """
+        for attempt in range(1, self._retries + 1):
+            text = self.get_raw(query, min_bytes=min_bytes).decode("cp1251", errors="replace")
+            if not echo or echo in text:
+                time.sleep(self._pause)
+                return text
+            logger.warning(
+                "Ответ ИПС не содержит маркер %r (cross-talk), повтор",
+                echo,
+                extra={"attempt": attempt, "query": query[:120]},
+            )
+            time.sleep(self._pause * attempt)
+        raise IpsError(
+            f"Ответ ИПС не содержит ожидаемый маркер {echo!r} после {self._retries} попыток — "
+            "устойчивый cross-talk или чужая страница"
+        )
