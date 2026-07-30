@@ -184,3 +184,20 @@ def test_resolve_act_by_name_has_no_number_clause(searcher):
 def test_resolve_act_empty_ref_makes_no_query(searcher):
     assert searcher.resolve_act_sync("  ") == []
     searcher._client.search.assert_not_called()
+
+
+def test_curated_aliases_are_merged_into_the_document():
+    # «об ООО» лексически не пересекается с «Об обществах с ограниченной
+    # ответственностью» — без алиасов такой запрос не найдёт акт вовсе.
+    act = {"nd": "102051516", "kind": "fz", "name": "Об обществах с ограниченной ответственностью",
+           "number": "14-ФЗ", "date": "1998-02-08", "rdk": "56"}
+    doc = normalize_article({"number": "46", "title": "Крупные сделки", "text": "…"}, act=act, indexed_at="")
+    assert "ООО" in doc["act_aliases"]
+
+
+def test_aliases_do_not_leak_to_a_namesake_number():
+    # 14-ФЗ носят несколько актов; алиасы ООО не должны попасть к однофамильцу.
+    act = {"nd": "102136033", "kind": "fz", "name": "Об упразднении некоторых районных судов",
+           "number": "14-ФЗ", "date": "2013-02-04", "rdk": "0"}
+    doc = normalize_article({"number": "1", "title": "", "text": "…"}, act=act, indexed_at="")
+    assert doc["act_aliases"] == ""

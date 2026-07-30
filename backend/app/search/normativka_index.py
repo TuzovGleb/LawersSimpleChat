@@ -13,6 +13,7 @@ import copy
 import hashlib
 import re
 
+from app.normativka.acts import aliases_for
 from app.search.index import INDEX_BODY as _COURT_INDEX_BODY
 
 # v2 adds the searchable act_number subfield: lawyers cite federal laws by
@@ -118,13 +119,19 @@ def normalize_article(
         return None
 
     article_id = generate_article_id(act_nd, number)
+    # Аббревиатуры юристов («об ООО», «ОСАГО», «ЗоЗПП») лексически не совпадают
+    # с официальными названиями, поэтому подмешиваются из курируемой таблицы —
+    # без них такой запрос не найдёт акт вообще.
+    aliases = tuple(act.get("aliases") or ()) + aliases_for(
+        act.get("number") or "", act.get("name") or ""
+    )
     return {
         "_id": article_id,
         "article_id": article_id,
         "act_nd": act_nd,
         "act_kind": act.get("kind") or "fz",
         "act_name": act.get("name") or "",
-        "act_aliases": ", ".join(act.get("aliases") or ()),
+        "act_aliases": ", ".join(dict.fromkeys(aliases)),
         "act_number": act.get("number") or "",
         "act_date": act.get("date") or None,
         "article_number": number,
