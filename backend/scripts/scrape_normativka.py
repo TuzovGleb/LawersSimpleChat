@@ -170,6 +170,19 @@ def scrape_act(client: IpsClient, target: ScrapeTarget, *, meta: ActMeta | None 
     articles = split_articles(html)
     if not articles:
         raise NoArticlesError(f"nd={target.nd}: в документе нет статей («Статья N» не встречается)")
+
+    # Document ids are sha(nd|номер статьи), so two articles sharing a number
+    # inside one act OVERWRITE each other in the index — silent data loss. It
+    # happens in compound documents (a law plus the code it enacts, each with
+    # its own «Статья 1…»); such wrappers are filtered out by name, so a
+    # remaining duplicate means something unexpected and must be visible.
+    numbers = [article.number for article in articles]
+    duplicates = sorted({n for n in numbers if numbers.count(n) > 1})
+    if duplicates:
+        logger.warning(
+            "nd=%s (%s): повторяющиеся номера статей %s — в индексе они перезапишут друг друга",
+            target.nd, target.name[:50], duplicates[:10],
+        )
     return {
         "act": {
             "nd": target.nd,
