@@ -82,7 +82,7 @@ def purge_stale_articles(client, index_name: str, act_nd: str, keep_ids: list[st
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Index нормативка snapshot into OpenSearch")
-    parser.add_argument("--source", required=True, help="Snapshot zip from scrape_normativka.py")
+    parser.add_argument("--source", help="Snapshot zip from scrape_normativka.py (не нужен для --swap-alias-only)")
     parser.add_argument("--opensearch-url", required=True)
     parser.add_argument("--index-name", default=NORMATIVKA_INDEX_VERSION)
     parser.add_argument("--alias", default=NORMATIVKA_INDEX_ALIAS)
@@ -101,6 +101,9 @@ def main() -> int:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+
+    if not args.swap_alias_only and not args.source:
+        parser.error("--source обязателен, если это не --swap-alias-only")
 
     client = build_opensearch_client(OpenSearchConfig(url=args.opensearch_url))
 
