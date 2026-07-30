@@ -102,3 +102,53 @@ def test_structural_reference_inside_text_does_not_split():
     articles = split_articles(html)
     assert [a.number for a in articles] == ["5", "6"]
     assert "Согласно статье 4" in articles[0].text
+
+
+# --- старая вёрстка рендерера (законы РФ 1992-93 гг.) ---
+# Заголовок — не <p class="H">, а <span class="W4">, текст статьи продолжается
+# в ТОМ ЖЕ абзаце, номера рвутся через границы спанов, главы римские.
+OLD_DOC_HTML = """
+<p><span class="W4">Глава VI (статья 21)</span></p>
+<p><span class="W4">Статья 1.</span> Зерно является национальным достоянием Российской Федерации.</p>
+<p><span class="W4">Статья 2.</span></p>
+<p><span class="mark">(Статья утратила силу - Федеральный закон от 30.12.2020 № 520-ФЗ)</span></p>
+<p><span class="ed"><span class="W4">Статья&nbsp;4</span><span class="W9">1</span>. Государственная поддержка</span></p>
+<p>Текст статьи 4.1 продолжается здесь.</p>
+<p><span class="W4">Статья&nbsp;1</span>7<span class="W9">1</span>. Мониторинг</p>
+"""
+
+
+def test_old_renderer_articles_are_found():
+    # Раньше при отсутствии class="H" не находилось НИ ОДНОЙ статьи (62%
+    # корпуса Законов РФ уходило в «без статей»).
+    numbers = [a.number for a in split_articles(OLD_DOC_HTML)]
+    assert numbers == ["1", "2", "4.1", "17.1"]
+
+
+def test_old_renderer_keeps_body_out_of_title():
+    articles = {a.number: a for a in split_articles(OLD_DOC_HTML)}
+    # Заголовок в старой вёрстке — только номер; первая фраза текста НЕ должна
+    # попасть в article_title (он в поиске усилен ×4).
+    assert articles["1"].title == ""
+    assert "Зерно является национальным достоянием" in articles["1"].text
+
+
+def test_old_renderer_dotted_numbers_across_span_boundaries():
+    numbers = [a.number for a in split_articles(OLD_DOC_HTML)]
+    # «Статья 4</span><span class="W9">1</span>» = 4¹, а не 41
+    assert "4.1" in numbers and "41" not in numbers
+    # «Статья 1</span>7<span W9>1</span>» = 17¹ — номер, разорванный тегом
+    assert "17.1" in numbers
+
+
+def test_old_renderer_roman_chapter_in_path():
+    articles = {a.number: a for a in split_articles(OLD_DOC_HTML)}
+    assert articles["1"].chapter_path == "Глава VI (статья 21)"
+
+
+def test_new_renderer_still_parses_titles():
+    # Регресс: в новой вёрстке заголовок занимает весь абзац и название статьи
+    # обязано сохраниться.
+    articles = {a.number: a for a in split_articles(DOC_HTML)}
+    assert articles["1"].title == "Предмет регулирования"
+    assert articles["333.19"].title.startswith("Размеры государственной пошлины")
