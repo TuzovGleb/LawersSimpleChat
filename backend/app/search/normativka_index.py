@@ -11,10 +11,16 @@ instance, same analyzer, different corpus and lifecycle.
 """
 import copy
 import hashlib
+import re
 
+from app.normativka.acts import aliases_for
 from app.search.index import INDEX_BODY as _COURT_INDEX_BODY
 
-NORMATIVKA_INDEX_VERSION = "legal_acts_v1"
+# v2 adds the searchable act_number subfield: lawyers cite federal laws by
+# number («44-ФЗ», «152-ФЗ»), so it must be both an exact term (resolution)
+# and analyzed text (topical search). Mapping change ⇒ new version + full
+# reload + alias swap, per the court-practice convention.
+NORMATIVKA_INDEX_VERSION = "legal_acts_v2"
 NORMATIVKA_INDEX_ALIAS = "legal_acts"
 
 NORMATIVKA_INDEX_BODY = {
@@ -34,7 +40,12 @@ NORMATIVKA_INDEX_BODY = {
                 "fields": {"raw": {"type": "keyword"}},
             },
             "act_aliases": {"type": "text", "analyzer": "russian"},
-            "act_number": {"type": "keyword"},
+            # keyword for exact resolution («44-ФЗ» → тот самый закон),
+            # .text for topical queries that mention the number in passing.
+            "act_number": {
+                "type": "keyword",
+                "fields": {"text": {"type": "text", "analyzer": "russian"}},
+            },
             "act_date": {"type": "date", "format": "yyyy-MM-dd||strict_date_optional_time"},
             "article_number": {"type": "keyword"},
             "article_title": {"type": "text", "analyzer": "russian"},
@@ -52,6 +63,27 @@ def generate_article_id(act_nd: str, article_number: str) -> str:
     """Stable id: re-indexing the same article of the same act overwrites it."""
     payload = f"{act_nd}|{article_number}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+
+def normalize_act_number(value: str) -> str:
+    """Canonical act number for term lookups: «№ 44 ФЗ», «44фз» -> «44-ФЗ».
+
+    Lawyers write federal-law numbers every possible way; the index stores the
+    ИПС form («44-ФЗ», «2300-I»), so every inbound variant is folded to it.
+    Returns '' when the value carries no number at all.
+    """
+    cleaned = (value or "").strip().lstrip("№").strip()
+    match = re.match(r"^(\d+)\s*[-–_/ ]?\s*(фз|фкз|ф\.з\.|i+|[ivxlc]+)?\.?$", cleaned, re.I)
+    if not match:
+        return ""
+    number, suffix = match.group(1), (match.group(2) or "").lower()
+    if not suffix:
+        return number
+    if suffix.startswith("фкз"):
+        return f"{number}-ФКЗ"
+    if suffix.startswith("ф"):
+        return f"{number}-ФЗ"
+    return f"{number}-{suffix.upper()}"  # римские: «2300-I»
 
 
 def normalize_article_number(value: str) -> str:
@@ -87,13 +119,19 @@ def normalize_article(
         return None
 
     article_id = generate_article_id(act_nd, number)
+    # Аббревиатуры юристов («об ООО», «ОСАГО», «ЗоЗПП») лексически не совпадают
+    # с официальными названиями, поэтому подмешиваются из курируемой таблицы —
+    # без них такой запрос не найдёт акт вообще.
+    aliases = tuple(act.get("aliases") or ()) + aliases_for(
+        act.get("number") or "", act.get("name") or ""
+    )
     return {
         "_id": article_id,
         "article_id": article_id,
         "act_nd": act_nd,
         "act_kind": act.get("kind") or "fz",
         "act_name": act.get("name") or "",
-        "act_aliases": ", ".join(act.get("aliases") or ()),
+        "act_aliases": ", ".join(dict.fromkeys(aliases)),
         "act_number": act.get("number") or "",
         "act_date": act.get("date") or None,
         "article_number": number,

@@ -16,7 +16,7 @@ from typing import Any
 from opensearchpy import OpenSearch
 
 from app.search.client import OpenSearchConfig
-from app.search.normativka_index import normalize_article_number
+from app.search.normativka_index import normalize_act_number, normalize_article_number
 from app.search.rrf import RankedDocument, reciprocal_rank_fusion
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,8 @@ NORMATIVKA_SEARCH_FIELDS = [
     "article_title^4",
     "act_name^2.5",
     "act_aliases^2.5",
+    # «44-ФЗ», «152-ФЗ» — как юрист называет закон в запросе.
+    "act_number.text^2.5",
     "chapter_path^1.5",
     "article_text",
 ]
@@ -133,6 +135,92 @@ class NormativkaSearcher:
 
     async def search(self, queries: list[str], *, act_nds: list[str] | None = None) -> list[RankedDocument]:
         return await asyncio.to_thread(self.search_sync, queries, act_nds=act_nds)
+
+    def resolve_act_sync(self, act_ref: str) -> list[dict]:
+        """Find acts in the corpus by a lawyer's reference to them.
+
+        Handles both ways an act gets named: by number («44-ФЗ», «2300-I») and
+        by name («О защите прав потребителей», «Трудовой кодекс»). Resolution
+        goes through the INDEX rather than a hardcoded table, because the
+        corpus holds ~1000 federal laws that no table could carry.
+
+        CAVEAT verified live: federal-law numbers are NOT unique — they restart
+        every year, so «14-ФЗ» is both «Об обществах с ограниченной
+        ответственностью» (1998) and «Об упразднении некоторых районных судов
+        Самарской области» (2013). A bare number therefore cannot be resolved
+        to one act; the caller must disambiguate. Candidates carry ``articles``
+        (how many articles the act has in the index) and ``act_date``, which is
+        what tells the famous law from its same-numbered namesakes.
+        """
+        ref = (act_ref or "").strip()
+        if not ref:
+            return []
+
+        number = normalize_act_number(ref)
+        should: list[dict[str, Any]] = [
+            # Название целиком/почти целиком — сильнейший сигнал.
+            {"match_phrase": {"act_name": {"query": ref, "boost": 6.0}}},
+            {"match": {"act_name": {"query": ref, "operator": "and", "boost": 3.0}}},
+            {"match_phrase": {"act_aliases": {"query": ref, "boost": 6.0}}},
+            # Юрист называет закон не его официальным именем: «закон о
+            # банкротстве» вместо «О несостоятельности (банкротстве)». Требовать
+            # ВСЕ слова нельзя — лишнее «закон» обнуляет совпадение; поэтому
+            # мягкий вариант с большинством слов и низким бустом, чтобы точное
+            # название всегда оставалось выше.
+            {
+                "match": {
+                    "act_name": {"query": ref, "operator": "or", "minimum_should_match": "60%", "boost": 1.0}
+                }
+            },
+        ]
+        if number:
+            should.append({"term": {"act_number": {"value": number, "boost": 10.0}}})
+
+        body = {
+            "size": 0,
+            "query": {"bool": {"should": should, "minimum_should_match": 1}},
+            "aggs": {
+                "acts": {
+                    # По релевантности названия; при равенстве (типичный случай
+                    # для чистого номера) впереди акт с большим числом статей —
+                    # у «громких» законов их заметно больше, чем у точечных
+                    # однодневок с тем же номером.
+                    "terms": {
+                        "field": "act_nd",
+                        "size": 8,
+                        "order": [{"score": "desc"}, {"_count": "desc"}],
+                    },
+                    "aggs": {
+                        "score": {"max": {"script": "_score"}},
+                        "meta": {
+                            "top_hits": {
+                                "size": 1,
+                                "_source": [
+                                    "act_nd",
+                                    "act_kind",
+                                    "act_name",
+                                    "act_number",
+                                    "act_date",
+                                ],
+                            }
+                        },
+                    },
+                }
+            },
+        }
+        response = self._client.search(index=self._index, body=body)
+        acts: list[dict] = []
+        for bucket in response.get("aggregations", {}).get("acts", {}).get("buckets", []):
+            hits = bucket.get("meta", {}).get("hits", {}).get("hits", [])
+            if not hits:
+                continue
+            act = dict(hits[0].get("_source") or {})
+            act["articles"] = bucket.get("doc_count", 0)
+            acts.append(act)
+        return acts
+
+    async def resolve_act(self, act_ref: str) -> list[dict]:
+        return await asyncio.to_thread(self.resolve_act_sync, act_ref)
 
     def resolve_sync(self, act_nd: str, article_number: str) -> dict | None:
         """Exact article fetch: term filters, no scoring, no ranking."""

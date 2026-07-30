@@ -9,24 +9,104 @@ live — naive parsing shifted all titles by one).
 """
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from app.normativka.ips_client import IpsClient, build_query
 
 logger = logging.getLogger(__name__)
 
-# Classifier ids (вид документа / статус действия) from the ИПС dictionary.
-DOC_KIND_KODEKS = "102000486"
+# Classifier ids (вид документа / статус действия) read from the ИПС's own
+# dictionary endpoint: POST ?autocomplete&bpa=cd00000&nclassif=3&area=110 with
+# body ``query=<cp1251-urlencoded prefix>`` returns percent-encoded cp1251 TSV
+# «label \t id» (nclassif=3 is the вид-документа classifier, 4 — статус).
+DOC_KIND_KODEKS = "102000486"       # Кодекс — 25 действующих
+DOC_KIND_FZ = "102000505"           # Федеральный закон — ~11 370 действующих с текстом
+DOC_KIND_FKZ = "102000506"          # Федеральный конституционный закон
+DOC_KIND_ZAKON = "102000484"        # Закон (РФ/РСФСР) — «О защите прав потребителей», «О недрах», «О СМИ»
 STATUS_ACTIVE_AMENDED = "102000038"     # «Действует с изменениями»
 STATUS_ACTIVE_UNCHANGED = "102000037"   # «Действует без изменений»
 
+# Kind ids -> the ``act_kind`` value stored in the index.
+DOC_KIND_TO_ACT_KIND = {
+    DOC_KIND_KODEKS: "kodeks",
+    DOC_KIND_FZ: "fz",
+    DOC_KIND_FKZ: "fkz",
+    DOC_KIND_ZAKON: "zakon_rf",
+}
+
 PAGE_SIZE = 20  # the server's default; start=N pages through the result set
+
+# Technical acts: their own text is «в статье 5 слова … заменить словами …»,
+# useless to a lawyer's question, and the ИПС has already merged their effect
+# into the base acts' redactions. Measured on a 320-doc spread across the
+# whole ФЗ corpus (2026-07): 91% technical, 9% substantive (≈1000 laws).
+# Matched on the act's own name, anchored at the start.
+#
+# «Об утверждении …» — законы-обёртки, вводившие в действие акты РСФСР
+# (Водный/Земельный/Исправительно-трудовой кодексы, КЗоТ). Их собственная
+# норма — «Утвердить X и ввести в действие с …», ценности для вопроса юриста
+# ноль. Отдельно опасен «Об утверждении Кодекса законов о труде РСФСР»: ИПС
+# помечает его «Действует без изменений» и отдаёт вместе с ним ПОЛНЫЙ текст
+# советского КЗоТа (258 статей), в тексте ни слова об утрате силы — то есть
+# без этого правила индекс выдавал бы отменённое с 2002 г. трудовое право как
+# действующее. ВНИМАНИЕ: правило годится только для законов. Для подзаконки
+# всё наоборот — «Об утверждении Правил …» несёт сами правила, переносить
+# этот пункт на постановления/приказы нельзя.
+_TECHNICAL_NAME_RE = re.compile(
+    r"^\s*("
+    r"о\s+внесени|об\s+изменени|о\s+ратификац|о\s+денонсац|"
+    # между «приостановлении» и «действия» вклинивается субъект («о
+    # приостановлении Российской Федерацией действия отдельных положений…»)
+    r"о\s+приостановлении\b[^,]{0,60}?\bдействия|о\s+прекращении\b[^,]{0,60}?\bдействия|"
+    r"о\s+признании\s+утратив|об\s+отмене|"
+    # присоединение к конвенциям и принятие уставов/протоколов — та же
+    # ратификационная механика; «о принятии» целиком брать нельзя, под него
+    # попал бы ФКЗ «О принятии в Российскую Федерацию Республики Крым»
+    r"о\s+принятии\b[^,]{0,40}?\b(протокол|устав|конвенц|соглашени)|о\s+присоединении\s+рос|"
+    # «об исполнении бюджета» любого фонда (ПФР/ФСС/ФОМС), не только федерального
+    r"о\s+выходе\s+из|об\s+исполнении\s+(федерального\s+)?бюджета|"
+    # «О приведении … в соответствие с …» — те же поправки, только другими
+    # словами: текст такого акта это «Внести в … изменения». Найдено на живом
+    # корпусе (2 акта), причём один из них — составной документ, в котором
+    # своя «Статья 2» соседствует со встроенной чужой.
+    r"о\s+продлении\s+срока|об?\s+утверждении|о\s+приведении"
+    r")",
+    re.I,
+)
+
+_NUMBER_RE = re.compile(r"№\s*([0-9]+[-–]?[A-Za-zА-Яа-яIVXLC]*(?:/[0-9A-Za-zА-Яа-я-]+)?)\s*$")
+_DATE_RE = re.compile(r"от\s+(\d{2})\.(\d{2})\.(\d{4})")
+
+
+def is_technical_act(full_name: str) -> bool:
+    """True for amending/ratifying/repealing acts — excluded from the ingest."""
+    return bool(_TECHNICAL_NAME_RE.match(full_name or ""))
+
+
+def parse_number(short_ref: str) -> str:
+    """«Федеральный закон от 04.07.2026 № 240-ФЗ» -> «240-ФЗ» (''-safe)."""
+    match = _NUMBER_RE.search(short_ref or "")
+    return match.group(1).replace("–", "-") if match else ""
+
+
+def parse_date(short_ref: str) -> str:
+    """«… от 04.07.2026 № 240-ФЗ» -> «2026-07-04» ('' when absent)."""
+    match = _DATE_RE.search(short_ref or "")
+    if not match:
+        return ""
+    day, month, year = match.groups()
+    return f"{year}-{month}-{day}"
 
 _BLOCK_RE = re.compile(r'class="list_elem[^"]*"', re.I)
 _ND_RE = re.compile(r"nd=(\d+)")
-_TITLE_RE = re.compile(r'class="bold"[^>]*>\s*([^<]{5,200}?)\s*</a>', re.S)
-_FULLNAME_RE = re.compile(r'<span class="bold">([^<]{3,300})</span>', re.S)
-_STATUS_RE = re.compile(r'class="tiny_italic_bold">\s*([^<]{3,60}?)\s*<', re.S)
+# No upper length bounds anywhere: statute names run to 500+ characters
+# («О внесении изменения в статью 50 Закона … о пенсионном обеспечении лиц,
+# проходивших военную службу, службу в органах внутренних дел, …»), and a
+# capped pattern drops such a row's name SILENTLY — the act then indexes with
+# an empty act_name and becomes unresolvable. Emptiness is checked in code.
+_TITLE_RE = re.compile(r'class="bold"[^>]*>\s*([^<]+?)\s*</a>', re.S)
+_FULLNAME_RE = re.compile(r'<span class="bold">\s*([^<]+?)\s*</span>', re.S)
+_STATUS_RE = re.compile(r'class="tiny_italic_bold">\s*([^<]+?)\s*<', re.S)
 
 
 @dataclass(frozen=True)
@@ -35,6 +115,9 @@ class CatalogEntry:
     short_ref: str   # «Кодекс Российской Федерации от 30.12.2001 № 197-ФЗ»
     full_name: str   # «Трудовой кодекс Российской Федерации»
     status: str      # «Действует с изменениями»
+    number: str = ""  # «197-ФЗ» — derived from short_ref; lawyers cite ФЗ by it
+    date: str = ""    # «2001-12-30»
+    kind: str = ""    # act_kind, filled in by enumerate_acts from the query
 
 
 def _parse_page(html: str) -> list[CatalogEntry]:
@@ -48,12 +131,15 @@ def _parse_page(html: str) -> list[CatalogEntry]:
         fullname_match = _FULLNAME_RE.search(block, title_match.end())
         status_match = _STATUS_RE.search(block)
         status = status_match.group(1).strip() if status_match else ""
+        short_ref = " ".join(title_match.group(1).split())
         entries.append(
             CatalogEntry(
                 nd=nd_match.group(1),
-                short_ref=" ".join(title_match.group(1).split()),
+                short_ref=short_ref,
                 full_name=" ".join(fullname_match.group(1).split()) if fullname_match else "",
                 status=status,
+                number=parse_number(short_ref),
+                date=parse_date(short_ref),
             )
         )
     return entries
@@ -75,6 +161,7 @@ def enumerate_acts(
     page regardless of offset (its known failure mode), not a result cap —
     1000 pages covers the largest corpus (все ФЗ) several times over.
     """
+    act_kind = DOC_KIND_TO_ACT_KIND.get(doc_kind_id, "")
     overrides = {"a3": doc_kind_id, "a4": ";".join(status_ids)}
     seen: dict[str, CatalogEntry] = {}
     for page in range(max_pages):
@@ -87,6 +174,10 @@ def enumerate_acts(
         if not fresh:
             break
         for entry in fresh:
-            seen[entry.nd] = entry
+            seen[entry.nd] = replace(entry, kind=act_kind)
+        # ФЗ take ~570 pages — a silent 40-minute loop is indistinguishable
+        # from a hang, so report progress as it goes.
+        if page and page % 25 == 0:
+            logger.info("Каталог: страница %d, документов %d", page, len(seen))
     logger.info("Каталог перечислен", extra={"doc_kind": doc_kind_id, "count": len(seen)})
     return list(seen.values())

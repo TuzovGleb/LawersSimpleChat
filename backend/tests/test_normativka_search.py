@@ -138,3 +138,66 @@ def test_format_article_includes_source_and_redaction_note():
     assert "Официальный текст: http://pravo.gov.ru" in text
     assert "действующей редакции" in text
     assert text.endswith("Полный текст")
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("44-ФЗ", "44-ФЗ"),
+        ("44 ФЗ", "44-ФЗ"),
+        ("44фз", "44-ФЗ"),
+        ("№ 152-ФЗ", "152-ФЗ"),
+        ("1-ФКЗ", "1-ФКЗ"),
+        ("2300-I", "2300-I"),
+        ("127", "127"),
+        ("О защите прав потребителей", ""),
+    ],
+)
+def test_normalize_act_number(raw, expected):
+    from app.search.normativka_index import normalize_act_number
+    assert normalize_act_number(raw) == expected
+
+
+def test_act_number_is_searchable(searcher):
+    body = searcher._build_query_body("44-ФЗ закупки")
+    assert "act_number.text^2.5" in body["query"]["bool"]["must"][0]["multi_match"]["fields"]
+
+
+def test_resolve_act_matches_number_and_name(searcher):
+    searcher._client.search.return_value = {"aggregations": {"acts": {"buckets": []}}}
+    searcher.resolve_act_sync("44-ФЗ")
+    body = searcher._client.search.call_args.kwargs["body"]
+    should = body["query"]["bool"]["should"]
+    # точный номер — сильнейший сигнал, плюс совпадения по названию/алиасам
+    assert {"term": {"act_number": {"value": "44-ФЗ", "boost": 10.0}}} in should
+    assert any("act_name" in list(clause.values())[0] for clause in should)
+    assert body["query"]["bool"]["minimum_should_match"] == 1
+
+
+def test_resolve_act_by_name_has_no_number_clause(searcher):
+    searcher._client.search.return_value = {"aggregations": {"acts": {"buckets": []}}}
+    searcher.resolve_act_sync("О защите прав потребителей")
+    should = searcher._client.search.call_args.kwargs["body"]["query"]["bool"]["should"]
+    assert not any("act_number" in list(c.values())[0] for c in should)
+
+
+def test_resolve_act_empty_ref_makes_no_query(searcher):
+    assert searcher.resolve_act_sync("  ") == []
+    searcher._client.search.assert_not_called()
+
+
+def test_curated_aliases_are_merged_into_the_document():
+    # «об ООО» лексически не пересекается с «Об обществах с ограниченной
+    # ответственностью» — без алиасов такой запрос не найдёт акт вовсе.
+    act = {"nd": "102051516", "kind": "fz", "name": "Об обществах с ограниченной ответственностью",
+           "number": "14-ФЗ", "date": "1998-02-08", "rdk": "56"}
+    doc = normalize_article({"number": "46", "title": "Крупные сделки", "text": "…"}, act=act, indexed_at="")
+    assert "ООО" in doc["act_aliases"]
+
+
+def test_aliases_do_not_leak_to_a_namesake_number():
+    # 14-ФЗ носят несколько актов; алиасы ООО не должны попасть к однофамильцу.
+    act = {"nd": "102136033", "kind": "fz", "name": "Об упразднении некоторых районных судов",
+           "number": "14-ФЗ", "date": "2013-02-04", "rdk": "0"}
+    doc = normalize_article({"number": "1", "title": "", "text": "…"}, act=act, indexed_at="")
+    assert doc["act_aliases"] == ""

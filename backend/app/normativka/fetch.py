@@ -25,12 +25,20 @@ from app.normativka.ips_client import IpsClient, IpsError
 
 logger = logging.getLogger(__name__)
 
-# A stub page for an invalid rdk is ~6KB of chrome; real acts are far larger.
-_MIN_DOC_BYTES = 20_000
-_MIN_WRAPPER_BYTES = 8_000
+# Truncation is detected STRUCTURALLY, not by size. A byte floor calibrated on
+# codices (hundreds of КБ) rejected legitimately short acts — «Об утверждении
+# Указов Президиума Верховного Совета РСФСР» is 6-14КБ, and 19 such acts failed
+# a 20КБ floor. Completeness is instead proven by the document's own closing
+# marker: a stalled стream (HTTP 200 with a partial body — a known portal
+# failure mode) never reaches it. The floor that remains only catches empty
+# and error-page responses.
+_MIN_BYTES = 1_000
 _EXPORT_TIMEOUT = 600.0
 
-_TITLE_RE = re.compile(r"<title>([^<]{3,300})</title>", re.I)
+# Unbounded on purpose: a capped pattern silently loses the title of any act
+# with a long name, and the scraper verifies the fetched title against the
+# expected one — a lost title would fail the whole act.
+_TITLE_RE = re.compile(r"<title>\s*([^<]+?)\s*</title>", re.I)
 def _current_rdk_re(nd: str) -> re.Pattern:
     # The text-frame src carries «…&nd=<nd>&page=1&rdk=<N>». For most acts the
     # URL starts with doc_itself=, but the biggest ones (КоАП, НК ч.1, БК)
@@ -38,7 +46,7 @@ def _current_rdk_re(nd: str) -> re.Pattern:
     # the anchor is the act's own nd, not the endpoint name. Anchoring on nd
     # also guarantees we never pick up a foreign document's rdk.
     return re.compile(rf"nd={re.escape(nd)}&page=1&rdk=(\d+)")
-_REDACTION_OPT_RE = re.compile(r'<option id="s1o\d+" value="(\d+)"[^>]*>([^<]{3,120})</option>')
+_REDACTION_OPT_RE = re.compile(r'<option id="s1o\d+" value="(\d+)"[^>]*>\s*([^<]+?)\s*</option>')
 
 
 @dataclass(frozen=True)
@@ -60,7 +68,7 @@ def fetch_act_meta(client: IpsClient, nd: str, *, parse_retries: int = 2) -> Act
     html = ""
     rdk_match = None
     for _ in range(parse_retries):
-        html = client.get_text(f"docbody=&nd={nd}", min_bytes=_MIN_WRAPPER_BYTES, echo=f"nd={nd}")
+        html = client.get_text(f"docbody=&nd={nd}", min_bytes=_MIN_BYTES, echo=f"nd={nd}")
         rdk_match = rdk_re.search(html)
         if rdk_match:
             break
@@ -79,7 +87,17 @@ def fetch_act_meta(client: IpsClient, nd: str, *, parse_retries: int = 2) -> Act
 
 
 def _mht_to_html(raw: bytes) -> str:
-    """Extract and concatenate the text/html parts of an MHT web archive."""
+    """Extract and concatenate the text/html parts of an MHT web archive.
+
+    The archive's terminating boundary («--<boundary>--») proves the response
+    arrived whole: a stalled stream ends mid-part with HTTP 200 and would
+    otherwise be parsed into a silently truncated act.
+    """
+    boundary_match = re.search(rb'boundary="?([^"\r\n]+)', raw[:2048])
+    if boundary_match:
+        terminator = b"--" + boundary_match.group(1).strip() + b"--"
+        if terminator not in raw:
+            raise IpsError("MHT-экспорт оборван: нет завершающей границы MIME")
     message = email.message_from_bytes(raw)
     chunks: list[str] = []
     for part in message.walk():
@@ -99,17 +117,25 @@ def _fetch_html_export(client: IpsClient, nd: str) -> str:
     # records which rdk the wrapper reported alongside the fetched text. The
     # per-request timeout (instead of a second client) keeps the module's
     # one-serial-client-per-IP invariant intact.
-    raw = client.get_raw(f"savertf=&nd={nd}&page=all", min_bytes=_MIN_DOC_BYTES, timeout=_EXPORT_TIMEOUT)
+    raw = client.get_raw(f"savertf=&nd={nd}&page=all", min_bytes=_MIN_BYTES, timeout=_EXPORT_TIMEOUT)
     head = raw[:512].lstrip()
     if head.startswith(b"MIME-Version") or b"multipart/related" in raw[:512]:
         return _mht_to_html(raw)
     if head.startswith(b"<"):
-        return raw.decode("cp1251", errors="replace")
+        return _require_complete_html(raw.decode("cp1251", errors="replace"), nd)
     raise IpsError(f"savertf nd={nd}: неизвестный формат ответа ({raw[:20]!r})")
 
 
+def _require_complete_html(html: str, nd: str) -> str:
+    """Guard against a stalled stream: a whole page ends with </html>."""
+    if "</html>" not in html[-2048:].lower():
+        raise IpsError(f"nd={nd}: ответ оборван (нет закрывающего </html>), {len(html)} симв.")
+    return html
+
+
 def _fetch_html_view(client: IpsClient, nd: str, rdk: str) -> str:
-    return client.get_text(f"doc_itself=&nd={nd}&page=all&rdk={rdk}", min_bytes=_MIN_DOC_BYTES)
+    html = client.get_text(f"doc_itself=&nd={nd}&page=all&rdk={rdk}", min_bytes=_MIN_BYTES)
+    return _require_complete_html(html, nd)
 
 
 def fetch_act_text(client: IpsClient, nd: str, *, rdk: str) -> str:

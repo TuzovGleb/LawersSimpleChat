@@ -29,12 +29,34 @@ from dataclasses import dataclass
 # while after a letter they are units of measure («кг/м³» = м<W9>3</W9>) —
 # those must NOT gain a dot. Remaining non-index superscripts are unwrapped
 # in place («кг/м3») by _SUP_PLAIN_RE.
+# The superscript span does not have to touch its base digit: the renderer
+# often closes the heading span in between —
+# «<span class="W4">Статья 4</span><span class="W9">1</span>» is «Статья 4¹»,
+# and it even splits numbers mid-way («Статья 1</span>7<span W9>1</span>» =
+# «Статья 17¹»). So intervening closing tags are matched and re-emitted AFTER
+# the dotted index, which keeps the index inside the heading span.
+# Between the base digit and its superscript the renderer puts an arbitrary run
+# of tags — not just closing ones: «Статья 13</span><span class="ed ed4"><span
+# class="W9">1</span>» is «Статья 13¹». Allowing only </span> here cost the
+# article its number (it parsed as 13 with the title «1 . Особенности…»). The
+# run may contain any tag EXCEPT the superscript's own opening span.
+_SUP_TAILS = r'(?:\s*<(?!span[^>]*class="W9")[^>]*>)*'
 _SUP_RE = re.compile(
-    r'(?<=\d)<span[^>]*class="W9"[^>]*>\s*(\d+(?:\s*[.\-]\s*\d+)*)\s*</span>'
-    r"|(?<=\d)<sup[^>]*>\s*(\d+(?:\s*[.\-]\s*\d+)*)\s*</sup>",
+    rf'(\d)({_SUP_TAILS})\s*<span[^>]*class="W9"[^>]*>\s*(\d+(?:\s*[.\-]\s*\d+)*)\s*</span>'
+    rf"|(\d)({_SUP_TAILS})\s*<sup[^>]*>\s*(\d+(?:\s*[.\-]\s*\d+)*)\s*</sup>",
     re.I,
 )
 _SUP_PLAIN_RE = re.compile(r'<span[^>]*class="W9"[^>]*>\s*([^<]*?)\s*</span>', re.I)
+
+# The renderer also splits plain numbers across span boundaries («Статья
+# 1</span>7» is article 17). Tags become spaces when stripped, so «17» would
+# read as «1 7» and the article would be numbered 1 — colliding with the real
+# article 1. Tag runs standing strictly BETWEEN two digits are removed, but a
+# W9 opening tag is never consumed: there the boundary is meaningful (4</span>
+# <span W9>1 is 4¹, not 41).
+_SPLIT_NUMBER_RE = re.compile(
+    r'(\d)((?:\s*</span>|\s*<span(?![^>]*class="W9")[^>]*>)+)(?=\d)', re.I
+)
 
 # Tables (tax-rate scales, amortization groups, fee schedules) sit BETWEEN
 # <p> blocks in the renderer's markup, so a paragraph-only splitter would drop
@@ -47,8 +69,10 @@ _CELL_RE = re.compile(r"<t[dh][^>]*>(.*?)</t[dh]>", re.I | re.S)
 
 
 def _normalize_sup(match: re.Match) -> str:
-    index = (match.group(1) or match.group(2) or "").strip()
-    return "." + re.sub(r"\s*[.\-]\s*", ".", index)
+    digit = match.group(1) or match.group(4) or ""
+    closing_tags = match.group(2) or match.group(5) or ""
+    index = (match.group(3) or match.group(6) or "").strip()
+    return digit + "." + re.sub(r"\s*[.\-]\s*", ".", index) + closing_tags
 
 
 def _flatten_tables(html: str) -> str:
@@ -67,14 +91,25 @@ def _flatten_tables(html: str) -> str:
 _TAG_RE = re.compile(r"<[^>]+>")
 _P_SPLIT_RE = re.compile(r"<p\b([^>]*)>", re.I)
 _CLASS_RE = re.compile(r'class="([^"]*)"')
+# Two renderer generations, both live in the corpus:
+#   new: <p class="H">Статья 81. Расторжение трудового договора…</p>
+#   old: <p><span class="W4">Статья 1.</span> Зерно является национальным…</p>
+# In the old one the heading is a W4 span and the article's own text continues
+# in the SAME paragraph, and there is no class="H" in the document at all —
+# keying only on «H» found zero articles in 62% of Закон РФ acts («О зерне»,
+# «О бюджете Пенсионного фонда»), which the scraper then reported as
+# article-less. Heading detection therefore looks at typography, not one class.
+_HEADING_SPAN_RE = re.compile(r'<span[^>]*class="W4"[^>]*>(.*?)</span>', re.I | re.S)
 
 _ARTICLE_HEAD_RE = re.compile(r"^Статья\s+(\d+(?:\.\d+)*)\s*\.?\s*(.*)$", re.S)
 # Structural units that form the chapter path, most-significant first.
+# Chapter/section numbers are Arabic in the new documents and Roman in the old
+# ones («Глава VI (статья 21)»), so both are accepted.
 _STRUCTURE_LEVELS: tuple[tuple[str, re.Pattern], ...] = (
     ("часть", re.compile(r"^Часть\s+(первая|вторая|третья|четвертая|пятая)\b.*$", re.I)),
     ("раздел", re.compile(r"^Раздел\s+\S+.*$", re.I)),
     ("подраздел", re.compile(r"^Подраздел\s+\S+.*$", re.I)),
-    ("глава", re.compile(r"^Глава\s+\d+(?:\.\d+)*\b.*$", re.I)),
+    ("глава", re.compile(r"^Глава\s+[\dIVXLCivxlc]+(?:\.\d+)*\b.*$", re.I)),
     ("параграф", re.compile(r"^(§|Параграф)\s*\d+.*$", re.I)),
 )
 
@@ -87,6 +122,13 @@ class Article:
     chapter_path: str  # «Часть третья › Раздел III › Глава 13»
 
 
+def _normalize_numbers(fragment: str) -> str:
+    """Fold the renderer's number typography into plain dotted numbers."""
+    fragment = _SPLIT_NUMBER_RE.sub(r"\1", fragment)
+    fragment = _SUP_RE.sub(_normalize_sup, fragment)
+    return _SUP_PLAIN_RE.sub(lambda m: m.group(1), fragment)
+
+
 def _clean_text(fragment: str) -> str:
     text = _TAG_RE.sub(" ", fragment)
     text = html_lib.unescape(text)
@@ -94,21 +136,39 @@ def _clean_text(fragment: str) -> str:
 
 
 def _paragraphs(html: str) -> list[tuple[str, str]]:
-    """Split document HTML into (css_class, plain_text) paragraphs."""
-    html = _SUP_RE.sub(_normalize_sup, html)
-    html = _SUP_PLAIN_RE.sub(lambda m: m.group(1), html)
-    html = _flatten_tables(html)
-    parts = _P_SPLIT_RE.split(html)
+    """Split document HTML into (heading_kind, plain_text) paragraphs.
+
+    ``heading_kind`` is '' for ordinary paragraphs, ``full`` when the whole
+    paragraph is a heading (the new renderer's ``<p class="H">``), and
+    ``partial`` when a heading span opens the paragraph and the article's own
+    text continues inside it (the old renderer). The number is always parsed
+    from the paragraph TEXT, never from the span — the renderer splits numbers
+    across span boundaries — while the distinction decides whether the text
+    after the number is a title (``full``) or already body prose (``partial``),
+    which keeps the 4×-boosted title field free of prose.
+    """
+    parts = _P_SPLIT_RE.split(_flatten_tables(html))
     # parts = [prefix, attrs1, body1, attrs2, body2, ...]
     result: list[tuple[str, str]] = []
     for i in range(1, len(parts) - 1, 2):
-        attrs, body = parts[i], parts[i + 1]
-        body = body.split("</p>")[0]
-        text = _clean_text(body)
+        attrs, raw_body = parts[i], parts[i + 1].split("</p>")[0]
+        # Heading spans are located on the INTACT markup: number normalization
+        # deletes the very </span> that closes the heading span, so classifying
+        # after it would lose the heading.
+        spans = _HEADING_SPAN_RE.findall(raw_body)
+        heading = _clean_text(_normalize_numbers(" ".join(spans))) if spans else ""
+        text = _clean_text(_normalize_numbers(raw_body))
         if not text:
             continue
         class_match = _CLASS_RE.search(attrs)
-        result.append((class_match.group(1) if class_match else "", text))
+        css_class = class_match.group(1) if class_match else ""
+        if "H" in css_class.split():
+            kind = "full"
+        elif not heading:
+            kind = ""
+        else:
+            kind = "full" if heading == text else "partial"
+        result.append((kind, text))
     return result
 
 
@@ -117,6 +177,27 @@ def _structure_level(text: str) -> tuple[int, str] | None:
         if pattern.match(text):
             return level, text
     return None
+
+
+# Third renderer variant (1992-93 acts): no heading typography whatsoever —
+# the document is a run of class-less <span>s and articles read as plain text
+# («… постановляет: <span> Статья 1. Утвердить бюджет …»). Nothing in the
+# markup marks them, so the text itself is split on article boundaries. Used
+# ONLY when markup-based parsing found nothing, so it cannot affect documents
+# that already parse correctly.
+_ARTICLE_IN_TEXT_RE = re.compile(r"(?:^|(?<=[\s>;:.]))Статья\s+(\d+(?:\.\d+)*)\s*\.")
+
+
+def _split_articles_by_text(html: str) -> list[Article]:
+    text = _clean_text(_normalize_numbers(_flatten_tables(html)))
+    matches = list(_ARTICLE_IN_TEXT_RE.finditer(text))
+    articles: list[Article] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        body = text[match.start() : end].strip()
+        if body:
+            articles.append(Article(number=match.group(1), title="", text=body, chapter_path=""))
+    return articles
 
 
 def split_articles(html: str) -> list[Article]:
@@ -143,15 +224,16 @@ def split_articles(html: str) -> list[Article]:
             )
         current = None
 
-    for css_class, text in _paragraphs(html):
-        is_header = "H" in css_class.split()
-        if is_header:
+    for kind, text in _paragraphs(html):
+        if kind:
             article_match = _ARTICLE_HEAD_RE.match(text)
             if article_match:
                 flush()
                 current = {
                     "number": article_match.group(1),
-                    "title": article_match.group(2).strip(),
+                    # Only a whole-paragraph heading carries a title; in the old
+                    # renderer everything after the number is already body prose.
+                    "title": article_match.group(2).strip() if kind == "full" else "",
                     "lines": [text],
                 }
                 continue
@@ -169,4 +251,4 @@ def split_articles(html: str) -> list[Article]:
             current["lines"].append(text)
 
     flush()
-    return articles
+    return articles or _split_articles_by_text(html)

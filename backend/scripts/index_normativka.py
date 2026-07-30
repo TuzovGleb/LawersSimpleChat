@@ -1,9 +1,9 @@
 """Load a нормативка snapshot zip (from scrape_normativka.py) into OpenSearch.
 
 Per-act idempotency: article ids are stable (sha of nd|number), so re-indexing
-an act overwrites its articles in place; afterwards articles of the act whose
-``rdk`` differs from the just-loaded redaction are purged — they belong to a
-superseded redaction (e.g. an article dropped from the act entirely).
+an act overwrites its articles in place; afterwards every article of that act
+NOT written by this load is purged — it belongs either to a superseded
+redaction or to an earlier, wrong parse of the same one.
 
 Usage:
     uv run python scripts/index_normativka.py \
@@ -30,16 +30,52 @@ from app.search.normativka_index import (  # noqa: E402
 logger = logging.getLogger("index_normativka")
 
 
-def _purge_superseded(client, index_name: str, act_nd: str, current_rdk: str) -> int:
-    """Delete the act's articles left over from a previous redaction."""
-    body = {
-        "query": {
-            "bool": {
-                "filter": [{"term": {"act_nd": act_nd}}],
-                "must_not": [{"term": {"rdk": current_rdk}}],
-            }
-        }
-    }
+def dedupe_articles(documents: list[dict], act_label: str) -> list[dict]:
+    """Resolve articles that share a number inside one act, deterministically.
+
+    Document ids are sha(nd|номер), so same-numbered articles overwrite each
+    other and the survivor would otherwise depend on load order. It happens in
+    the documents themselves, not only in parsing: Бюджетный кодекс carries two
+    «Статьи 242.1» — a historical stub «(Дополнение статьей … ) (Утратила
+    силу…)» and the live «Общие положения». The substantive one must win every
+    time (titled first, then longer text), never «whichever came last», or a
+    lawyer gets a repeal stub in place of the norm.
+    """
+    by_number: dict[str, dict] = {}
+    dropped: list[str] = []
+    for doc in documents:
+        number = doc["article_number"]
+        previous = by_number.get(number)
+        if previous is None:
+            by_number[number] = doc
+            continue
+        rank = lambda d: (bool(d.get("article_title")), len(d.get("article_text") or ""))  # noqa: E731
+        winner = previous if rank(previous) >= rank(doc) else doc
+        by_number[number] = winner
+        dropped.append(number)
+    if dropped:
+        logger.warning(
+            "%s: номера статей повторяются %s — оставлена содержательная версия каждой",
+            act_label, sorted(set(dropped))[:10],
+        )
+    return list(by_number.values())
+
+
+def purge_stale_articles(client, index_name: str, act_nd: str, keep_ids: list[str]) -> int:
+    """Delete every article of the act except the ones just written.
+
+    Keyed on the ids of the current load rather than on rdk, because articles
+    go stale for two different reasons and only one of them changes the rdk:
+
+    * новая редакция акта — статья могла исчезнуть из текста;
+    * ПЕРЕПАРСИНГ той же редакции — если прежний разбор дал неверный номер
+      (отвалившийся надстрочный индекс превращал «13¹» в «13»), документ с
+      этим номером остаётся в индексе навсегда и подменяет настоящую статью.
+
+    Возвращает число удалённых документов.
+    """
+    must_not = [{"terms": {"article_id": keep_ids}}] if keep_ids else []
+    body = {"query": {"bool": {"filter": [{"term": {"act_nd": act_nd}}], "must_not": must_not}}}
     response = client.delete_by_query(index=index_name, body=body, conflicts="proceed")
     return response.get("deleted", 0)
 
@@ -51,12 +87,43 @@ def main() -> int:
     parser.add_argument("--index-name", default=NORMATIVKA_INDEX_VERSION)
     parser.add_argument("--alias", default=NORMATIVKA_INDEX_ALIAS)
     parser.add_argument("--batch-size", type=int, default=500)
+    parser.add_argument(
+        "--no-alias",
+        action="store_true",
+        help="Создать/наполнить индекс, НЕ переключая на него алиас — рабочий индекс "
+        "остаётся прежним, пока новый не пройдёт проверку качества",
+    )
+    parser.add_argument(
+        "--swap-alias-only",
+        action="store_true",
+        help="Ничего не загружать, только перевести алиас на --index-name (после проверки)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     client = build_opensearch_client(OpenSearchConfig(url=args.opensearch_url))
-    ensure_index(client, index_name=args.index_name, alias=args.alias, body=NORMATIVKA_INDEX_BODY)
+
+    if args.swap_alias_only:
+        if not client.indices.exists(index=args.index_name):
+            logger.error("Индекс %s не существует — переключать алиас не на что", args.index_name)
+            return 2
+        count = client.count(index=args.index_name).get("count", 0)
+        if not count:
+            logger.error("Индекс %s пуст — отказываюсь переводить на него алиас", args.index_name)
+            return 2
+        ensure_index(client, index_name=args.index_name, alias=args.alias, body=NORMATIVKA_INDEX_BODY)
+        logger.info("Алиас %s → %s (документов: %d)", args.alias, args.index_name, count)
+        return 0
+
+    # Загрузка без переключения алиаса: ensure_index иначе переводит алиас
+    # СРАЗУ, и прод оказался бы на полупустом индексе в момент заливки.
+    if args.no_alias:
+        if not client.indices.exists(index=args.index_name):
+            client.indices.create(index=args.index_name, body=NORMATIVKA_INDEX_BODY)
+            logger.info("Создан индекс %s (алиас не трогаем)", args.index_name)
+    else:
+        ensure_index(client, index_name=args.index_name, alias=args.alias, body=NORMATIVKA_INDEX_BODY)
 
     total_indexed = 0
     total_purged = 0
@@ -83,12 +150,15 @@ def main() -> int:
                     doc = normalize_article(raw_article, act=act, indexed_at=indexed_at)
                     if doc:
                         documents.append(doc)
+                documents = dedupe_articles(documents, act.get("name") or act["nd"])
                 for start in range(0, len(documents), args.batch_size):
                     batch = documents[start : start + args.batch_size]
                     success, errors = bulk_index_documents(client, batch, index_name=args.index_name)
                     total_indexed += success
                     total_errors.extend(errors)
-                purged = _purge_superseded(client, args.index_name, act["nd"], act.get("rdk") or "")
+                purged = purge_stale_articles(
+                    client, args.index_name, act["nd"], [d["_id"] for d in documents]
+                )
                 total_purged += purged
                 logger.info(
                     "%s: статей %d, вычищено устаревших %d",
@@ -98,7 +168,8 @@ def main() -> int:
         set_index_refresh(client, index_name=args.index_name, interval="1s")
         client.indices.refresh(index=args.index_name)
 
-    count = client.count(index=args.alias).get("count")
+    # Считаем по конкретному индексу: при --no-alias алиас ещё смотрит на старый.
+    count = client.count(index=args.index_name).get("count")
     logger.info(
         "Готово: проиндексировано %d, вычищено %d, ошибок %d; всего в индексе: %s",
         total_indexed, total_purged, len(total_errors), count,

@@ -1,3 +1,4 @@
+import pytest
 """Wrapper metadata parsing — both frame-src variants."""
 from unittest.mock import MagicMock
 
@@ -49,3 +50,49 @@ def test_foreign_nd_rdk_is_not_picked_up():
     except Exception:
         raised = True
     assert raised
+
+
+def test_long_document_title_is_parsed():
+    # Тот же принцип для обёртки: длинный <title> не должен теряться, иначе
+    # сверка заголовка в скрапере провалит акт целиком.
+    long_title = "Федеральный закон " + "о очень длинном наименовании " * 15
+    html = WRAPPER_FOSTR.replace(
+        "Кодекс Российской Федерации об административных правонарушениях", long_title)
+    meta = fetch_act_meta(_client(html), "102074277")
+    assert meta.title == " ".join(long_title.split())
+    assert meta.current_rdk == "962"
+
+
+# --- целостность ответа проверяется структурно, не по размеру ---
+
+def _mht(boundary: str, *, terminated: bool) -> bytes:
+    body = (
+        f'MIME-Version: 1.0\r\nContent-Type: multipart/related; boundary="{boundary}"\r\n\r\n'
+        f"--{boundary}\r\nContent-Type: text/html; charset=\"windows-1251\"\r\n\r\n"
+        "<html><p class=\"H\">Статья 1. Заголовок</p><p>Текст.</p></html>\r\n"
+    )
+    if terminated:
+        body += f"--{boundary}--\r\n"
+    return body.encode("cp1251")
+
+
+def test_short_but_complete_export_is_accepted():
+    from app.normativka.fetch import _mht_to_html
+    # «Об утверждении Указов Президиума ВС РСФСР» — 6-14КБ, законно короткие;
+    # порог в 20КБ отвергал 19 таких актов.
+    html = _mht_to_html(_mht("BND1", terminated=True))
+    assert "Статья 1" in html
+    assert len(html) < 1000
+
+
+def test_truncated_export_is_rejected():
+    from app.normativka.fetch import IpsError, _mht_to_html
+    with pytest.raises(IpsError, match="оборван"):
+        _mht_to_html(_mht("BND1", terminated=False))
+
+
+def test_truncated_html_view_is_rejected():
+    from app.normativka.fetch import IpsError, _require_complete_html
+    assert _require_complete_html("<html><p>текст</p></html>", "1")
+    with pytest.raises(IpsError, match="оборван"):
+        _require_complete_html("<html><p>текст обрывается", "1")
