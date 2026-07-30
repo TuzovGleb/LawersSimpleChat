@@ -34,6 +34,8 @@ def searcher():
     mock = MagicMock()
     mock.search = AsyncMock(return_value=[])
     mock.resolve = AsyncMock(return_value=None)
+    # Index-based act resolution: ФЗ не помещаются в таблицу, их находит индекс.
+    mock.resolve_act = AsyncMock(return_value=[])
     return mock
 
 
@@ -57,6 +59,17 @@ async def test_search_resolves_act_filters(tools, searcher):
     )
     kwargs = searcher.search.call_args.kwargs
     assert kwargs["act_nds"] == ["102074279"]
+    # Кодекс разрешён по таблице — в индекс за ним не ходили; за неизвестным — ходили.
+    searcher.resolve_act.assert_awaited_once_with("неведомый акт")
+
+
+@pytest.mark.asyncio
+async def test_search_resolves_federal_law_via_index(tools, searcher):
+    searcher.resolve_act = AsyncMock(
+        return_value=[{"act_nd": "555000111", "act_name": "О контрактной системе…", "act_number": "44-ФЗ"}]
+    )
+    await tools["search_normativka"].tool.ainvoke({"queries": ["закупка"], "acts": ["44-ФЗ"]})
+    assert searcher.search.call_args.kwargs["act_nds"] == ["555000111"]
 
 
 @pytest.mark.asyncio
@@ -72,9 +85,46 @@ async def test_search_reports_unrecognized_filters(tools, searcher):
 
 @pytest.mark.asyncio
 async def test_get_article_unknown_act_lists_vocabulary(tools):
+    # Ни таблица, ни индекс акт не знают — ответ подсказывает, как назвать.
     result = await tools["get_statute_article"].tool.ainvoke({"act": "закон о тишине", "article": "5"})
-    assert "не распознан" in result
-    assert "ТК РФ" in result  # the vocabulary is offered right in the reply
+    assert "в корпусе не найден" in result
+    assert "44-ФЗ" in result and "ТК РФ" in result
+
+
+@pytest.mark.asyncio
+async def test_get_article_by_law_number_via_index(tools, searcher):
+    searcher.resolve_act = AsyncMock(
+        return_value=[
+            {"act_nd": "555000111", "act_name": "О персональных данных", "act_number": "152-ФЗ"}
+        ]
+    )
+    searcher.resolve = AsyncMock(
+        return_value={
+            "article_id": "z",
+            "act_name": "О персональных данных",
+            "act_number": "152-ФЗ",
+            "article_number": "9",
+            "article_title": "Согласие субъекта",
+            "article_text": "Текст",
+        }
+    )
+    result = await tools["get_statute_article"].tool.ainvoke({"act": "152-ФЗ", "article": "9"})
+    searcher.resolve.assert_awaited_once_with("555000111", "9")
+    assert "ст. 9 — О персональных данных (152-ФЗ)" in result
+
+
+@pytest.mark.asyncio
+async def test_get_article_offers_alternatives_when_ambiguous(tools, searcher):
+    searcher.resolve_act = AsyncMock(
+        return_value=[
+            {"act_nd": "1", "act_name": "О связи", "act_number": "126-ФЗ"},
+            {"act_nd": "2", "act_name": "О почтовой связи", "act_number": "176-ФЗ"},
+        ]
+    )
+    searcher.resolve = AsyncMock(return_value=None)  # статьи нет в выбранном акте
+    result = await tools["get_statute_article"].tool.ainvoke({"act": "закон о связи", "article": "99"})
+    assert "не найдена" in result
+    assert "176-ФЗ" in result  # альтернатива предложена, а не проглочена
 
 
 @pytest.mark.asyncio
@@ -102,3 +152,50 @@ async def test_handler_rehydrates_by_reference(searcher):
     replayed = await handler.run(args={}, state=state)
     searcher.resolve.assert_awaited_once_with("102074279", "81")
     assert "Текст" in replayed
+
+
+@pytest.mark.asyncio
+async def test_bare_number_with_several_acts_asks_to_disambiguate(tools, searcher):
+    # Проверено вживую: номера ФЗ повторяются по годам — «14-ФЗ» это и «Об ООО»
+    # (1998), и «Об упразднении районных судов Самарской области» (2013).
+    # Выбирать за юриста нельзя, надо показать варианты.
+    searcher.resolve_act = AsyncMock(
+        return_value=[
+            {"act_nd": "1", "act_name": "Об обществах с ограниченной ответственностью",
+             "act_number": "14-ФЗ", "act_date": "1998-02-08", "articles": 59},
+            {"act_nd": "2", "act_name": "Об упразднении некоторых районных судов Самарской области",
+             "act_number": "14-ФЗ", "act_date": "2013-02-04", "articles": 3},
+        ]
+    )
+    result = await tools["get_statute_article"].tool.ainvoke({"act": "14-ФЗ", "article": "46"})
+    searcher.resolve.assert_not_awaited()  # не угадываем
+    assert "несколько актов" in result
+    assert "1998" in result and "2013" in result
+    assert "Об обществах с ограниченной ответственностью" in result
+
+
+@pytest.mark.asyncio
+async def test_search_by_bare_number_filters_all_namesakes(tools, searcher):
+    searcher.resolve_act = AsyncMock(
+        return_value=[
+            {"act_nd": "1", "act_name": "Об ООО", "act_number": "14-ФЗ"},
+            {"act_nd": "2", "act_name": "Об упразднении судов", "act_number": "14-ФЗ"},
+        ]
+    )
+    await tools["search_normativka"].tool.ainvoke({"queries": ["выход участника"], "acts": ["14-ФЗ"]})
+    # По номеру фильтруем по всем одноимённым — лучше, чем молча потерять нужный.
+    assert searcher.search.call_args.kwargs["act_nds"] == ["1", "2"]
+
+
+@pytest.mark.asyncio
+async def test_named_act_filter_takes_only_best_match(tools, searcher):
+    searcher.resolve_act = AsyncMock(
+        return_value=[
+            {"act_nd": "1", "act_name": "О защите прав потребителей", "act_number": "2300-I"},
+            {"act_nd": "2", "act_name": "О защите конкуренции", "act_number": "135-ФЗ"},
+        ]
+    )
+    await tools["search_normativka"].tool.ainvoke(
+        {"queries": ["возврат товара"], "acts": ["О защите прав потребителей"]}
+    )
+    assert searcher.search.call_args.kwargs["act_nds"] == ["1"]

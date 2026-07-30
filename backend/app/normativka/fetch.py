@@ -30,7 +30,10 @@ _MIN_DOC_BYTES = 20_000
 _MIN_WRAPPER_BYTES = 8_000
 _EXPORT_TIMEOUT = 600.0
 
-_TITLE_RE = re.compile(r"<title>([^<]{3,300})</title>", re.I)
+# Unbounded on purpose: a capped pattern silently loses the title of any act
+# with a long name, and the scraper verifies the fetched title against the
+# expected one — a lost title would fail the whole act.
+_TITLE_RE = re.compile(r"<title>\s*([^<]+?)\s*</title>", re.I)
 def _current_rdk_re(nd: str) -> re.Pattern:
     # The text-frame src carries «…&nd=<nd>&page=1&rdk=<N>». For most acts the
     # URL starts with doc_itself=, but the biggest ones (КоАП, НК ч.1, БК)
@@ -38,7 +41,7 @@ def _current_rdk_re(nd: str) -> re.Pattern:
     # the anchor is the act's own nd, not the endpoint name. Anchoring on nd
     # also guarantees we never pick up a foreign document's rdk.
     return re.compile(rf"nd={re.escape(nd)}&page=1&rdk=(\d+)")
-_REDACTION_OPT_RE = re.compile(r'<option id="s1o\d+" value="(\d+)"[^>]*>([^<]{3,120})</option>')
+_REDACTION_OPT_RE = re.compile(r'<option id="s1o\d+" value="(\d+)"[^>]*>\s*([^<]+?)\s*</option>')
 
 
 @dataclass(frozen=True)

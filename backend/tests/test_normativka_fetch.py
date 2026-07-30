@@ -49,3 +49,14 @@ def test_foreign_nd_rdk_is_not_picked_up():
     except Exception:
         raised = True
     assert raised
+
+
+def test_long_document_title_is_parsed():
+    # Тот же принцип для обёртки: длинный <title> не должен теряться, иначе
+    # сверка заголовка в скрапере провалит акт целиком.
+    long_title = "Федеральный закон " + "о очень длинном наименовании " * 15
+    html = WRAPPER_FOSTR.replace(
+        "Кодекс Российской Федерации об административных правонарушениях", long_title)
+    meta = fetch_act_meta(_client(html), "102074277")
+    assert meta.title == " ".join(long_title.split())
+    assert meta.current_rdk == "962"
