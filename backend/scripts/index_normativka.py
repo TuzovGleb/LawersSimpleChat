@@ -30,6 +30,37 @@ from app.search.normativka_index import (  # noqa: E402
 logger = logging.getLogger("index_normativka")
 
 
+def dedupe_articles(documents: list[dict], act_label: str) -> list[dict]:
+    """Resolve articles that share a number inside one act, deterministically.
+
+    Document ids are sha(nd|номер), so same-numbered articles overwrite each
+    other and the survivor would otherwise depend on load order. It happens in
+    the documents themselves, not only in parsing: Бюджетный кодекс carries two
+    «Статьи 242.1» — a historical stub «(Дополнение статьей … ) (Утратила
+    силу…)» and the live «Общие положения». The substantive one must win every
+    time (titled first, then longer text), never «whichever came last», or a
+    lawyer gets a repeal stub in place of the norm.
+    """
+    by_number: dict[str, dict] = {}
+    dropped: list[str] = []
+    for doc in documents:
+        number = doc["article_number"]
+        previous = by_number.get(number)
+        if previous is None:
+            by_number[number] = doc
+            continue
+        rank = lambda d: (bool(d.get("article_title")), len(d.get("article_text") or ""))  # noqa: E731
+        winner = previous if rank(previous) >= rank(doc) else doc
+        by_number[number] = winner
+        dropped.append(number)
+    if dropped:
+        logger.warning(
+            "%s: номера статей повторяются %s — оставлена содержательная версия каждой",
+            act_label, sorted(set(dropped))[:10],
+        )
+    return list(by_number.values())
+
+
 def _purge_superseded(client, index_name: str, act_nd: str, current_rdk: str) -> int:
     """Delete the act's articles left over from a previous redaction."""
     body = {
@@ -83,6 +114,7 @@ def main() -> int:
                     doc = normalize_article(raw_article, act=act, indexed_at=indexed_at)
                     if doc:
                         documents.append(doc)
+                documents = dedupe_articles(documents, act.get("name") or act["nd"])
                 for start in range(0, len(documents), args.batch_size):
                     batch = documents[start : start + args.batch_size]
                     success, errors = bulk_index_documents(client, batch, index_name=args.index_name)
