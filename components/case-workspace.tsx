@@ -13,7 +13,19 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { ThinkingIndicator } from "@/components/thinking-indicator";
 import { DocumentPreviewPanel } from "@/components/document-preview-panel";
 import { SubscriptionBanner } from "@/components/subscription-banner";
+import {
+  CommandPickerDialog,
+  CommandsChip,
+  PresetCardGrid,
+} from "@/components/command-presets";
 import { useAppHeight } from "@/hooks/use-app-height";
+import { renderPresetPrompt, type CommandPreset } from "@/lib/command-presets";
+import {
+  countPlaceholders,
+  findAdjacentPlaceholder,
+  findFirstPlaceholder,
+  pluralizeFields,
+} from "@/lib/prompt-placeholders";
 import { cn } from "@/lib/utils";
 import type { Entitlement } from "@/lib/entitlement";
 import type { ChatMessage, Project, SessionDocument, SelectedModel, UploadingDocument } from "@/lib/types";
@@ -425,6 +437,7 @@ export function CaseWorkspace({
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [isCommandsOpen, setIsCommandsOpen] = useState(false);
   // Drafted document currently open in the right-side preview panel.
   const [preview, setPreview] = useState<{ id: string; fileName: string } | null>(null);
   const dragCounterRef = useRef(0);
@@ -513,6 +526,89 @@ export function CaseWorkspace({
     el.style.overflowY = el.scrollHeight > COMPOSER_MAX_HEIGHT ? "auto" : "hidden";
   }, [input]);
 
+  // Команды читают материалы дела, а не только вложения текущего сообщения:
+  // документ, приложенный к прошлому ходу, уже лежит в деле и виден модели.
+  const hasDocuments = project.documents.length > 0 || pendingDocuments.length > 0;
+
+  // Сколько пропусков «[...]» осталось в поле ввода. Это же число ведёт
+  // подсказку под композером и решает, перехватывать ли Tab.
+  const pendingFieldCount = useMemo(() => countPlaceholders(input), [input]);
+
+  // Вставка команды меняет `input` через родителя, поэтому выделить первый
+  // пропуск можно только после того, как новое значение доедет до DOM. Счётчик,
+  // а не флаг по [input]: повторный выбор той же команды не меняет значение,
+  // React не перерисовывает — и каретка осталась бы там, где её бросили.
+  const [presetInsertCount, setPresetInsertCount] = useState(0);
+
+  // Стабильная ссылка: иначе memo() у карточек и чипа не спасает от перерисовки
+  // на каждый токен стрима.
+  const openCommands = useCallback(() => setIsCommandsOpen(true), []);
+
+  // Куда вставили текст команды: по этому смещению ищется первый пропуск,
+  // чтобы каретка не прыгнула в скобки, которые юрист написал сам.
+  const presetOffsetRef = useRef(0);
+  // Зеркало поля для обработчика вставки. Через проп `input` в зависимостях
+  // applyPreset менялся бы на каждую букву, и memo() у карточек и диалога
+  // перестал бы работать ровно тогда, когда юрист печатает.
+  const inputRef = useRef(input);
+  inputRef.current = input;
+  // Вставка меняет поле молча — скринридеру об этом надо сказать словами.
+  const [presetAnnouncement, setPresetAnnouncement] = useState("");
+
+  const applyPreset = useCallback(
+    (preset: CommandPreset) => {
+      // Фокус берём синхронно, внутри пользовательского клика: iOS открывает
+      // клавиатуру только так, отложенный focus() он игнорирует.
+      textareaRef.current?.focus();
+      const text = renderPresetPrompt(preset);
+      // Уже набранное не затираем, а дописываем: у контролируемого поля нет
+      // нативного undo, и надиктованную фабулу вернуть было бы нечем.
+      const current = inputRef.current.trim();
+      presetOffsetRef.current = current ? current.length + 2 : 0;
+      onInputChange(current ? `${current}\n\n${text}` : text);
+      setPresetInsertCount((count) => count + 1);
+      const fields = countPlaceholders(text);
+      setPresetAnnouncement(
+        fields > 0
+          ? `Команда «${preset.title}» добавлена в поле ввода. Осталось заполнить ${pluralizeFields(fields)} в квадратных скобках.`
+          : `Команда «${preset.title}» добавлена в поле ввода.`,
+      );
+    },
+    [onInputChange],
+  );
+
+  useEffect(() => {
+    if (presetInsertCount === 0) {
+      return;
+    }
+    const el = textareaRef.current;
+    if (!el) {
+      return;
+    }
+    el.focus();
+    // Ищем от места вставки, а не от начала: скобки в собственном тексте
+    // юриста — не наши пропуски.
+    const first =
+      findAdjacentPlaceholder(el.value, presetOffsetRef.current - 1, "forward") ??
+      findFirstPlaceholder(el.value);
+    // Первый пропуск выделен целиком — юрист просто печатает поверх него.
+    el.setSelectionRange(first?.start ?? el.value.length, first?.end ?? el.value.length);
+  }, [presetInsertCount]);
+
+  // Отправка и переключение чата очищают поле — вместе с ним заканчивается и
+  // режим заполнения команды.
+  useEffect(() => {
+    if (input === "") {
+      setPresetInsertCount(0);
+      setPresetAnnouncement("");
+    }
+  }, [input]);
+
+  // Пропуски считаем только у текста, пришедшего из команды. Иначе юрист,
+  // вставивший в поле цитату со скобками («[в редакции от ...]»), получил бы
+  // и ложную подсказку, и перехваченный Tab.
+  const isFillingPreset = presetInsertCount > 0 && pendingFieldCount > 0;
+
   const resetDragState = useCallback(() => {
     dragCounterRef.current = 0;
     setIsDragging(false);
@@ -559,11 +655,35 @@ export function CaseWorkspace({
   const handleInputKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (event.key === "Enter" && !event.shiftKey) {
+        // Пока в шаблоне команды остались пропуски, Enter переносит строку, а
+        // не отправляет: заполняя многострочный шаблон, юрист жмёт Enter между
+        // строк — и уходил бы платный ход с литералами «[...]» в теле. Когда
+        // пропусков не осталось, Enter снова отправляет, как везде; отправить
+        // недозаполненный текст по-прежнему можно кнопкой.
+        if (isFillingPreset) {
+          return;
+        }
         event.preventDefault();
         onSendMessage();
+        return;
+      }
+      // Tab перескакивает к следующему незаполненному пропуску вставленной
+      // команды. Когда в эту сторону пропусков больше нет, Tab отдаётся
+      // браузеру — иначе поле ввода стало бы ловушкой для клавиатуры.
+      if (event.key === "Tab" && isFillingPreset) {
+        const el = event.currentTarget;
+        const target = findAdjacentPlaceholder(
+          el.value,
+          event.shiftKey ? (el.selectionStart ?? 0) : (el.selectionEnd ?? 0),
+          event.shiftKey ? "backward" : "forward",
+        );
+        if (target) {
+          event.preventDefault();
+          el.setSelectionRange(target.start, target.end);
+        }
       }
     },
-    [onSendMessage],
+    [isFillingPreset, onSendMessage],
   );
 
   const handleAttachButtonClick = useCallback(() => {
@@ -932,20 +1052,28 @@ export function CaseWorkspace({
                     </h2>
                   </div>
                 ) : activeSession && activeSession.messages.length === 0 && !isLoading ? (
-                  <div className="mt-10 text-center">
-                    <h2
-                      className="text-2xl"
-                      style={{
-                        color: "var(--text-primary)",
-                        fontFamily: "var(--font-serif-family)",
-                        fontWeight: 500,
-                      }}
-                    >
-                      С чего начнём?
-                    </h2>
-                    <p className="mt-2 text-sm" style={{ color: "var(--text-secondary)" }}>
-                      Опишите ситуацию или загрузите документы — помогу разобраться со стратегией и рисками.
-                    </p>
+                  <div className="mt-10">
+                    <div className="text-center">
+                      <h2
+                        className="text-2xl"
+                        style={{
+                          color: "var(--text-primary)",
+                          fontFamily: "var(--font-serif-family)",
+                          fontWeight: 500,
+                        }}
+                      >
+                        С чего начнём?
+                      </h2>
+                      <p className="mt-2 text-sm" style={{ color: "var(--text-secondary)" }}>
+                        Выберите команду, опишите ситуацию своими словами — или загрузите документы.
+                      </p>
+                    </div>
+                    <PresetCardGrid
+                      hasDocuments={hasDocuments}
+                      disabled={accessExpired || isLoading || isLoadingChats}
+                      onPick={applyPreset}
+                      onOpenAll={openCommands}
+                    />
                   </div>
                 ) : null}
 
@@ -1188,6 +1316,16 @@ export function CaseWorkspace({
                 </div>
               )}
 
+              {/* На телефоне кнопка команд живёт в ряду с скрепкой (см. ниже):
+                  отдельная строка отняла бы 52px высоты композера ровно там,
+                  где их нет — при открытой клавиатуре. */}
+              <div className="hidden md:block">
+                <CommandsChip
+                  disabled={accessExpired || isLoading || isLoadingChats || !activeSession}
+                  onClick={openCommands}
+                />
+              </div>
+
               <div
                 className="composer-row"
                 style={{
@@ -1225,6 +1363,12 @@ export function CaseWorkspace({
                   disabled={isLoading || isLoadingChats || accessExpired}
                 />
                 <div className="flex gap-1.5 flex-shrink-0">
+                  <CommandsChip
+                    compact
+                    className="md:hidden"
+                    disabled={accessExpired || isLoading || isLoadingChats || !activeSession}
+                    onClick={openCommands}
+                  />
                   <Button
                     type="button"
                     variant="ghost"
@@ -1260,13 +1404,29 @@ export function CaseWorkspace({
                   </Button>
                 </div>
               </div>
+              {/* Подсказка ведёт заполнение вставленной команды: пока в тексте
+                  остались пропуски, она считает их. Про Enter она молчать не
+                  должна — отправлять юрист будет именно в этот момент, — а про
+                  Tab говорит только там, где Tab есть. */}
               <p
                 className="px-1"
-                style={{ fontSize: 12, color: "var(--text-muted)" }}
+                style={{ fontSize: 12, color: "var(--text-secondary)" }}
               >
-                {accessExpired
-                  ? "Доступ закончился. Свяжитесь с нами, чтобы продолжить работу."
-                  : "Enter — отправить · Shift+Enter — новая строка"}
+                {accessExpired ? (
+                  "Доступ закончился. Свяжитесь с нами, чтобы продолжить работу."
+                ) : isFillingPreset ? (
+                  <>
+                    Замените {pluralizeFields(pendingFieldCount)} в квадратных скобках
+                    <span className="hidden md:inline"> · Tab — к следующему</span> · Enter — новая
+                    строка
+                  </>
+                ) : (
+                  "Enter — отправить · Shift+Enter — новая строка"
+                )}
+              </p>
+              {/* Вставка команды и её пропуски иначе остались бы немыми. */}
+              <p className="sr-only" role="status" aria-live="polite">
+                {presetAnnouncement}
               </p>
             </form>
           </div>
@@ -1281,6 +1441,13 @@ export function CaseWorkspace({
           aria-label="Закрыть панель"
         />
       )}
+
+      <CommandPickerDialog
+        open={isCommandsOpen}
+        hasDocuments={hasDocuments}
+        onOpenChange={setIsCommandsOpen}
+        onPick={applyPreset}
+      />
     </div>
   );
 }
