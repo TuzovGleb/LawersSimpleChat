@@ -35,9 +35,15 @@ from dataclasses import dataclass
 # and it even splits numbers mid-way («Статья 1</span>7<span W9>1</span>» =
 # «Статья 17¹»). So intervening closing tags are matched and re-emitted AFTER
 # the dotted index, which keeps the index inside the heading span.
+# Between the base digit and its superscript the renderer puts an arbitrary run
+# of tags — not just closing ones: «Статья 13</span><span class="ed ed4"><span
+# class="W9">1</span>» is «Статья 13¹». Allowing only </span> here cost the
+# article its number (it parsed as 13 with the title «1 . Особенности…»). The
+# run may contain any tag EXCEPT the superscript's own opening span.
+_SUP_TAILS = r'(?:\s*<(?!span[^>]*class="W9")[^>]*>)*'
 _SUP_RE = re.compile(
-    r'(\d)((?:\s*</span>)*)\s*<span[^>]*class="W9"[^>]*>\s*(\d+(?:\s*[.\-]\s*\d+)*)\s*</span>'
-    r"|(\d)((?:\s*</span>)*)\s*<sup[^>]*>\s*(\d+(?:\s*[.\-]\s*\d+)*)\s*</sup>",
+    rf'(\d)({_SUP_TAILS})\s*<span[^>]*class="W9"[^>]*>\s*(\d+(?:\s*[.\-]\s*\d+)*)\s*</span>'
+    rf"|(\d)({_SUP_TAILS})\s*<sup[^>]*>\s*(\d+(?:\s*[.\-]\s*\d+)*)\s*</sup>",
     re.I,
 )
 _SUP_PLAIN_RE = re.compile(r'<span[^>]*class="W9"[^>]*>\s*([^<]*?)\s*</span>', re.I)

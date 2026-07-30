@@ -179,3 +179,20 @@ def test_fallback_does_not_touch_documents_that_parse_by_markup():
     by_markup = split_articles(DOC_HTML)
     assert [a.number for a in by_markup] == ["1", "2", "333.19", "333.32.1", "333.34.1"]
     assert by_markup[0].title == "Предмет регулирования"  # заголовки не потеряны
+
+
+def test_superscript_survives_tag_run_between_digit_and_index():
+    # Живая разметка (nd=102374686, «О международном медицинском кластере»):
+    # между цифрой и надстрочным индексом стоит и закрывающий, и ОТКРЫВАЮЩИЙ
+    # тег. Раньше индекс отваливался: статья 13¹ парсилась как 13 с заголовком
+    # «1 . Особенности…» и затирала настоящую статью 13.
+    html = """
+    <p class="H">Статья 13. Особенности осуществления медицинской деятельности</p>
+    <p>Текст статьи 13.</p>
+    <p class="H"><span class="ed ed4">Статья 13</span><span class="ed ed4"><span class="W9">1</span></span><span class="ed ed4">. Особенности лицензирования</span></p>
+    <p>Текст статьи 13.1.</p>
+    """
+    articles = split_articles(html)
+    assert [a.number for a in articles] == ["13", "13.1"]
+    assert articles[1].title == "Особенности лицензирования"
+    assert articles[0].title.startswith("Особенности осуществления")
