@@ -36,3 +36,24 @@ def test_longer_text_wins_when_neither_has_title():
     short, long = _doc("5", "", "коротко"), _doc("5", "", "гораздо длиннее " * 20)
     assert dedupe_articles([short, long], "акт")[0]["article_text"].startswith("гораздо")
     assert dedupe_articles([long, short], "акт")[0]["article_text"].startswith("гораздо")
+
+
+def test_purge_keeps_current_articles_and_removes_the_rest():
+    from unittest.mock import MagicMock
+    client = MagicMock()
+    client.delete_by_query.return_value = {"deleted": 3}
+    deleted = _module.purge_stale_articles(client, "legal_acts_v2", "102074279", ["id1", "id2"])
+    body = client.delete_by_query.call_args.kwargs["body"]
+    assert deleted == 3
+    assert {"term": {"act_nd": "102074279"}} in body["query"]["bool"]["filter"]
+    # Чистим по ИДЕНТИФИКАТОРАМ текущей загрузки, а не по rdk: при перепарсинге
+    # той же редакции документ с неверным номером иначе остался бы навсегда.
+    assert body["query"]["bool"]["must_not"] == [{"terms": {"article_id": ["id1", "id2"]}}]
+
+
+def test_purge_with_no_articles_clears_the_act():
+    from unittest.mock import MagicMock
+    client = MagicMock()
+    client.delete_by_query.return_value = {"deleted": 7}
+    _module.purge_stale_articles(client, "legal_acts_v2", "1", [])
+    assert _module and client.delete_by_query.call_args.kwargs["body"]["query"]["bool"]["must_not"] == []

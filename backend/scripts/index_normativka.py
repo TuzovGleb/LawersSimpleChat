@@ -1,9 +1,9 @@
 """Load a нормативка snapshot zip (from scrape_normativka.py) into OpenSearch.
 
 Per-act idempotency: article ids are stable (sha of nd|number), so re-indexing
-an act overwrites its articles in place; afterwards articles of the act whose
-``rdk`` differs from the just-loaded redaction are purged — they belong to a
-superseded redaction (e.g. an article dropped from the act entirely).
+an act overwrites its articles in place; afterwards every article of that act
+NOT written by this load is purged — it belongs either to a superseded
+redaction or to an earlier, wrong parse of the same one.
 
 Usage:
     uv run python scripts/index_normativka.py \
@@ -61,16 +61,21 @@ def dedupe_articles(documents: list[dict], act_label: str) -> list[dict]:
     return list(by_number.values())
 
 
-def _purge_superseded(client, index_name: str, act_nd: str, current_rdk: str) -> int:
-    """Delete the act's articles left over from a previous redaction."""
-    body = {
-        "query": {
-            "bool": {
-                "filter": [{"term": {"act_nd": act_nd}}],
-                "must_not": [{"term": {"rdk": current_rdk}}],
-            }
-        }
-    }
+def purge_stale_articles(client, index_name: str, act_nd: str, keep_ids: list[str]) -> int:
+    """Delete every article of the act except the ones just written.
+
+    Keyed on the ids of the current load rather than on rdk, because articles
+    go stale for two different reasons and only one of them changes the rdk:
+
+    * новая редакция акта — статья могла исчезнуть из текста;
+    * ПЕРЕПАРСИНГ той же редакции — если прежний разбор дал неверный номер
+      (отвалившийся надстрочный индекс превращал «13¹» в «13»), документ с
+      этим номером остаётся в индексе навсегда и подменяет настоящую статью.
+
+    Возвращает число удалённых документов.
+    """
+    must_not = [{"terms": {"article_id": keep_ids}}] if keep_ids else []
+    body = {"query": {"bool": {"filter": [{"term": {"act_nd": act_nd}}], "must_not": must_not}}}
     response = client.delete_by_query(index=index_name, body=body, conflicts="proceed")
     return response.get("deleted", 0)
 
@@ -120,7 +125,9 @@ def main() -> int:
                     success, errors = bulk_index_documents(client, batch, index_name=args.index_name)
                     total_indexed += success
                     total_errors.extend(errors)
-                purged = _purge_superseded(client, args.index_name, act["nd"], act.get("rdk") or "")
+                purged = purge_stale_articles(
+                    client, args.index_name, act["nd"], [d["_id"] for d in documents]
+                )
                 total_purged += purged
                 logger.info(
                     "%s: статей %d, вычищено устаревших %d",
