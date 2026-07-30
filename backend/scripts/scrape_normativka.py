@@ -118,29 +118,57 @@ def _title_matches(target: ScrapeTarget, fetched_title: str) -> bool:
     return bool(target.number) and normalize_ref(target.number) in title
 
 
-def _indexed_rdk_by_nd(opensearch_url: str, alias: str) -> dict[str, str]:
-    """Current rdk per act in the live index (for --mode update)."""
+def indexed_acts(opensearch_url: str, alias: str) -> tuple[list[ScrapeTarget], dict[str, str]]:
+    """Acts already in the index: their metadata and their current rdk.
+
+    Serves two purposes at once. ``--mode update`` needs the rdk to tell a
+    changed act from an unchanged one, and ``--acts indexed`` needs the act
+    list itself: re-enumerating the ИПС catalog costs ~570 requests (~1 час)
+    only to rediscover what the index already knows, which is far too much for
+    a nightly job over ~1400 acts.
+    """
     from app.search.client import OpenSearchConfig, build_opensearch_client
 
     client = build_opensearch_client(OpenSearchConfig(url=opensearch_url))
-    if not client.indices.exists_alias(name=alias):
+    if not client.indices.exists_alias(name=alias) and not client.indices.exists(index=alias):
         logger.info("Индекс %s ещё не существует — все акты считаются новыми", alias)
-        return {}
+        return [], {}
     body = {
         "size": 0,
         "aggs": {
             "acts": {
                 "terms": {"field": "act_nd", "size": 10_000},
-                "aggs": {"rdk": {"terms": {"field": "rdk", "size": 10}}},
+                "aggs": {
+                    "rdk": {"terms": {"field": "rdk", "size": 10}},
+                    "meta": {
+                        "top_hits": {
+                            "size": 1,
+                            "_source": ["act_nd", "act_kind", "act_name", "act_number", "act_date"],
+                        }
+                    },
+                },
             }
         },
     }
     response = client.search(index=alias, body=body)
-    result: dict[str, str] = {}
+    targets: list[ScrapeTarget] = []
+    rdk_by_nd: dict[str, str] = {}
     for bucket in response.get("aggregations", {}).get("acts", {}).get("buckets", []):
+        nd = bucket["key"]
+        hits = bucket.get("meta", {}).get("hits", {}).get("hits", [])
+        source = (hits[0].get("_source") if hits else {}) or {}
+        targets.append(
+            ScrapeTarget(
+                nd=nd,
+                kind=source.get("act_kind") or "fz",
+                name=source.get("act_name") or "",
+                number=source.get("act_number") or "",
+                date=source.get("act_date") or "",
+            )
+        )
         rdk_buckets = bucket.get("rdk", {}).get("buckets", [])
         if len(rdk_buckets) == 1:
-            result[bucket["key"]] = rdk_buckets[0]["key"]
+            rdk_by_nd[nd] = rdk_buckets[0]["key"]
         elif rdk_buckets:
             # Mixed rdk values = a previous index run died between bulk load
             # and the superseded-articles purge. Whatever the majority rdk is,
@@ -148,9 +176,9 @@ def _indexed_rdk_by_nd(opensearch_url: str, alias: str) -> dict[str, str]:
             # counts as changed and gets re-scraped/re-purged this run.
             logger.warning(
                 "Акт %s в индексе со смешанными rdk (%s) — будет пересобран",
-                bucket["key"], [b["key"] for b in rdk_buckets],
+                nd, [b["key"] for b in rdk_buckets],
             )
-    return result
+    return targets, rdk_by_nd
 
 
 def scrape_act(client: IpsClient, target: ScrapeTarget, *, meta: ActMeta | None = None) -> dict:
@@ -205,13 +233,19 @@ def _shard_of(nd: str, shards: int) -> int:
     return int(hashlib.sha256(nd.encode()).hexdigest(), 16) % shards
 
 
-def build_targets(client: IpsClient, spec: str) -> list[ScrapeTarget]:
+def build_targets(
+    client: IpsClient, spec: str, *, indexed: list[ScrapeTarget] | None = None
+) -> list[ScrapeTarget]:
     """Resolve the ``--acts`` spec into concrete targets."""
     codices = {
         act.nd: ScrapeTarget(act.nd, act.kind, act.name, act.number, act.adoption_date, act.aliases)
         for act in CODICES
     }
     spec = spec.strip().lower()
+    if spec == "indexed":
+        # Ночной режим: состав корпуса берём из индекса, каталог портала не
+        # трогаем вовсе (это ~570 запросов ради уже известного списка).
+        return list(indexed or [])
     wanted_kinds: list[str] = []
     if spec == "all":
         wanted_kinds = list(_CATALOG_KINDS)
@@ -257,10 +291,17 @@ def main() -> int:
     parser.add_argument(
         "--acts",
         default="kodeksy",
-        help="kodeksy | fz | fkz | zakony | all | список nd через запятую",
+        help="kodeksy | fz | fkz | zakony | all | indexed (состав корпуса из индекса, "
+        "без обхода каталога) | список nd через запятую",
     )
     parser.add_argument("--mode", choices=["full", "update"], default="full")
-    parser.add_argument("--opensearch-url", help="Нужен для --mode update (сравнение rdk)")
+    parser.add_argument(
+        "--only-new",
+        action="store_true",
+        help="Оставить только акты, которых ещё нет в индексе — еженедельный обход каталога "
+        "ради новых актов не платит за проверку обёрток уже известных",
+    )
+    parser.add_argument("--opensearch-url", help="Нужен для --mode update, --acts indexed и --only-new")
     parser.add_argument("--index-alias", default=NORMATIVKA_INDEX_ALIAS)
     parser.add_argument("--pause", type=float, default=1.5, help="Пауза между запросами к ИПС, сек")
     parser.add_argument(
@@ -286,11 +327,17 @@ def main() -> int:
             }
         logger.info("Докачка: в %s уже есть %d актов", out_path.name, len(already))
 
+    indexed_targets: list[ScrapeTarget] = []
     indexed_rdk: dict[str, str] = {}
-    if args.mode == "update":
+    needs_index = args.mode == "update" or args.acts.strip().lower() == "indexed" or args.only_new
+    if needs_index:
         if not args.opensearch_url:
-            parser.error("--mode update требует --opensearch-url")
-        indexed_rdk = _indexed_rdk_by_nd(args.opensearch_url, args.index_alias)
+            parser.error("--mode update / --acts indexed / --only-new требуют --opensearch-url")
+        indexed_targets, indexed_rdk = indexed_acts(args.opensearch_url, args.index_alias)
+        logger.info("В индексе актов: %d", len(indexed_targets))
+        if args.acts.strip().lower() == "indexed" and not indexed_targets:
+            logger.error("Индекс пуст — «--acts indexed» нечего обновлять (нужна первичная загрузка)")
+            return 2
 
     fetched_at = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     written: list[dict] = []
@@ -299,7 +346,13 @@ def main() -> int:
     failed: list[tuple[str, str]] = []
 
     with IpsClient(pause=args.pause) as client:
-        targets = build_targets(client, args.acts)
+        targets = build_targets(client, args.acts, indexed=indexed_targets)
+
+        if args.only_new:
+            known = {t.nd for t in indexed_targets}
+            before = len(targets)
+            targets = [t for t in targets if t.nd not in known]
+            logger.info("Только новые: %d из %d (в индексе уже %d)", len(targets), before, len(known))
 
         if args.shard:
             try:

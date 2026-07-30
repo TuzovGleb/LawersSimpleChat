@@ -1,9 +1,8 @@
 # Нормативка: scheduled scrape of pravo.gov.ru ИПС + reindex into OpenSearch.
 #
-# The nightly run is incremental: it fetches each act's wrapper (~40-100КБ),
-# compares the current redaction id (rdk) with what the index holds and
-# re-fetches only the acts that actually changed. A manual dispatch can force
-# a full re-scrape.
+# Ночной прогон инкрементален: тянет обёртку акта (~40-100КБ), сравнивает
+# текущий rdk с тем, что лежит в индексе, и перекачивает только изменившиеся.
+# Ручной запуск может форсировать полный перескрейп (mode=full, acts=all).
 #
 # Requirements in the "Staging ENV" environment (все уже настроены деплоями):
 #   secret YC_SA_JSON / YC_CLOUD_ID / YC_FOLDER_ID — авторезолв IP OpenSearch-VM
@@ -15,9 +14,17 @@
 
 name: Scrape normativka (Staging OpenSearch)
 
+# Два разных вопроса — два расписания:
+#   ночью «не изменились ли известные акты» — состав корпуса берём из индекса
+#     (--acts indexed), каталог портала не обходим, и делим корпус на 7 шардов
+#     по дню года: ~205 обёрток за прогон, ~15 минут, за неделю покрыт весь;
+#   в воскресенье «не появилось ли новых» — полный обход каталога, но грузим
+#     только отсутствующие в индексе акты (--only-new), иначе 1437 проверок
+#     обёрток не влезают в разумное время.
 on:
   schedule:
-    - cron: '0 3 * * *'   # nightly, 03:00 UTC (06:00 МСК)
+    - cron: '0 3 * * 1-6'   # пн-сб 03:00 UTC: инкремент по шардам
+    - cron: '0 3 * * 0'     # вс 03:00 UTC: обход каталога ради новых актов
   workflow_dispatch:
     inputs:
       mode:
@@ -26,6 +33,11 @@ on:
         default: update
         type: choice
         options: [update, full]
+      acts:
+        description: 'Что обновлять (indexed | all | kodeksy | fz | nd-список)'
+        required: false
+        default: indexed
+        type: string
       opensearch_url:
         description: 'OpenSearch URL (default: авторезолв IP VM через yc)'
         required: false
@@ -35,8 +47,9 @@ jobs:
   scrape-and-index:
     runs-on: ubuntu-latest
     environment: Staging ENV
-    # Full scrape of all codices takes ~30 min (НК ч.2 export alone is minutes).
-    timeout-minutes: 90
+    # Ночной шард укладывается в ~15 минут; воскресный обход каталога ФЗ — это
+    # ~570 запросов перечисления плюс выемка новых актов, отсюда запас.
+    timeout-minutes: 180
 
     steps:
       - name: Checkout code
@@ -88,6 +101,8 @@ jobs:
         env:
           INPUT_URL: ${{ github.event.inputs.opensearch_url }}
           INPUT_MODE: ${{ github.event.inputs.mode }}
+          INPUT_ACTS: ${{ github.event.inputs.acts }}
+          SCHEDULE: ${{ github.event.schedule }}
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           URL="$INPUT_URL"
@@ -110,9 +125,29 @@ jobs:
             URL="http://${PUBLIC_IP}:9200"
           fi
           MODE="${INPUT_MODE:-update}"
-          echo "OpenSearch URL: $URL | mode: $MODE"
+
+          # Что обновляем: ручной запуск решает сам, расписание — по дню.
+          # Воскресный прогон ищет НОВЫЕ акты (полный обход каталога), будние
+          # проверяют известные по шардам: 1/7 корпуса за ночь, вся неделя —
+          # полный круг. Шард считаем по дню года, а не по дню недели, иначе
+          # воскресный шард не проверялся бы никогда.
+          ACTS="$INPUT_ACTS"
+          EXTRA=""
+          if [ -z "$ACTS" ]; then
+            if [ "$SCHEDULE" = "0 3 * * 0" ]; then
+              ACTS="all"
+              EXTRA="--only-new"
+            else
+              ACTS="indexed"
+              EXTRA="--shard $(( $(date -u +%j) % 7 + 1 ))/7"
+            fi
+          fi
+
+          echo "OpenSearch URL: $URL | mode: $MODE | acts: $ACTS | extra: ${EXTRA:-—}"
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "acts=$ACTS" >> "$GITHUB_OUTPUT"
+          echo "extra=$EXTRA" >> "$GITHUB_OUTPUT"
           echo "stamp=$(date -u +%Y%m%d-%H%M)" >> "$GITHUB_OUTPUT"
 
       - name: Install uv
@@ -136,6 +171,8 @@ jobs:
           uv run python scripts/scrape_normativka.py \
             --out /tmp/normativka-${{ steps.params.outputs.stamp }}.zip \
             --mode "${{ steps.params.outputs.mode }}" \
+            --acts "${{ steps.params.outputs.acts }}" \
+            ${{ steps.params.outputs.extra }} \
             --opensearch-url "${{ steps.params.outputs.url }}"
 
       - name: Archive snapshot to Object Storage
