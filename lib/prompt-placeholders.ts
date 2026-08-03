@@ -53,6 +53,31 @@ export function findAdjacentPlaceholder(
   return previous.length > 0 ? previous[previous.length - 1] : null;
 }
 
+/**
+ * Следующий пропуск по кругу: с последнего Tab возвращает к первому, Shift+Tab
+ * с первого — к последнему.
+ *
+ * В отличие от findAdjacentPlaceholder, отсюда null приходит только когда
+ * пропусков нет вовсе. Замыкание намеренное: пока шаблон не заполнен, Tab не
+ * должен уводить фокус из поля. Чтобы это не превратилось в ловушку для
+ * клавиатуры, у вызывающего кода обязан быть выход — Escape.
+ */
+export function findCyclicPlaceholder(
+  text: string,
+  caret: number,
+  direction: "forward" | "backward",
+): PlaceholderRange | null {
+  const ranges = findPlaceholders(text);
+  if (ranges.length === 0) {
+    return null;
+  }
+  if (direction === "forward") {
+    return ranges.find((range) => range.start > caret) ?? ranges[0];
+  }
+  const previous = ranges.filter((range) => range.end < caret);
+  return previous.length > 0 ? previous[previous.length - 1] : ranges[ranges.length - 1];
+}
+
 /** Первый пропуск текста — на него встаёт каретка сразу после вставки пресета. */
 export function findFirstPlaceholder(text: string): PlaceholderRange | null {
   return findPlaceholders(text)[0] ?? null;

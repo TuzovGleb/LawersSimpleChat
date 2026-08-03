@@ -23,6 +23,7 @@ import { renderPresetPrompt, type CommandPreset } from "@/lib/command-presets";
 import {
   countPlaceholders,
   findAdjacentPlaceholder,
+  findCyclicPlaceholder,
   findFirstPlaceholder,
   pluralizeFields,
 } from "@/lib/prompt-placeholders";
@@ -47,6 +48,11 @@ import {
 
 // Max height of the auto-growing composer textarea before it starts scrolling.
 const COMPOSER_MAX_HEIGHT = 160;
+
+// Подсказка под композером — описание поля ввода: в режиме заполнения команды
+// именно она сообщает, что Tab ходит по кругу, а выход — Escape. Скринридер
+// обязан это услышать, иначе замкнутый Tab становится ловушкой.
+const COMPOSER_HINT_ID = "composer-hint";
 
 // Общая карта markdown-компонентов: ею рендерятся И закоммиченные сообщения,
 // И живой стриминговый черновик — иначе черновик показывает голый markdown,
@@ -667,20 +673,29 @@ export function CaseWorkspace({
         onSendMessage();
         return;
       }
-      // Tab перескакивает к следующему незаполненному пропуску вставленной
-      // команды. Когда в эту сторону пропусков больше нет, Tab отдаётся
-      // браузеру — иначе поле ввода стало бы ловушкой для клавиатуры.
+      // Tab ходит по пропускам вставленной команды ПО КРУГУ и не выпускает
+      // фокус из поля: пока шаблон не заполнен, уводить юриста на кнопки
+      // незачем. Выход — Escape (см. ниже); без него это было бы ловушкой для
+      // клавиатуры, поэтому про Escape написано в подсказке под композером,
+      // а сама подсказка привязана к полю через aria-describedby.
       if (event.key === "Tab" && isFillingPreset) {
+        event.preventDefault();
         const el = event.currentTarget;
-        const target = findAdjacentPlaceholder(
+        const target = findCyclicPlaceholder(
           el.value,
           event.shiftKey ? (el.selectionStart ?? 0) : (el.selectionEnd ?? 0),
           event.shiftKey ? "backward" : "forward",
         );
         if (target) {
-          event.preventDefault();
           el.setSelectionRange(target.start, target.end);
         }
+        return;
+      }
+      // Escape выпускает из режима заполнения: Tab и Enter снова работают как
+      // обычно, даже если пропуски остались незаполненными.
+      if (event.key === "Escape" && isFillingPreset) {
+        setPresetInsertCount(0);
+        setPresetAnnouncement("Режим заполнения полей выключен.");
       }
     },
     [isFillingPreset, onSendMessage],
@@ -1344,6 +1359,7 @@ export function CaseWorkspace({
                   value={input}
                   onChange={(event) => onInputChange(event.target.value)}
                   onKeyDown={handleInputKeyDown}
+                  aria-describedby={COMPOSER_HINT_ID}
                   rows={1}
                   placeholder={
                     accessExpired
@@ -1409,6 +1425,7 @@ export function CaseWorkspace({
                   должна — отправлять юрист будет именно в этот момент, — а про
                   Tab говорит только там, где Tab есть. */}
               <p
+                id={COMPOSER_HINT_ID}
                 className="px-1"
                 style={{ fontSize: 12, color: "var(--text-secondary)" }}
               >
@@ -1417,8 +1434,10 @@ export function CaseWorkspace({
                 ) : isFillingPreset ? (
                   <>
                     Замените {pluralizeFields(pendingFieldCount)} в квадратных скобках
-                    <span className="hidden md:inline"> · Tab — к следующему</span> · Enter — новая
-                    строка
+                    <span className="hidden md:inline">
+                      {" "}
+                      · Tab — по полям, Esc — выйти · Enter — новая строка
+                    </span>
                   </>
                 ) : (
                   "Enter — отправить · Shift+Enter — новая строка"
