@@ -9,10 +9,44 @@ import asyncio
 from collections import defaultdict
 from datetime import datetime, timezone
 import logging
+from uuid import uuid4
 
+import httpx
+from postgrest.exceptions import APIError
 from supabase import AsyncClient, acreate_client
 
 logger = logging.getLogger(__name__)
+
+# Ход пишется одним insert'ом, а postgrest ретраит только GET/HEAD (защита от
+# ошибок Cloudflare), поэтому POST не защищён ничем: одна сетевая икота между
+# бэкендом и Supabase теряла ход целиком. Ретраим сами.
+_SAVE_ATTEMPTS = 3
+_SAVE_BACKOFF_SECONDS = 0.25
+# Гонка за seq между инстансами (лок внутрипроцессный, прод масштабируется).
+# Само по себе НЕ означает «мы уже записались»: диапазон мог занять чужой ход,
+# поэтому факт записи проверяется отдельно, по turn_id.
+_UNIQUE_VIOLATION = "23505"
+
+
+def _is_transient(error: APIError) -> bool:
+    """5xx от edge приходит сюда как APIError с HTTP-кодом в поле code.
+
+    postgrest кладёт в APIError.code либо код PostgreSQL ('23505'), либо — когда
+    тело ответа не разобралось как JSON (страница ошибки Cloudflare) — сам
+    HTTP-статус числом. Второе повторить осмысленно, первое обычно нет.
+    """
+    code = error.code
+    try:
+        status = int(code)
+    except (TypeError, ValueError):
+        return False
+    return 500 <= status <= 599
+
+
+class RepoUnavailable(RuntimeError):
+    """Чтение из Supabase не удалось. Отличается от «данных нет»: вызывающий код
+    обязан ответить 503, а не 404, иначе инфраструктурный сбой выглядит для
+    юриста как «вашего документа не существует»."""
 
 
 def _now_iso() -> str:
@@ -252,7 +286,12 @@ class SupabaseRepo:
 
     async def get_draft_state(self, session_id: str, draft_id: str) -> dict | None:
         """Load a drafted document's stored state ({status, file_name, blocks}) by
-        the drafting tool's call id, for render-on-demand."""
+        the drafting tool's call id, for render-on-demand.
+
+        None — строки нет (документ не сохранён). Сбой чтения поднимает
+        RepoUnavailable: раньше он возвращал ту же None, и любая икота Supabase
+        показывалась юристу как «Документ не найден», хотя документ лежал целый.
+        """
         try:
             res = (
                 await self._client.table("chat_messages")
@@ -263,14 +302,17 @@ class SupabaseRepo:
                 .limit(1)
                 .execute()
             )
-            data = res.data or []
-            return (data[0].get("tool_state") or {}) if data else None
-        except Exception:
+        except Exception as error:
             logger.exception(
                 "Failed to load draft state",
                 extra={"session_id": session_id, "draft_id": draft_id},
             )
+            raise RepoUnavailable("draft state read failed") from error
+        data = res.data or []
+        if not data:
             return None
+        # Строка есть, но tool_state пуст — это «нечего рендерить», а не сбой.
+        return data[0].get("tool_state") or {}
 
     async def load_history(self, session_id: str) -> list[dict] | None:
         """Ordered history (user/assistant/tool) for LLM context assembly.
@@ -407,7 +449,13 @@ class SupabaseRepo:
             return False
 
     async def _next_seq(self, session_id: str) -> int:
-        """Next per-session sequence number (rows ordered globally by seq)."""
+        """Next per-session sequence number (rows ordered globally by seq).
+
+        Сбой чтения поднимает RepoUnavailable, а не отдаёт 0: ноль в непустой
+        сессии сажает целый ход на диапазон ранних — раньше это молча
+        перемешивало переписку, а с уникальным (session_id, seq) стоило бы хода
+        целиком.
+        """
         try:
             res = (
                 await self._client.table("chat_messages")
@@ -417,42 +465,157 @@ class SupabaseRepo:
                 .limit(1)
                 .execute()
             )
-            if res.data and res.data[0].get("seq") is not None:
-                return int(res.data[0]["seq"]) + 1
-        except Exception:
+        except Exception as error:
             logger.exception("Failed to read max seq", extra={"session_id": session_id})
+            raise RepoUnavailable("max seq read failed") from error
+        if res.data and res.data[0].get("seq") is not None:
+            return int(res.data[0]["seq"]) + 1
         return 0
 
-    async def save_messages(self, session_id: str, rows: list[dict]) -> None:
+    async def save_messages(self, session_id: str, rows: list[dict]) -> bool:
         """Persist a turn's rows (user + generated assistant/tool messages).
 
         Each row is a normalized dict produced by the pipeline; this method only
         maps it to DB columns and assigns monotonic ``seq`` values.
+
+        Возвращает True, если ход лежит в базе. False — значит потерян целиком:
+        insert атомарен, частичного сохранения не бывает. Вызывающий код обязан
+        это учесть, а не рапортовать об успехе — иначе юрист получает кнопку на
+        документ, которого нет.
         """
         if not rows:
-            return
+            return True
+        turn_id = str(uuid4())
         try:
             async with self._save_locks[session_id]:
-                start = await self._next_seq(session_id)
-                records = []
-                for offset, row in enumerate(rows):
-                    records.append(
-                        {
-                            "session_id": session_id,
-                            "role": row["role"],
-                            "content": row.get("content") or "",
-                            "attached_document_ids": row.get("attached_document_ids") or [],
-                            "tool_calls": row.get("tool_calls"),
-                            "tool_call_id": row.get("tool_call_id"),
-                            "tool_name": row.get("tool_name"),
-                            "tool_state": row.get("tool_state"),
-                            "seq": start + offset,
-                            "created_at": _now_iso(),
-                        }
-                    )
-                await self._client.table("chat_messages").insert(records).execute()
+                return await self._insert_turn_with_retry(session_id, turn_id, rows)
         except Exception:
-            logger.exception("Failed to save chat messages", extra={"session_id": session_id})
+            logger.exception(
+                "Failed to save chat messages",
+                extra={"session_id": session_id, "turn_id": turn_id},
+            )
+            return False
+
+    def _build_records(self, session_id: str, turn_id: str, rows: list[dict], start: int) -> list[dict]:
+        return [
+            {
+                "session_id": session_id,
+                "turn_id": turn_id,
+                "role": row["role"],
+                "content": row.get("content") or "",
+                "attached_document_ids": row.get("attached_document_ids") or [],
+                "tool_calls": row.get("tool_calls"),
+                "tool_call_id": row.get("tool_call_id"),
+                "tool_name": row.get("tool_name"),
+                "tool_state": row.get("tool_state"),
+                "seq": start + offset,
+                "created_at": _now_iso(),
+            }
+            for offset, row in enumerate(rows)
+        ]
+
+    async def _insert_turn_with_retry(self, session_id: str, turn_id: str, rows: list[dict]) -> bool:
+        """Вставка хода с повтором, безопасным в обе стороны.
+
+        Сбой приходит при чтении ОТВЕТА, поэтому вставка могла и закоммититься —
+        догадываться нельзя ни в ту, ни в другую сторону. Перед повтором прямо
+        спрашиваем базу, есть ли строки с этим turn_id: есть — ход на месте,
+        нет — повторяем, ПЕРЕЧИТАВ seq (за время попытки диапазон мог занять
+        другой инстанс, лок-то внутрипроцессный).
+        """
+        for attempt in range(1, _SAVE_ATTEMPTS + 1):
+            try:
+                start = await self._next_seq(session_id)
+            except RepoUnavailable:
+                # Раньше сбой чтения молча превращался в seq=0 и сажал ход на
+                # диапазон ранних: с уникальным индексом это гарантированная
+                # потеря, а без него — перемешанная переписка.
+                logger.exception(
+                    "Failed to save chat messages: seq read failed",
+                    extra={"session_id": session_id, "turn_id": turn_id, "attempt": attempt},
+                )
+                return False
+
+            records = self._build_records(session_id, turn_id, rows, start)
+            try:
+                await self._client.table("chat_messages").insert(records).execute()
+                if attempt > 1:
+                    logger.info(
+                        "Chat messages saved after retry",
+                        extra={"session_id": session_id, "turn_id": turn_id, "attempt": attempt},
+                    )
+                return True
+            except (httpx.TransportError, APIError) as error:
+                conflict = isinstance(error, APIError) and error.code == _UNIQUE_VIOLATION
+                retryable = (
+                    isinstance(error, httpx.TransportError)
+                    or conflict
+                    or _is_transient(error)
+                )
+                if not retryable:
+                    logger.exception(
+                        "Failed to save chat messages",
+                        extra={
+                            "session_id": session_id,
+                            "turn_id": turn_id,
+                            "attempt": attempt,
+                            "pg_code": getattr(error, "code", None),
+                        },
+                    )
+                    return False
+
+                if await self._turn_is_persisted(session_id, turn_id):
+                    logger.info(
+                        "Chat messages already persisted by a previous attempt",
+                        extra={"session_id": session_id, "turn_id": turn_id, "attempt": attempt},
+                    )
+                    return True
+
+                if attempt == _SAVE_ATTEMPTS:
+                    logger.exception(
+                        "Failed to save chat messages: retries exhausted",
+                        extra={
+                            "session_id": session_id,
+                            "turn_id": turn_id,
+                            "attempt": attempt,
+                            "pg_code": getattr(error, "code", None),
+                        },
+                    )
+                    return False
+
+                logger.warning(
+                    "Retrying chat message save",
+                    extra={
+                        "session_id": session_id,
+                        "turn_id": turn_id,
+                        "attempt": attempt,
+                        "conflict": conflict,
+                    },
+                    exc_info=True,
+                )
+                await asyncio.sleep(_SAVE_BACKOFF_SECONDS * attempt)
+        return False
+
+    async def _turn_is_persisted(self, session_id: str, turn_id: str) -> bool:
+        """Лежит ли ход в базе. Сбой самой проверки трактуем как «не лежит»:
+        ложная тревога заставит юриста повторить запрос, а ложный успех оставит
+        его с кнопкой на несуществующий документ — это и был исходный баг."""
+        try:
+            res = (
+                await self._client.table("chat_messages")
+                .select("id")
+                .eq("session_id", session_id)
+                .eq("turn_id", turn_id)
+                .limit(1)
+                .execute()
+            )
+            return bool(res.data)
+        except Exception:
+            logger.exception(
+                "Failed to verify whether the turn was persisted",
+                extra={"session_id": session_id, "turn_id": turn_id},
+            )
+            return False
 
     # --- project_documents (document extraction write path) ---
     #

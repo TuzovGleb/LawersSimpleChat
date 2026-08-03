@@ -7,7 +7,10 @@ export interface MessageArtifact {
   id: string;
   kind: 'docx';
   fileName: string;
-  status: 'ready' | 'failed';
+  // 'failed' — инструмент не смог оформить документ; 'unsaved' — документ
+  // оформлен, но ход не записался в базу, поэтому скачать его нельзя: рендер
+  // идёт по требованию из сохранённого tool_state.
+  status: 'ready' | 'failed' | 'unsaved';
 }
 
 export interface ChatMessage {

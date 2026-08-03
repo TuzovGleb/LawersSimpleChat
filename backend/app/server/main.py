@@ -29,7 +29,7 @@ from app.services.document_extraction import (
     extract_text_from_document,
 )
 from app.services.s3_client import S3Client
-from app.services.supabase_repo import SupabaseRepo, map_project_document
+from app.services.supabase_repo import RepoUnavailable, SupabaseRepo, map_project_document
 from app.utils import RequestContextMiddleware, current_chat_id, current_request_id
 
 logger = logging.getLogger(__name__)
@@ -321,8 +321,29 @@ async def render_document(request: Request, chat_id: str, draft_id: str) -> Resp
     if not repo:
         raise HTTPException(status_code=503, detail="Persistence not configured")
 
-    state = await repo.get_draft_state(chat_id, draft_id)
-    if not state or state.get("status") != "ready":
+    try:
+        state = await repo.get_draft_state(chat_id, draft_id)
+    except RepoUnavailable:
+        # Сбой чтения — не «документа нет». 503 отличает инфраструктурную
+        # проблему (повтор поможет) от потерянного хода (повтор бесполезен).
+        raise HTTPException(status_code=503, detail="Хранилище недоступно, повторите попытку")
+
+    if state is None:
+        logger.warning(
+            "Draft row is missing",
+            extra={"session_id": chat_id, "draft_id": draft_id, "reason": "no_row"},
+        )
+        raise HTTPException(status_code=404, detail="Документ не найден")
+    if state.get("status") != "ready":
+        logger.warning(
+            "Draft row is not renderable",
+            extra={
+                "session_id": chat_id,
+                "draft_id": draft_id,
+                "reason": "not_ready",
+                "draft_status": state.get("status"),
+            },
+        )
         raise HTTPException(status_code=404, detail="Документ не найден")
 
     data = render_docx(state.get("blocks") or [])

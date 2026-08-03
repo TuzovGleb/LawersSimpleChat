@@ -6,6 +6,17 @@ import { logger, requestIdFrom } from '@/lib/server-logger';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+// NextResponse.json ставит Content-Type без charset. Пока тело читает fetch, это
+// незаметно, но ссылка на скачивание уводит вкладку браузера на этот URL, и при
+// ошибке Safari разбирает русский текст как Windows-1251 — юрист видел
+// «РќРµ СѓРґР°Р»РѕСЃСЊ...». Кодировку задаём явно.
+function jsonError(body: Record<string, unknown>, status: number) {
+  return NextResponse.json(body, {
+    status,
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+  });
+}
+
 // GET /api/chat/{sessionId}/documents/{draftId}
 // Render-on-demand: the backend rebuilds the .docx from the blocks stored in the
 // draft tool's tool_state. We authorize the user here and proxy the binary.
@@ -17,15 +28,15 @@ export async function GET(req: NextRequest) {
   const requestId = requestIdFrom(req);
 
   if (!sessionId || !draftId) {
-    return NextResponse.json({ error: 'sessionId and draftId are required' }, { status: 400 });
+    return jsonError({ error: 'sessionId and draftId are required' }, 400);
   }
 
   const backendUrl = process.env.BACKEND_URL;
   if (!backendUrl) {
     logger.error('Document backend is not configured (missing BACKEND_URL)', { chat_id: sessionId, request_id: requestId, event: 'config_error' });
-    return NextResponse.json(
+    return jsonError(
       { error: 'Document backend is not configured', details: 'Missing BACKEND_URL' },
-      { status: 503 },
+      503,
     );
   }
 
@@ -35,15 +46,15 @@ export async function GET(req: NextRequest) {
       data: { user },
     } = await supabase.auth.getUser();
     if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return jsonError({ error: 'Unauthorized' }, 401);
     }
     const session = await getAuthorizedChatSession(supabase, sessionId, user.id);
     if (!session) {
-      return NextResponse.json({ error: 'Чат не найден или нет доступа.' }, { status: 404 });
+      return jsonError({ error: 'Чат не найден или нет доступа.' }, 404);
     }
   } catch (error) {
     logger.error('Auth check failed', { chat_id: sessionId, request_id: requestId, event: 'auth_failed', err: error });
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    return jsonError({ error: 'Unauthorized' }, 401);
   }
 
   try {
@@ -64,9 +75,19 @@ export async function GET(req: NextRequest) {
       // Log upstream body server-side only; never echo it to the client.
       const details = await upstream.text().catch(() => '');
       logger.error('Document backend returned an error', { chat_id: sessionId, request_id: requestId, event: 'backend_error', status: upstream.status, details });
-      return NextResponse.json(
-        { error: 'Не удалось сформировать документ.' },
-        { status: upstream.status === 404 ? 404 : 502 },
+      // 404 — документ не сохранён, повтор бесполезен. 503 — хранилище
+      // недоступно, повтор осмыслен. Схлопывать их в один код нельзя: клиент
+      // по этому различию выбирает, что предложить юристу.
+      const status =
+        upstream.status === 404 ? 404 : upstream.status === 503 ? 503 : 502;
+      return jsonError(
+        {
+          error:
+            status === 503
+              ? 'Хранилище временно недоступно. Попробуйте ещё раз.'
+              : 'Не удалось сформировать документ.',
+        },
+        status,
       );
     }
 
@@ -81,6 +102,6 @@ export async function GET(req: NextRequest) {
     return new Response(upstream.body, { headers });
   } catch (error) {
     logger.error('Failed to reach document backend', { chat_id: sessionId, request_id: requestId, event: 'backend_unreachable', err: error });
-    return NextResponse.json({ error: 'Не удалось сформировать документ.' }, { status: 502 });
+    return jsonError({ error: 'Не удалось сформировать документ.' }, 502);
   }
 }

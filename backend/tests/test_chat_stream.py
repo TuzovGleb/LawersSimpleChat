@@ -15,8 +15,9 @@ import json
 import logging
 import types
 
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 
+from app.pipelines.tools.drafting import DRAFT_TOOL_NAME
 from app.server import chat_stream
 from app.server.chat_stream import stream_chat
 from app.server.schema import ChatRequest
@@ -70,8 +71,9 @@ class SlowGraph:
 class FakeRepo:
     """Minimal SupabaseRepo stand-in that records what a turn persisted."""
 
-    def __init__(self):
+    def __init__(self, save_ok: bool = True):
         self.saved: list[tuple[str, list[dict]]] = []
+        self.save_ok = save_ok
 
     async def session_exists(self, session_id):
         return True
@@ -87,6 +89,10 @@ class FakeRepo:
 
     async def save_messages(self, session_id, rows):
         self.saved.append((session_id, rows))
+        # Реальный репозиторий возвращает признак успеха, и _finalize_turn на
+        # него смотрит: двойник обязан отвечать так же, иначе тесты незаметно
+        # уезжают в ветку «ход не сохранён».
+        return self.save_ok
 
 
 # Mirrors the real graph state: `messages` is the whole conversation, so the
@@ -389,3 +395,54 @@ async def test_heartbeat_keeps_the_connection_warm_while_the_graph_works(monkeyp
     # graph was blocked, which is what stops proxies from closing the stream.
     assert text.count(": heartbeat") >= 2
     assert any(e.get("type") == "final" for e in _data_events(text))
+
+
+def _drafting_final(*, file_name: str = "Исковое заявление"):
+    """Ход, в котором модель вызвала draft_document и получила готовый документ."""
+    call = {"name": DRAFT_TOOL_NAME, "id": "call-draft-1", "args": {}}
+    return (
+        "values",
+        {
+            "messages": [
+                HumanMessage(content="подготовь иск"),
+                AIMessage(content="", tool_calls=[call]),
+                ToolMessage(
+                    content=json.dumps({"status": "ready", "file_name": file_name}),
+                    tool_call_id="call-draft-1",
+                ),
+            ],
+            "response": "",
+            "metadata": {"modelUsed": "anthropic/claude"},
+            "tool_rounds": 1,
+        },
+    )
+
+
+def _final_event(text: str) -> dict:
+    return next(e for e in _data_events(text) if e.get("type") == "final")
+
+
+async def test_saved_drafting_turn_offers_the_document():
+    repo = FakeRepo()
+    request = _request(FakeGraph([_drafting_final()]), repo=repo)
+
+    final = _final_event(await _collect(stream_chat(request, "chat-draft-ok", _payload())))
+
+    assert [a["status"] for a in final["artifacts"]] == ["ready"]
+    assert "не сохранил" not in final["message"]
+
+
+async def test_lost_turn_does_not_promise_a_downloadable_document():
+    """Гвоздь инцидента: ход не записался, а клиент получал artifact "ready".
+
+    Кнопка вела на render-on-demand, который читает tool_state из базы, — там
+    пусто, и скачивание отдавало 404 навсегда. Раз ход потерян, обещать файл
+    нельзя, и молчать об исчезающей переписке тоже.
+    """
+    repo = FakeRepo(save_ok=False)
+    request = _request(FakeGraph([_drafting_final()]), repo=repo)
+
+    final = _final_event(await _collect(stream_chat(request, "chat-draft-lost", _payload())))
+
+    assert [a["status"] for a in final["artifacts"]] == ["unsaved"]
+    assert "не сохранил" in final["message"]

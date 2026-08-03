@@ -1211,7 +1211,11 @@ export function CaseWorkspace({
                                   variant="error"
                                   name={`${artifact.fileName}.docx`}
                                   fill="white"
-                                  error="Не удалось оформить документ"
+                                  error={
+                                    artifact.status === "unsaved"
+                                      ? "Ход не сохранён — повторите запрос"
+                                      : "Не удалось оформить документ"
+                                  }
                                 />
                               ),
                             )}

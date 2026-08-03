@@ -1,7 +1,24 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertCircle, Download, FileText, Loader2, X } from "lucide-react";
+
+// Причину отказа объясняет сервер: он один знает, что именно случилось — ход не
+// сохранился, чат недоступен или прилегло хранилище. Клиент лишь показывает его
+// текст и подставляет свой, когда тела нет (сеть, невалидный ответ).
+async function failureText(response: Response): Promise<string> {
+  try {
+    const body = await response.json();
+    if (typeof body?.error === "string" && body.error.trim()) {
+      return body.error;
+    }
+  } catch {
+    // тело не JSON — падаем на общий текст ниже
+  }
+  return response.status >= 500
+    ? "Сервис временно недоступен. Попробуйте ещё раз через минуту."
+    : "Не удалось открыть документ.";
+}
 
 interface DocumentPreviewPanelProps {
   /** Persisted/backend chat id used to route the document request. */
@@ -25,6 +42,11 @@ export function DocumentPreviewPanel({
 }: DocumentPreviewPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [failure, setFailure] = useState<string | null>(null);
+  // Тот же файл, что нарисован в предпросмотре, отдаётся и на скачивание —
+  // второй раз ходить на сервер незачем. Это состояние, а не ref: скачивание
+  // должно работать и когда файл получен, но отрисовать его не удалось.
+  const [blob, setBlob] = useState<Blob | null>(null);
 
   const downloadUrl = `/api/chat/${encodeURIComponent(chatId)}/documents/${encodeURIComponent(
     artifactId,
@@ -35,15 +57,37 @@ export function DocumentPreviewPanel({
   useEffect(() => {
     let cancelled = false;
     setStatus("loading");
+    setFailure(null);
+    setBlob(null);
     (async () => {
+      let file: Blob;
       try {
         const response = await fetch(downloadUrl);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const blob = await response.blob();
+        if (!response.ok) {
+          const message = await failureText(response);
+          if (!cancelled) {
+            setFailure(message);
+            setStatus("error");
+          }
+          return;
+        }
+        file = await response.blob();
+        if (cancelled) return;
+        setBlob(file);
+      } catch {
+        if (!cancelled) {
+          setFailure("Не удалось загрузить документ. Проверьте соединение.");
+          setStatus("error");
+        }
+        return;
+      }
+      // Файл уже на руках: даже если отрисовать его не выйдет, скачивание
+      // обязано остаться доступным.
+      try {
         const { renderAsync } = await import("docx-preview");
         if (cancelled || !containerRef.current) return;
         containerRef.current.innerHTML = "";
-        await renderAsync(blob, containerRef.current, undefined, {
+        await renderAsync(file, containerRef.current, undefined, {
           className: "docx",
           inWrapper: true,
           ignoreWidth: false,
@@ -52,13 +96,34 @@ export function DocumentPreviewPanel({
         });
         if (!cancelled) setStatus("ready");
       } catch {
-        if (!cancelled) setStatus("error");
+        if (!cancelled) {
+          setFailure("Не удалось показать предпросмотр — файл можно скачать.");
+          setStatus("error");
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
   }, [downloadUrl]);
+
+  // Скачивание из уже загруженного blob, а не ссылкой на API. Ссылка уводила
+  // вкладку на URL бэкенда, и при ошибке юрист вместо файла видел сырой JSON.
+  const handleDownload = useCallback(() => {
+    if (!blob) {
+      return;
+    }
+    const href = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = href;
+    link.download = `${fileName}.docx`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    // Освобождаем URL в следующем такте: Safari отменяет скачивание, если
+    // отозвать его синхронно сразу после click().
+    setTimeout(() => URL.revokeObjectURL(href), 0);
+  }, [blob, fileName]);
 
   // Close on Escape.
   useEffect(() => {
@@ -142,17 +207,21 @@ export function DocumentPreviewPanel({
             </span>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
-            <a
-              href={downloadUrl}
-              className="inline-flex items-center gap-1.5 rounded-[8px] px-3 py-1.5 text-xs font-medium text-white transition-colors"
+            <button
+              type="button"
+              onClick={handleDownload}
+              disabled={!blob}
+              className="inline-flex items-center gap-1.5 rounded-[8px] px-3 py-1.5 text-xs font-medium text-white transition-colors disabled:cursor-not-allowed disabled:opacity-55"
               style={{ background: "var(--brand-accent)" }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = "var(--brand-accent-hover)")}
+              onMouseEnter={(e) => {
+                if (blob) e.currentTarget.style.background = "var(--brand-accent-hover)";
+              }}
               onMouseLeave={(e) => (e.currentTarget.style.background = "var(--brand-accent)")}
               title="Скачать .docx"
             >
               <Download className="h-3.5 w-3.5" />
               Скачать
-            </a>
+            </button>
             <button
               type="button"
               onClick={onClose}
@@ -184,15 +253,18 @@ export function DocumentPreviewPanel({
             >
               <AlertCircle className="h-6 w-6" style={{ color: "var(--brand-accent)" }} />
               <p className="text-sm" style={{ color: "var(--text-primary)" }}>
-                Не удалось открыть предпросмотр
+                {failure ?? "Не удалось открыть документ."}
               </p>
-              <a
-                href={downloadUrl}
-                className="text-xs font-medium underline-offset-2 hover:underline"
-                style={{ color: "var(--brand-accent)" }}
-              >
-                Скачать файл
-              </a>
+              {blob && (
+                <button
+                  type="button"
+                  onClick={handleDownload}
+                  className="text-xs font-medium underline-offset-2 hover:underline"
+                  style={{ color: "var(--brand-accent)" }}
+                >
+                  Скачать файл
+                </button>
+              )}
             </div>
           )}
           <div

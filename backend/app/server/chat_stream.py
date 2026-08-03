@@ -255,7 +255,8 @@ async def _finalize_turn(
     # tool). Synthesize a short note so the bubble isn't empty / cross-turn.
     # The note must match the artifact status: a failed draft next to a
     # "Готово — подготовил" bubble reads as a broken product.
-    if not assistant_message.strip() and artifacts:
+    note_is_synthesized = not assistant_message.strip() and bool(artifacts)
+    if note_is_synthesized:
         file_name = artifacts[0].get("fileName") or "документ"
         if artifacts[0].get("status") == "ready":
             assistant_message = f"Готово — подготовил «{file_name}». Скачать можно по кнопке ниже."
@@ -295,7 +296,35 @@ async def _finalize_turn(
                 ):
                     row["content"] = assistant_message
                     break
-        await repo.save_messages(session_id, rows)
+        persisted = await repo.save_messages(session_id, rows)
+    elif repo:
+        # session_id пуст — create_session не отработал. Раньше персист тихо
+        # пропускался: ни строки в базе, ни следа в логах.
+        persisted = False
+        logger.error(
+            "Turn not persisted: no session id",
+            extra={"user_id": payload.userId, "project_id": project_id},
+        )
+    else:
+        persisted = True  # персистенция не сконфигурирована — терять нечего
+
+    if not persisted:
+        # Ход потерян целиком: insert атомарен. Молчать нельзя — юрист смотрит на
+        # текст, которого после перезагрузки не будет, и на кнопку скачивания
+        # документа, которого в базе нет.
+        for artifact in artifacts:
+            artifact["status"] = "unsaved"
+        warning = (
+            "**Этот ход не сохранился.** Из-за сбоя связи с хранилищем переписка "
+            "исчезнет при перезагрузке страницы"
+            + (", а подготовленный документ скачать не получится" if artifacts else "")
+            + ". Скопируйте нужное из ответа и повторите запрос."
+        )
+        # Синтезированную заметку заменяем целиком: она обещает кнопку скачивания,
+        # которой теперь нет, и рядом с предупреждением читалась бы как обман.
+        assistant_message = (
+            warning if note_is_synthesized else f"{assistant_message}\n\n---\n\n{warning}"
+        ).strip()
 
     logger.info(
         "Chat response sent",
@@ -305,6 +334,7 @@ async def _finalize_turn(
             "project_id": project_id,
             "total_ms": int((time.time() - started) * 1000),
             "model_used": metadata.get("modelUsed"),
+            "persisted": persisted,
         },
     )
 
