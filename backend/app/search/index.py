@@ -73,13 +73,24 @@ def parse_russian_date(value: str | None) -> str | None:
     return None
 
 
-def generate_decision_id(vnkod: str, case_number: str) -> str:
-    """Stable document id from court code + case number (works without court UID)."""
+def generate_decision_id(vnkod: str, case_number: str, doc_id: str | None = None) -> str:
+    """Stable document id from court code + case number (works without court UID).
+
+    ``doc_id`` disambiguates several acts of the SAME court on the SAME case — the
+    arbitration corpus needs it: a case number runs through all instances there and
+    a court can rule on one case repeatedly (239 such acts out of 42506 in the
+    Нижегородская dataset), so court+case alone would silently overwrite them.
+    СУДРФ pages carry no ``docId``, so their ids stay byte-for-byte the same and no
+    reindex is needed.
+    """
     normalized_vnkod = (vnkod or "").strip()
     normalized_case_number = (case_number or "").strip()
     if not normalized_case_number:
         return ""
     payload = f"{normalized_vnkod}|{normalized_case_number}"
+    normalized_doc_id = (doc_id or "").strip()
+    if normalized_doc_id:
+        payload = f"{payload}|{normalized_doc_id}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
 
 
@@ -92,7 +103,7 @@ def normalize_case(case: dict, page_meta: dict) -> dict | None:
         return None
 
     vnkod = page_meta.get("vnkod") or case.get("vnkod") or ""
-    decision_id = generate_decision_id(vnkod, case_number)
+    decision_id = generate_decision_id(vnkod, case_number, case.get("docId"))
     if not decision_id:
         return None
 
