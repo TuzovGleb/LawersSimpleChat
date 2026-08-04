@@ -34,10 +34,9 @@ DELO_TABLE_TO_CODE: dict[str, str] = {
 }
 
 # Codes that currently have indexed data. Keep in sync with the system prompt
-# (prompt.py, секция [10]: «в поиске есть практика ТОЛЬКО по гражданским (civil)
-# и уголовным (criminal) делам») — when a new proceeding type is indexed, update
-# both this set and that paragraph.
-CASE_TYPES_WITH_DATA: frozenset[str] = frozenset({"civil", "criminal"})
+# (prompt.py, секция [10] paragraph «Что сейчас доступно по видам») — when a new
+# proceeding type is indexed, update both this set and that paragraph.
+CASE_TYPES_WITH_DATA: frozenset[str] = frozenset({"civil", "criminal", "arbitration"})
 
 # Human-readable "code — Название" list, used in the search tool's parameter doc.
 # Codes without indexed data are marked so the tool doc never contradicts the
