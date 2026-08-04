@@ -16,6 +16,7 @@ from langchain_core.tools import tool
 from app.pipelines.tools.base import InlineResultHandler, ToolResultHandler, ToolSpec
 from app.search import CourtPracticeSearcher, OpenSearchConfig, build_opensearch_client
 from app.search.case_types import CASE_TYPE_REFERENCE
+from app.search.courts import COURT_REFERENCE, court_names_from_codes
 from app.search.regions import REGION_REFERENCE
 from app.search.search import format_decision_document, format_search_results, format_vs_crosscheck
 
@@ -41,6 +42,18 @@ _CASE_TYPES_PARAM_DOC = (
     "the search to, e.g. ['criminal'] for уголовные дела or ['civil'] for "
     "гражданские. Omit (None) to search across all proceeding types. Pass only "
     "codes from this reference: " + CASE_TYPE_REFERENCE
+)
+
+# The `courts` filter targets specific HIGHER courts only (ВС РФ, КСОЮ, and the
+# arbitration appellate/okrug courts) — the ones a region code can't address.
+# First-instance/appeal courts are reached via `regions`, not here. Codes and the
+# data-availability marker come from app.search.courts.
+_COURTS_PARAM_DOC = (
+    "Optional list of court codes to restrict the search to a specific HIGHER "
+    "court — Верховный Суд РФ, a cassation court of general jurisdiction (КСОЮ), "
+    "or an arbitration appellate/okrug court. Use this ONLY for these courts; "
+    "for ordinary district/regional courts use `regions` instead. Omit (None) to "
+    "search across all courts. Pass only codes from this reference: " + COURT_REFERENCE
 )
 
 
@@ -72,6 +85,7 @@ def court_practice_tool_specs(searcher: CourtPracticeSearcher) -> list[ToolSpec]
         result_type: Literal["granted", "denied", "partial", "other"] | None = None,
         regions: Annotated[list[int] | None, _REGIONS_PARAM_DOC] = None,
         case_types: Annotated[list[str] | None, _CASE_TYPES_PARAM_DOC] = None,
+        courts: Annotated[list[str] | None, _COURTS_PARAM_DOC] = None,
     ) -> str:
         """Search court decisions (суды общей юрисдикции) by full text.
 
@@ -88,6 +102,8 @@ def court_practice_tool_specs(searcher: CourtPracticeSearcher) -> list[ToolSpec]
         prompt. Use case_types to restrict to a вид судопроизводства
         (civil/criminal/...) when the question is clearly about one (see the
         parameter reference); the selection rules are in the system prompt.
+        Use courts ONLY to restrict to a specific higher court (ВС РФ / КСОЮ /
+        arbitration appellate/okrug); ordinary courts go through regions.
         Returns compact snippets; call get_court_decision for full act text.
         """
         if not queries:
@@ -104,6 +120,7 @@ def court_practice_tool_specs(searcher: CourtPracticeSearcher) -> list[ToolSpec]
             result_type=result_type,
             regions=regions,
             case_types=case_types,
+            court_names=court_names_from_codes(courts),
         )
         # Always append a Верховный Суд РФ cross-check (independent of the
         # lawyer's region filter) so the model can spot overturning/contradictory
