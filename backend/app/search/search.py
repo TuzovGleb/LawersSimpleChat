@@ -41,6 +41,7 @@ class CourtPracticeSearcher:
         result_type: str | None = None,
         regions: list[int] | None = None,
         case_types: list[str] | None = None,
+        court_names: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         filters: list[dict[str, Any]] = []
         if date_from or date_to:
@@ -58,6 +59,9 @@ class CourtPracticeSearcher:
         if case_types:
             # Вид судопроизводства (civil/criminal/...) stored at index time.
             filters.append({"terms": {"case_type": case_types}})
+        if court_names:
+            # Exact court identity (higher courts only) — see app.search.courts.
+            filters.append({"terms": {"court_name": court_names}})
         return filters
 
     def _build_query_body(
@@ -69,6 +73,7 @@ class CourtPracticeSearcher:
         result_type: str | None = None,
         regions: list[int] | None = None,
         case_types: list[str] | None = None,
+        court_names: list[str] | None = None,
         size: int | None = None,
     ) -> dict[str, Any]:
         filters = self._build_filters(
@@ -77,6 +82,7 @@ class CourtPracticeSearcher:
             result_type=result_type,
             regions=regions,
             case_types=case_types,
+            court_names=court_names,
         )
         bool_query: dict[str, Any] = {
             "must": [
@@ -141,6 +147,7 @@ class CourtPracticeSearcher:
         result_type: str | None = None,
         regions: list[int] | None = None,
         case_types: list[str] | None = None,
+        court_names: list[str] | None = None,
     ) -> list[RankedDocument]:
         cleaned_queries = [q.strip() for q in queries if isinstance(q, str) and q.strip()]
         if not cleaned_queries:
@@ -154,6 +161,7 @@ class CourtPracticeSearcher:
                 result_type=result_type,
                 regions=regions,
                 case_types=case_types,
+                court_names=court_names,
             )
             response = self._client.search(index=self._config.index_alias, body=body)
             return self._hits_to_ranked(response.get("hits", {}).get("hits", []))[: self._config.top_k]
@@ -170,6 +178,7 @@ class CourtPracticeSearcher:
                     result_type=result_type,
                     regions=regions,
                     case_types=case_types,
+                    court_names=court_names,
                 )
             )
 
@@ -197,6 +206,7 @@ class CourtPracticeSearcher:
         result_type: str | None = None,
         regions: list[int] | None = None,
         case_types: list[str] | None = None,
+        court_names: list[str] | None = None,
     ) -> list[RankedDocument]:
         return await asyncio.to_thread(
             self.search_sync,
@@ -206,6 +216,7 @@ class CourtPracticeSearcher:
             result_type=result_type,
             regions=regions,
             case_types=case_types,
+            court_names=court_names,
         )
 
     def vs_crosscheck_sync(
