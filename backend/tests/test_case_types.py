@@ -35,7 +35,9 @@ def test_case_type_from_catalog_unknown_returns_none():
 def test_case_type_reference_lists_codes_with_labels():
     assert "civil (гражданские)" in CASE_TYPE_REFERENCE
     assert "criminal (уголовные)" in CASE_TYPE_REFERENCE
-    # Codes without indexed data are marked so the tool doc never contradicts
-    # the system prompt about which filters can actually return results.
+    # arbitration now has indexed data → no "данных пока нет" marker.
+    assert "arbitration (арбитражные)" in CASE_TYPE_REFERENCE
+    assert "arbitration (арбитражные — данных пока нет)" not in CASE_TYPE_REFERENCE
+    # administrative still has no indexed data — stays marked so the tool doc
+    # never contradicts the system prompt about which filters return results.
     assert "administrative (административные — данных пока нет)" in CASE_TYPE_REFERENCE
-    assert "arbitration (арбитражные — данных пока нет)" in CASE_TYPE_REFERENCE
