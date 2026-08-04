@@ -64,7 +64,9 @@ def test_week_filter_keeps_only_in_range_and_drops_unweeked(tmp_path):
     _write_page(court / "page-0001.json")     # legacy, no week — drop
     docs = list(mod.iter_cases_from_directory(court, case_type="civil", week_from=227, week_to=330))
     assert len(docs) == 2
-    assert all(d["case_type"] == "civil" and d["region_code"] == 77 for d in docs)
+    # (region comes from the catalog / per-case signal, not the page vnkod — see
+    # test_index_normalize; here we only assert the week filter + case_type.)
+    assert all(d["case_type"] == "civil" for d in docs)
 
 
 def test_file_week_parsing():

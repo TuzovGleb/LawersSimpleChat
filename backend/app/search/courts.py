@@ -85,18 +85,35 @@ COURT_REFERENCE: str = ", ".join(
 )
 
 
-def court_names_from_codes(codes: list[str] | None) -> list[str]:
-    """Resolve a list of court codes to their exact ``court_name`` strings.
+# Reverse map, for deriving a doc's court_code from its court_name at index time.
+COURT_NAME_TO_CODE: dict[str, str] = {name: code for code, name in COURT_CODE_TO_NAME.items()}
 
-    Unknown codes are dropped (the model was told to use only codes from the
-    reference). Returns [] when nothing resolves, so the caller adds no filter
-    and the search spans all courts.
+
+def court_code_from_name(court_name: str | None) -> str | None:
+    """Map an exact ``court_name`` to its short code (slug), or None.
+
+    Only the notable higher courts in the mapping get a code; ordinary
+    district/regional courts return None (they are reached via ``regions``, not
+    the court filter). Stored as ``court_code`` at index time so the ``courts``
+    filter matches a stable slug, not the fragile display name.
+    """
+    if not isinstance(court_name, str):
+        return None
+    return COURT_NAME_TO_CODE.get(court_name.strip())
+
+
+def known_court_codes(codes: list[str] | None) -> list[str]:
+    """Keep only codes present in the mapping, de-duped, preserving order.
+
+    The model was told to pass only codes from the reference; unknown codes are
+    dropped so a typo silently widens rather than breaks the search. Returns []
+    when nothing is valid, so the caller adds no court filter.
     """
     if not codes:
         return []
-    names: list[str] = []
+    seen: list[str] = []
     for code in codes:
-        name = COURT_CODE_TO_NAME.get((code or "").strip())
-        if name and name not in names:
-            names.append(name)
-    return names
+        c = (code or "").strip()
+        if c in COURT_CODE_TO_NAME and c not in seen:
+            seen.append(c)
+    return seen
