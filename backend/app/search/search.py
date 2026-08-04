@@ -27,6 +27,16 @@ SNIPPET_CHARS = 400
 VS_REGION_CODE = 99
 VS_CROSSCHECK_SIZE = 3
 
+# Score-only boost by instance authority (court_level): a higher court floats up
+# within a region-OR search without filtering the lower instances out. Modest and
+# tunable; level 1 (first instance) is the un-boosted baseline.
+COURT_LEVEL_BOOSTS: dict[int, float] = {4: 4.0, 3: 2.0, 2: 1.2}
+
+# Shown in results so the model weighs authority (кассация > апелляция > первая).
+COURT_LEVEL_LABELS: dict[int, str] = {
+    1: "первая инстанция", 2: "апелляция", 3: "кассация", 4: "Верховный Суд РФ"
+}
+
 
 class CourtPracticeSearcher:
     def __init__(self, client: OpenSearch, config: OpenSearchConfig):
@@ -41,7 +51,7 @@ class CourtPracticeSearcher:
         result_type: str | None = None,
         regions: list[int] | None = None,
         case_types: list[str] | None = None,
-        court_names: list[str] | None = None,
+        court_codes: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         filters: list[dict[str, Any]] = []
         if date_from or date_to:
@@ -59,9 +69,9 @@ class CourtPracticeSearcher:
         if case_types:
             # Вид судопроизводства (civil/criminal/...) stored at index time.
             filters.append({"terms": {"case_type": case_types}})
-        if court_names:
-            # Exact court identity (higher courts only) — see app.search.courts.
-            filters.append({"terms": {"court_name": court_names}})
+        if court_codes:
+            # Stable court slug (higher courts only) — see app.search.courts.
+            filters.append({"terms": {"court_code": court_codes}})
         return filters
 
     def _build_query_body(
@@ -73,7 +83,7 @@ class CourtPracticeSearcher:
         result_type: str | None = None,
         regions: list[int] | None = None,
         case_types: list[str] | None = None,
-        court_names: list[str] | None = None,
+        court_codes: list[str] | None = None,
         size: int | None = None,
     ) -> dict[str, Any]:
         filters = self._build_filters(
@@ -82,7 +92,7 @@ class CourtPracticeSearcher:
             result_type=result_type,
             regions=regions,
             case_types=case_types,
-            court_names=court_names,
+            court_codes=court_codes,
         )
         bool_query: dict[str, Any] = {
             "must": [
@@ -95,15 +105,21 @@ class CourtPracticeSearcher:
                     }
                 }
             ],
-            # Score-only boost: an exact legal phrasing in the act text ranks
-            # higher. In `should` with no minimum_should_match, so it only
-            # reorders results and never filters them out.
+            # Score-only boosts (`should`, no minimum_should_match): they reorder
+            # results, never filter. An exact legal phrasing in the act text ranks
+            # higher; and a higher instance (cassation/appeal/ВС) is more
+            # authoritative, so it floats up within the same query — without
+            # dropping a highly relevant first-instance case. See COURT_LEVEL_BOOSTS.
             "should": [
                 {
                     "match_phrase": {
                         "act_text": {"query": query, "slop": 2, "boost": 2.0}
                     }
                 }
+            ]
+            + [
+                {"term": {"court_level": {"value": level, "boost": boost}}}
+                for level, boost in COURT_LEVEL_BOOSTS.items()
             ],
         }
         if filters:
@@ -147,7 +163,7 @@ class CourtPracticeSearcher:
         result_type: str | None = None,
         regions: list[int] | None = None,
         case_types: list[str] | None = None,
-        court_names: list[str] | None = None,
+        court_codes: list[str] | None = None,
     ) -> list[RankedDocument]:
         cleaned_queries = [q.strip() for q in queries if isinstance(q, str) and q.strip()]
         if not cleaned_queries:
@@ -161,7 +177,7 @@ class CourtPracticeSearcher:
                 result_type=result_type,
                 regions=regions,
                 case_types=case_types,
-                court_names=court_names,
+                court_codes=court_codes,
             )
             response = self._client.search(index=self._config.index_alias, body=body)
             return self._hits_to_ranked(response.get("hits", {}).get("hits", []))[: self._config.top_k]
@@ -178,7 +194,7 @@ class CourtPracticeSearcher:
                     result_type=result_type,
                     regions=regions,
                     case_types=case_types,
-                    court_names=court_names,
+                    court_codes=court_codes,
                 )
             )
 
@@ -206,7 +222,7 @@ class CourtPracticeSearcher:
         result_type: str | None = None,
         regions: list[int] | None = None,
         case_types: list[str] | None = None,
-        court_names: list[str] | None = None,
+        court_codes: list[str] | None = None,
     ) -> list[RankedDocument]:
         return await asyncio.to_thread(
             self.search_sync,
@@ -216,7 +232,7 @@ class CourtPracticeSearcher:
             result_type=result_type,
             regions=regions,
             case_types=case_types,
-            court_names=court_names,
+            court_codes=court_codes,
         )
 
     def vs_crosscheck_sync(
@@ -296,7 +312,8 @@ def format_search_results(results: list[RankedDocument]) -> str:
                 [
                     f"{index}. id: {source.get('decision_id', doc.doc_id)}",
                     f"   Дело: {source.get('case_number', '—')}",
-                    f"   Суд: {source.get('court_name', '—')}",
+                    f"   Суд: {source.get('court_name', '—')}"
+                    + (f" ({COURT_LEVEL_LABELS[lvl]})" if (lvl := source.get('court_level')) in COURT_LEVEL_LABELS else ""),
                     f"   Дата решения: {source.get('decision_date', '—')}",
                     f"   Результат: {source.get('decision_result', '—')} ({source.get('result_type', '—')})",
                     f"   Категория: {source.get('category', '—')}",
