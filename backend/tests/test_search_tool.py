@@ -53,11 +53,19 @@ def test_build_query_body_case_type_filter(mock_searcher):
 
 
 def test_build_query_body_court_filter(mock_searcher):
-    body = mock_searcher._build_query_body(
-        "неустойка", court_names=["Первый кассационный суд общей юрисдикции"]
-    )
+    body = mock_searcher._build_query_body("неустойка", court_codes=["ksoyu-1"])
     filters = body["query"]["bool"]["filter"]
-    assert {"terms": {"court_name": ["Первый кассационный суд общей юрисдикции"]}} in filters
+    assert {"terms": {"court_code": ["ksoyu-1"]}} in filters
+
+
+def test_build_query_body_boosts_higher_court_levels(mock_searcher):
+    # Score-only should-clauses float cassation/appeal/ВС up; never a filter.
+    body = mock_searcher._build_query_body("неустойка")
+    should = body["query"]["bool"]["should"]
+    boosts = {c["term"]["court_level"]["value"]: c["term"]["court_level"]["boost"]
+              for c in should if "term" in c and "court_level" in c["term"]}
+    assert boosts.get(4, 0) > boosts.get(3, 0) > boosts.get(2, 0)
+    assert "minimum_should_match" not in body["query"]["bool"]
 
 
 def test_search_tool_regions_param_carries_region_reference(mock_searcher):
@@ -85,11 +93,11 @@ def test_search_tool_courts_param_carries_reference(mock_searcher):
 
 
 @pytest.mark.asyncio
-async def test_search_court_practice_maps_court_codes_to_names(mock_searcher, monkeypatch):
+async def test_search_court_practice_forwards_valid_court_codes(mock_searcher, monkeypatch):
     captured = {}
 
     async def fake_search(*args, **kwargs):
-        captured["court_names"] = kwargs.get("court_names")
+        captured["court_codes"] = kwargs.get("court_codes")
         return []
 
     async def fake_vs(queries, *, case_types=None):
@@ -99,8 +107,8 @@ async def test_search_court_practice_maps_court_codes_to_names(mock_searcher, mo
     monkeypatch.setattr(mock_searcher, "vs_crosscheck", fake_vs)
     tool = court_practice_tool_specs(mock_searcher)[0].tool
     await tool.ainvoke({"queries": ["неустойка"], "courts": ["ksoyu-2", "bogus"]})
-    # codes resolve to exact court_name; unknown codes are dropped.
-    assert captured["court_names"] == ["Второй кассационный суд общей юрисдикции"]
+    # valid codes pass through as-is; unknown codes are dropped.
+    assert captured["court_codes"] == ["ksoyu-2"]
 
 
 def test_system_prompt_keeps_region_logic_without_the_table():
