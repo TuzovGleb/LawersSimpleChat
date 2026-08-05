@@ -32,14 +32,24 @@ def test_ksoyu_and_vs_have_verified_names_and_data():
 
 
 def test_arbitration_courts_present_but_marked_no_data():
-    for code in ("1aac", "21aac", "as-vvo", "as-mo", "sip"):
+    # 1aac has landed; the rest are still scaffold.
+    for code in ("21aac", "as-vvo", "as-mo", "sip"):
         assert code in COURT_CODE_TO_NAME
         assert code not in COURTS_WITH_DATA
+
+
+def test_arbitration_appellate_name_matches_scraper_form():
+    # The scraper stores "1 арбитражный апелляционный суд" (digit + lowercase);
+    # the court filter is an exact court_name match, so the mapping must agree.
+    assert COURT_CODE_TO_NAME["1aac"] == "1 арбитражный апелляционный суд"
+    assert court_code_from_name("1 арбитражный апелляционный суд") == "1aac"
+    assert "1aac" in COURTS_WITH_DATA
 
 
 def test_reference_marks_only_dataless_courts():
     assert "ksoyu-1 (Первый кассационный суд общей юрисдикции)" in COURT_REFERENCE
     assert "vs-rf (Верховный Суд Российской Федерации)" in COURT_REFERENCE
-    assert "1aac (Первый арбитражный апелляционный суд — данных пока нет)" in COURT_REFERENCE
+    assert "1aac (1 арбитражный апелляционный суд)" in COURT_REFERENCE
+    assert "2aac (2 арбитражный апелляционный суд — данных пока нет)" in COURT_REFERENCE
     assert "sip (Суд по интеллектуальным правам — данных пока нет)" in COURT_REFERENCE
     assert "ksoyu-1 (Первый кассационный суд общей юрисдикции — данных пока нет)" not in COURT_REFERENCE
