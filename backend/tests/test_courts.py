@@ -32,8 +32,9 @@ def test_ksoyu_and_vs_have_verified_names_and_data():
 
 
 def test_arbitration_courts_present_but_marked_no_data():
-    # 1aac and all 10 okrug courts have landed; the rest are still scaffold.
-    for code in ("21aac", "2aac", "sip"):
+    # 1aac, the 10 okrug courts and СИП have landed; the other appellate
+    # courts are still scaffold.
+    for code in ("21aac", "2aac", "20aac"):
         assert code in COURT_CODE_TO_NAME
         assert code not in COURTS_WITH_DATA
 
@@ -53,5 +54,6 @@ def test_reference_marks_only_dataless_courts():
     assert "as-vvo (АС Волго-Вятского округа)" in COURT_REFERENCE
     assert "2aac (2 арбитражный апелляционный суд — данных пока нет)" in COURT_REFERENCE
     assert "as-mo (АС Московского округа)" in COURT_REFERENCE
-    assert "sip (Суд по интеллектуальным правам — данных пока нет)" in COURT_REFERENCE
+    assert "sip (Суд по интеллектуальным правам)" in COURT_REFERENCE
+    assert "2aac (2 арбитражный апелляционный суд — данных пока нет)" in COURT_REFERENCE
     assert "ksoyu-1 (Первый кассационный суд общей юрисдикции — данных пока нет)" not in COURT_REFERENCE
