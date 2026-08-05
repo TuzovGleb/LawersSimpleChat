@@ -9,12 +9,12 @@ court decided it). This module maps a short code to the EXACT ``court_name``
 stored at index time, so ``search_court_practice`` can offer a ``courts`` filter
 for them, by analogy with ``regions``.
 
-The filter is an exact ``terms`` match on ``court_name``, so a code's name must
-match the indexed string byte-for-byte. Courts we have NOT indexed yet
-(arbitration appellate/okrug/СИП) are listed for forward-compatibility but their
-names are PROVISIONAL — the scraper abbreviates ("АС Нижегородской области"), so
-verify against real data before trusting them. ``COURTS_WITH_DATA`` marks which
-codes actually have indexed practice, exactly like ``CASE_TYPES_WITH_DATA``.
+The court_code is derived from ``court_name`` at index time, so a code's name
+must match what the scraper stores byte-for-byte — always verify a new court's
+name against its dataset before trusting it (the scraper abbreviates: "АС
+Волго-Вятского округа", "1 арбитражный апелляционный суд"). ``COURTS_WITH_DATA``
+marks which codes actually have indexed practice, like ``CASE_TYPES_WITH_DATA``;
+codes not in it are scaffold and are shown to the model as «данных пока нет».
 """
 
 # code -> exact court_name as stored in the index.
@@ -57,18 +57,21 @@ COURT_CODE_TO_NAME: dict[str, str] = {
     "19aac": "19 арбитражный апелляционный суд",
     "20aac": "20 арбитражный апелляционный суд",
     "21aac": "21 арбитражный апелляционный суд",
-    # --- Арбитражные суды округов (кассация, 10) — data pending, names PROVISIONAL ---
-    "as-vvo": "Арбитражный суд Волго-Вятского округа",
-    "as-vso": "Арбитражный суд Восточно-Сибирского округа",
-    "as-dvo": "Арбитражный суд Дальневосточного округа",
-    "as-zso": "Арбитражный суд Западно-Сибирского округа",
-    "as-mo": "Арбитражный суд Московского округа",
-    "as-po": "Арбитражный суд Поволжского округа",
-    "as-szo": "Арбитражный суд Северо-Западного округа",
-    "as-sko": "Арбитражный суд Северо-Кавказского округа",
-    "as-uo": "Арбитражный суд Уральского округа",
-    "as-co": "Арбитражный суд Центрального округа",
-    # --- Суд по интеллектуальным правам — data pending, name PROVISIONAL ---
+    # --- Арбитражные суды округов (кассация, 10) ---
+    # Name form verified against the datasets: the scraper abbreviates to
+    # "АС <name> округа" (same as "АС Нижегородской области"), not the full
+    # "Арбитражный суд ...". as-mo is the only one without data yet.
+    "as-vvo": "АС Волго-Вятского округа",
+    "as-vso": "АС Восточно-Сибирского округа",
+    "as-dvo": "АС Дальневосточного округа",
+    "as-zso": "АС Западно-Сибирского округа",
+    "as-mo": "АС Московского округа",
+    "as-po": "АС Поволжского округа",
+    "as-szo": "АС Северо-Западного округа",
+    "as-sko": "АС Северо-Кавказского округа",
+    "as-uo": "АС Уральского округа",
+    "as-co": "АС Центрального округа",
+    # --- Суд по интеллектуальным правам (first instance + cassation) ---
     "sip": "Суд по интеллектуальным правам",
 }
 
@@ -77,7 +80,7 @@ COURT_CODE_TO_NAME: dict[str, str] = {
 # lands: move its code here and re-verify its court_name against the index.
 COURTS_WITH_DATA: frozenset[str] = frozenset(
     {"vs-rf", "ksoyu-1", "ksoyu-2", "ksoyu-3", "ksoyu-4", "ksoyu-5",
-     "ksoyu-6", "ksoyu-7", "ksoyu-8", "ksoyu-9", "1aac"}
+     "ksoyu-6", "ksoyu-7", "ksoyu-8", "ksoyu-9", "1aac", "as-vvo"}
 )
 
 # Human-readable "code — Название" reference for the tool's `courts` parameter.

@@ -129,20 +129,38 @@ def _case_number_prefix(case_number: str) -> str:
 
 
 def derive_court_level(
-    case_number: str, court_name: str | None, act_title: str | None, region_code: int | None
+    case_number: str,
+    court_name: str | None,
+    act_title: str | None,
+    region_code: int | None,
+    instance_level: object = None,
 ) -> int:
     """Instance level: 1 first / 2 appeal / 3 cassation / 4 supreme.
 
-    court_name pins the top tiers unambiguously (a КСОЮ / ВС РФ decision is
-    always that level); for the rest the СУДРФ case-number prefix names the
-    instance ("33-" civil appeal, "8Г-" cassation, "2-/1-" first). Moscow's
-    criminal "10-" mixes first-instance materials with Мосгорсуд appeal, split by
-    the act title. Falls through to 1 (first instance), the safe default.
+    The arbitration corpus states the instance per case (``instanceLevel``), and
+    that beats any inference — it is the only correct source for courts that mix
+    levels (СИП and some окружные rule at first instance too). Otherwise
+    court_name pins the top tiers (a КСОЮ / ВС РФ decision is always that level)
+    and the СУДРФ case-number prefix names the instance ("33-" civil appeal,
+    "8Г-" cassation, "2-/1-" first). Moscow's criminal "10-" mixes first-instance
+    materials with Мосгорсуд appeal, split by the act title. Falls through to 1
+    (first instance), the safe default.
     """
+    # Authoritative when the source provides it (arbitration); may be int or str.
+    try:
+        level = int(str(instance_level).strip())
+        if 1 <= level <= 4:
+            return level
+    except (TypeError, ValueError):
+        pass
+
     name = court_name or ""
+    lname = name.lower()
     if "Верховный Суд Российской Федерации" in name:
         return 4
-    if "кассационный суд" in name or ("Арбитражный суд" in name and "округа" in name):
+    # "АС <name> округа" is how the scraper writes an arbitration okrug court
+    # (cassation); it never spells out "Арбитражный суд ... округа".
+    if "кассационный суд" in lname or ("округа" in lname and ("ас " in lname or "арбитражный суд" in lname)):
         return 3
     if region_code == 99:
         return 4
@@ -256,7 +274,9 @@ def normalize_case(case: dict, page_meta: dict) -> dict | None:
         # Short code of a notable higher court, from court_name (None otherwise).
         "court_code": court_code_from_name(court_name),
         # Instance level (1..4) for ranking higher-court practice up.
-        "court_level": derive_court_level(case_number, court_name, act_title, region_code),
+        "court_level": derive_court_level(
+            case_number, court_name, act_title, region_code, case.get("instanceLevel")
+        ),
     }
 
 
