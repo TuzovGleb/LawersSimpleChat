@@ -80,7 +80,7 @@ COURT_CODE_TO_NAME: dict[str, str] = {
 # lands: move its code here and re-verify its court_name against the index.
 COURTS_WITH_DATA: frozenset[str] = frozenset(
     {"vs-rf", "ksoyu-1", "ksoyu-2", "ksoyu-3", "ksoyu-4", "ksoyu-5",
-     "ksoyu-6", "ksoyu-7", "ksoyu-8", "ksoyu-9", "1aac",
+     "ksoyu-6", "ksoyu-7", "ksoyu-8", "ksoyu-9", "1aac", "2aac", "3aac",
      "as-vvo", "as-vso", "as-dvo", "as-zso", "as-mo", "as-po", "as-szo",
      "as-sko", "as-uo", "as-co", "sip"}
 )
