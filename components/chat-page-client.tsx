@@ -94,6 +94,16 @@ function isValidDocumentStrategy(value: unknown): value is SessionDocument["stra
   return value === "text" || value === "pdf" || value === "docx" || value === "doc" || value === "vision" || value === "llm-file";
 }
 
+// Обрыв стрима ≠ потерянный ход: бэкенд доделывает брошенный ход в фоне и
+// сохраняет его (detached turn worker). Прежде чем показать «Не удалось
+// отправить / Повторить», опрашиваем сервер — не долетел ли ход до базы.
+// Дедлайн — компромисс: типичный QUIC-обрыв случается на 1–2-й минуте хода,
+// которому остаётся 1–3 минуты; ход длиннее дедлайна деградирует до прежнего
+// поведения (failed + retry). Всё это время чат заблокирован inflight-гардом,
+// поэтому дедлайн не должен быть слишком щедрым.
+const TURN_RECONCILE_POLL_MS = 5_000;
+const TURN_RECONCILE_DEADLINE_MS = 5 * 60_000;
+
 function toMessageDocument(document: SessionDocument): ChatMessageDocument {
   return {
     id: document.id,
@@ -1320,6 +1330,12 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
       }),
     );
 
+    // Различаем в catch два класса ошибок: явный отказ сервера (SSE error,
+    // HTTP-статус, кончившийся доступ) — ход НЕ сохранён, ретрай уместен сразу;
+    // и смерть транспорта посреди стрима (QUIC blackhole, обрыв сети) — бэкенд
+    // доделает и сохранит ход, надо сверяться с сервером, а не предлагать ретрай.
+    let streamOpened = false;
+    let serverReportedError = false;
     try {
       // Используем увеличенный таймаут (35 минут) для долгих thinking-запросов
       // Сервер настроен на 30 минут, добавляем запас
@@ -1353,11 +1369,13 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
       document.removeEventListener('visibilitychange', visibilityHandler);
 
       if (!response.ok) {
+        serverReportedError = true;
         if (await handleSubscriptionRequired(response)) {
           throw new Error("Доступ закончился. Свяжитесь с нами, чтобы продолжить работу.");
         }
         throw new Error("Не удалось отправить сообщение");
       }
+      streamOpened = true;
 
       // Читаем streaming ответ (Server-Sent Events)
       const reader = response.body?.getReader();
@@ -1404,6 +1422,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
 
           // Error event (new {type:"error"} or legacy {error}).
           if (event.type === 'error' || event.error) {
+            serverReportedError = true;
             throw new Error(event.details || event.error || 'Ошибка генерации');
           }
 
@@ -1571,27 +1590,81 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         // Очищаем pending request при обычной ошибке
         setPendingRequest(null);
       }
-      
-      // Mark the in-flight (pending) user message as failed instead of
-      // appending a bot error reply. It stays retryable and is dropped from
-      // history/localStorage, so the on-screen history never diverges from what
-      // the backend persisted — a failed turn is persisted nowhere.
-      setSessions((prev) =>
-        prev.map((session) => {
-          if (session.id !== sessionLocalId) return session;
-          const messages = session.messages
-            // Преамбулы этого стрима — pending assistant-сообщения: бэкенд для
-            // упавшего хода не сохранил ничего, поэтому убираем их целиком
-            // (ретрай пере-стримит), а не оставляем сиротами в транскрипте.
-            .filter(
-              (message) => !(message.role === "assistant" && message.status === "pending"),
-            )
-            .map((message) =>
-              message.status === "pending" ? { ...message, status: "failed" as const } : message,
+
+      // Транспорт умер посреди стрима, но бэкенд доделывает ход и сохранит его
+      // (detached turn worker) — опрашиваем сервер, прежде чем объявлять провал.
+      // Иначе «Повторить» после QUIC-обрыва задублирует вопрос: сервер соберёт
+      // историю из базы, где вопрос с ответом уже лежат, и допишет вопрос ещё раз.
+      let recovered = false;
+      if (streamOpened && !serverReportedError) {
+        setStreamStates((prev) => ({
+          ...prev,
+          [sessionLocalId]: {
+            phase: 'thinking',
+            draft: '',
+            toolLabel: 'Связь прервалась — дожидаюсь ответа…',
+            startedAt: prev[sessionLocalId]?.startedAt ?? Date.now(),
+          },
+        }));
+        const committedUserCount = committed.filter((m) => m.role === 'user').length;
+        const deadline = Date.now() + TURN_RECONCILE_DEADLINE_MS;
+        while (Date.now() < deadline) {
+          try {
+            const check = await fetch(
+              resolveApiUrl(`/api/chat/${encodeURIComponent(chatId)}/messages`),
             );
-          return { ...session, messages };
-        }),
-      );
+            if (check.ok) {
+              const payload = await check.json();
+              const serverMessages = normalizeDbMessages(payload?.messages);
+              const userRows = serverMessages.filter((m) => m.role === 'user');
+              // Ход сохраняется одной записью (вопрос + ответ), поэтому «наш
+              // вопрос появился в базе» означает «ответ тоже там».
+              const turnLanded =
+                userRows.length > committedUserCount &&
+                userRows[userRows.length - 1]?.content === userMessage.content;
+              if (turnLanded) {
+                setSessions((prev) =>
+                  prev.map((session) =>
+                    session.id === sessionLocalId
+                      ? { ...session, messages: serverMessages }
+                      : session,
+                  ),
+                );
+                setPendingRequest(null);
+                recovered = true;
+                break;
+              }
+            }
+          } catch {
+            // Сеть ещё лежит — следующая итерация попробует снова.
+          }
+          await new Promise((resolve) => setTimeout(resolve, TURN_RECONCILE_POLL_MS));
+        }
+      }
+
+      if (!recovered) {
+        // Mark the in-flight (pending) user message as failed instead of
+        // appending a bot error reply. It stays retryable and is dropped from
+        // history/localStorage. Сюда попадают: явная ошибка бэкенда (ход не
+        // сохранён по построению) и истёкший дедлайн сверки — там ретрай снова
+        // корректен: раз вопрос так и не появился в базе, дублировать нечего.
+        setSessions((prev) =>
+          prev.map((session) => {
+            if (session.id !== sessionLocalId) return session;
+            const messages = session.messages
+              // Преамбулы этого стрима — pending assistant-сообщения: для
+              // несохранённого хода их нет в базе, поэтому убираем целиком
+              // (ретрай пере-стримит), а не оставляем сиротами в транскрипте.
+              .filter(
+                (message) => !(message.role === "assistant" && message.status === "pending"),
+              )
+              .map((message) =>
+                message.status === "pending" ? { ...message, status: "failed" as const } : message,
+              );
+            return { ...session, messages };
+          }),
+        );
+      }
     } finally {
       inflightSessionsRef.current.delete(sessionLocalId);
       setStreamStates((prev) => {
