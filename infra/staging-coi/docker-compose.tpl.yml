@@ -91,6 +91,19 @@ services:
       - -c
       - |
         cat > /config/Caddyfile <<'EOF'
+        {
+                # Только TCP (h1/h2), БЕЗ HTTP/3: российские сети душат QUIC
+                # (DPI/ТСПУ, UDP-NAT), и Chrome посреди длинного SSE-стрима
+                # детектит «network blackhole» (QUIC err 85) и убивает
+                # соединение — клиент видит «Не удалось отправить», хотя
+                # бэкенд доделывает ход. Подтверждено логами 2026-08-06:
+                # каждая отмена стрима совпадала с caddy-абортом
+                # «85:Network blackhole detected». TCP переживает потерю
+                # пакетов ретрансмиссией, а не разрывом.
+                servers {
+                        protocols h1 h2
+                }
+        }
         __SITE_DOMAIN__ {
                 encode zstd gzip
 
@@ -135,9 +148,11 @@ services:
     ports:
       - "80:80"
       - "443:443"
-      # UDP — HTTP/3 (QUIC): образ caddy анонсирует h3 через Alt-Svc; без
-      # опубликованного UDP-порта клиенты слали бы QUIC в никуда.
-      - "443:443/udp"
+      # 443/udp НЕ публикуем: HTTP/3 выключен глобальной опцией protocols
+      # (см. Caddyfile выше). Закрытый порт важен и сам по себе — клиент с
+      # закешированным Alt-Svc (caddy отдавал ma=30 дней) быстро получает
+      # ICMP unreachable и падает обратно на TCP, вместо ещё одной чёрной
+      # дыры, если бы порт остался открыт без слушателя.
     volumes:
       - /home/yc-user/caddy:/etc/caddy:ro
       - /home/yc-user/caddy-data:/data
