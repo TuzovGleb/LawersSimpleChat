@@ -1,0 +1,66 @@
+<!--
+  Шаблон письма восстановления пароля для Supabase Auth (GoTrue).
+
+  ВАЖНО: GoTrue не читает шаблоны из смонтированных volume — он тянет их ПО HTTP
+  из GOTRUE_MAILER_TEMPLATES_RECOVERY в момент отправки. Поэтому файл лежит в
+  public/ и раздаётся самим приложением. Следствие: если приложение недоступно
+  или файл переименован, GoTrue МОЛЧА падает на встроенный английский дефолт —
+  письма продолжат уходить, но не те. Событие в логах: templatemailer_template_body_http_error.
+
+  Шаблон парсится через Go html/template. Доступны: .ConfirmationURL, .Token,
+  .TokenHash, .SiteURL, .Email, .RedirectTo, .Data (user_metadata).
+
+  Тело всегда уходит одной частью text/html — text/plain альтернативы у GoTrue
+  нет вообще, это не настройка. Поэтому вся разметка обязана быть читаемой и
+  без внешних ресурсов: картинки и шрифты со стороны режут доставляемость.
+-->
+<div style="margin:0;padding:24px 12px;background:#f4f5f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e4e6eb;border-radius:12px;padding:32px 28px;">
+
+    <div style="font-size:15px;font-weight:600;color:#1a1d23;letter-spacing:-0.01em;">Джейхелпер</div>
+    <div style="font-size:13px;color:#6b7280;margin-top:2px;">ИИ-помощник для юристов</div>
+
+    <hr style="border:none;border-top:1px solid #e4e6eb;margin:24px 0;">
+
+    <h1 style="margin:0 0 12px;font-size:20px;line-height:1.3;color:#1a1d23;font-weight:600;">
+      Восстановление пароля
+    </h1>
+
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#374151;">
+      Вы запросили смену пароля для аккаунта <strong style="color:#1a1d23;">{{ .Email }}</strong>.
+      Нажмите кнопку ниже, чтобы задать новый пароль.
+    </p>
+
+    <p style="margin:0 0 24px;">
+      <a href="{{ .ConfirmationURL }}"
+         style="display:inline-block;background:#1a1d23;color:#ffffff;text-decoration:none;
+                font-size:15px;font-weight:500;padding:13px 26px;border-radius:8px;">
+        Задать новый пароль
+      </a>
+    </p>
+
+    <p style="margin:0 0 20px;font-size:13px;line-height:1.6;color:#6b7280;">
+      Ссылка действует ограниченное время и срабатывает <strong>только в том браузере</strong>,
+      из которого вы запросили восстановление. Если открыть её на другом устройстве,
+      придётся запросить письмо заново.
+    </p>
+
+    <p style="margin:0 0 20px;font-size:13px;line-height:1.6;color:#6b7280;">
+      Если кнопка не работает, скопируйте адрес в строку браузера:<br>
+      <span style="color:#374151;word-break:break-all;">{{ .ConfirmationURL }}</span>
+    </p>
+
+    <hr style="border:none;border-top:1px solid #e4e6eb;margin:24px 0;">
+
+    <p style="margin:0;font-size:13px;line-height:1.6;color:#6b7280;">
+      Если вы не запрашивали смену пароля — просто удалите это письмо,
+      с аккаунтом ничего не произойдёт.
+    </p>
+
+  </div>
+
+  <div style="max-width:520px;margin:16px auto 0;text-align:center;font-size:12px;line-height:1.5;color:#9ca3af;">
+    Это служебное письмо, отвечать на него не нужно.<br>
+    Вопросы — на адрес из ответа этому письму.
+  </div>
+</div>
