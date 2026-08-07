@@ -215,19 +215,40 @@ jobs:
           docker push "$IMG:prod-coi-${{ steps.sha.outputs.sha }}"
           docker push "$IMG:prod-coi"
 
+      # Тег фронта включает отпечаток NEXT_PUBLIC_* — они вшиваются в бандл на
+      # сборке, поэтому тег только по SHA делал образ МУТАБЕЛЬНЫМ: правка
+      # переменной без правки кода даёт новое содержимое под старым именем, VM
+      # видит знакомый тег, не перекачивает и продолжает крутить старый бандл.
+      # При этом рантайм-env контейнера уже новый — расхождение незаметно.
+      # Откат по SHA не страдает: он идёт через пересборку со старого коммита.
       - name: Build and push frontend image
+        id: fe
+        env:
+          NP_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+          NP_SUPABASE_ANON_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          NP_SITE_URL: https://${{ vars.PROD_COI_DOMAIN }}
+          NP_PROXY_URL: ${{ vars.PROD_COI_PROXY_URL }}
+          NP_ENABLE_SIGNUP: ${{ vars.NEXT_PUBLIC_ENABLE_SIGNUP }}
+          NP_YM_ID: ${{ vars.NEXT_PUBLIC_YM_ID }}
         run: |
           IMG=cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-bot
+          ARGS_FP=$(printf '%s\0' \
+            "$NP_SUPABASE_URL" "$NP_SUPABASE_ANON_KEY" "$NP_SITE_URL" \
+            "$NP_PROXY_URL" "$NP_ENABLE_SIGNUP" "$NP_YM_ID" \
+            | sha256sum | cut -c1-10)
+          TAG="prod-coi-${{ steps.sha.outputs.sha }}-$ARGS_FP"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Frontend tag: $TAG"
           docker build \
-            --build-arg NEXT_PUBLIC_SUPABASE_URL="${{ vars.NEXT_PUBLIC_SUPABASE_URL }}" \
-            --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY="${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}" \
-            --build-arg NEXT_PUBLIC_SITE_URL="https://${{ vars.PROD_COI_DOMAIN }}" \
-            --build-arg NEXT_PUBLIC_PROXY_URL="${{ vars.PROD_COI_PROXY_URL }}" \
-            --build-arg NEXT_PUBLIC_ENABLE_SIGNUP="${{ vars.NEXT_PUBLIC_ENABLE_SIGNUP }}" \
-            --build-arg NEXT_PUBLIC_YM_ID="${{ vars.NEXT_PUBLIC_YM_ID }}" \
-            -t "$IMG:prod-coi-${{ steps.sha.outputs.sha }}" .
-          docker tag "$IMG:prod-coi-${{ steps.sha.outputs.sha }}" "$IMG:prod-coi"
-          docker push "$IMG:prod-coi-${{ steps.sha.outputs.sha }}"
+            --build-arg NEXT_PUBLIC_SUPABASE_URL="$NP_SUPABASE_URL" \
+            --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY="$NP_SUPABASE_ANON_KEY" \
+            --build-arg NEXT_PUBLIC_SITE_URL="$NP_SITE_URL" \
+            --build-arg NEXT_PUBLIC_PROXY_URL="$NP_PROXY_URL" \
+            --build-arg NEXT_PUBLIC_ENABLE_SIGNUP="$NP_ENABLE_SIGNUP" \
+            --build-arg NEXT_PUBLIC_YM_ID="$NP_YM_ID" \
+            -t "$IMG:$TAG" .
+          docker tag "$IMG:$TAG" "$IMG:prod-coi"
+          docker push "$IMG:$TAG"
           docker push "$IMG:prod-coi"
 
       # ---------- 4. Рендер docker-compose и провижн/обновление VM ----------
@@ -235,7 +256,7 @@ jobs:
       - name: Render docker-compose from template
         env:
           BACKEND_IMAGE: cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-backend:prod-coi-${{ steps.sha.outputs.sha }}
-          FRONTEND_IMAGE: cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-bot:prod-coi-${{ steps.sha.outputs.sha }}
+          FRONTEND_IMAGE: cr.yandex/${{ secrets.YC_REGISTRY_ID }}/jhelper-bot:${{ steps.fe.outputs.tag }}
           SITE_DOMAIN: ${{ vars.PROD_COI_DOMAIN }}
           LOG_RESOURCE_TYPE: jhelper-app-prod
           # --- backend ---
