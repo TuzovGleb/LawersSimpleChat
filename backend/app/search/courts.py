@@ -81,6 +81,8 @@ COURT_CODE_TO_NAME: dict[str, str] = {
 COURTS_WITH_DATA: frozenset[str] = frozenset(
     {"vs-rf", "ksoyu-1", "ksoyu-2", "ksoyu-3", "ksoyu-4", "ksoyu-5",
      "ksoyu-6", "ksoyu-7", "ksoyu-8", "ksoyu-9", "1aac", "2aac", "3aac", "4aac", "5aac", "6aac", "7aac", "8aac", "9aac",
+     "10aac", "11aac", "12aac", "13aac", "14aac", "15aac", "16aac", "17aac",
+     "18aac", "19aac", "20aac", "21aac",
      "as-vvo", "as-vso", "as-dvo", "as-zso", "as-mo", "as-po", "as-szo",
      "as-sko", "as-uo", "as-co", "sip"}
 )
