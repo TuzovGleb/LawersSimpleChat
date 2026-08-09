@@ -31,12 +31,10 @@ def test_ksoyu_and_vs_have_verified_names_and_data():
         assert code in COURTS_WITH_DATA
 
 
-def test_arbitration_courts_present_but_marked_no_data():
-    # 1aac, the 10 okrug courts and СИП have landed; the other appellate
-    # courts are still scaffold.
-    for code in ("21aac", "10aac", "20aac"):
-        assert code in COURT_CODE_TO_NAME
-        assert code not in COURTS_WITH_DATA
+def test_every_mapped_court_now_has_data():
+    # All 21 appellate courts, 10 okrug courts, СИП, ВС and the 9 КСОЮ are
+    # indexed — nothing in the mapping is scaffold any more.
+    assert set(COURT_CODE_TO_NAME) == set(COURTS_WITH_DATA)
 
 
 def test_arbitration_appellate_name_matches_scraper_form():
@@ -54,10 +52,10 @@ def test_reference_marks_only_dataless_courts():
     assert "as-vvo (АС Волго-Вятского округа)" in COURT_REFERENCE
     assert "2aac (2 арбитражный апелляционный суд)" in COURT_REFERENCE
     assert "9aac (9 арбитражный апелляционный суд)" in COURT_REFERENCE
-    assert "10aac (10 арбитражный апелляционный суд — данных пока нет)" in COURT_REFERENCE
+    assert "10aac (10 арбитражный апелляционный суд)" in COURT_REFERENCE
     assert "as-mo (АС Московского округа)" in COURT_REFERENCE
     assert "sip (Суд по интеллектуальным правам)" in COURT_REFERENCE
     assert "2aac (2 арбитражный апелляционный суд)" in COURT_REFERENCE
     assert "9aac (9 арбитражный апелляционный суд)" in COURT_REFERENCE
-    assert "10aac (10 арбитражный апелляционный суд — данных пока нет)" in COURT_REFERENCE
+    assert "10aac (10 арбитражный апелляционный суд)" in COURT_REFERENCE
     assert "ksoyu-1 (Первый кассационный суд общей юрисдикции — данных пока нет)" not in COURT_REFERENCE
