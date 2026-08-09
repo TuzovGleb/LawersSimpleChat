@@ -75,17 +75,22 @@ COURT_CODE_TO_NAME: dict[str, str] = {
     "sip": "Суд по интеллектуальным правам",
 }
 
-# Codes that actually have indexed practice (filter returns something). Keep in
-# sync with the system prompt (prompt.py, секция [10]) when a new court's data
-# lands: move its code here and re-verify its court_name against the index.
-COURTS_WITH_DATA: frozenset[str] = frozenset(
-    {"vs-rf", "ksoyu-1", "ksoyu-2", "ksoyu-3", "ksoyu-4", "ksoyu-5",
-     "ksoyu-6", "ksoyu-7", "ksoyu-8", "ksoyu-9", "1aac", "2aac", "3aac", "4aac", "5aac", "6aac", "7aac", "8aac", "9aac",
-     "10aac", "11aac", "12aac", "13aac", "14aac", "15aac", "16aac", "17aac",
-     "18aac", "19aac", "20aac", "21aac",
-     "as-vvo", "as-vso", "as-dvo", "as-zso", "as-mo", "as-po", "as-szo",
-     "as-sko", "as-uo", "as-co", "sip"}
-)
+# Codes that actually have indexed practice (filter returns something). Listed
+# explicitly — never derived from COURT_CODE_TO_NAME — because a court added to
+# the mapping before its data lands must NOT be advertised: the model would then
+# filter on an empty court. Add a code here only once its dataset is indexed and
+# its court_name verified against the index. Today that is every mapped court.
+COURTS_WITH_DATA: frozenset[str] = frozenset({
+    "vs-rf",
+    "ksoyu-1", "ksoyu-2", "ksoyu-3", "ksoyu-4", "ksoyu-5",
+    "ksoyu-6", "ksoyu-7", "ksoyu-8", "ksoyu-9",
+    "1aac", "2aac", "3aac", "4aac", "5aac", "6aac", "7aac",
+    "8aac", "9aac", "10aac", "11aac", "12aac", "13aac", "14aac",
+    "15aac", "16aac", "17aac", "18aac", "19aac", "20aac", "21aac",
+    "as-vvo", "as-vso", "as-dvo", "as-zso", "as-mo",
+    "as-po", "as-szo", "as-sko", "as-uo", "as-co",
+    "sip",
+})
 
 # Human-readable "code — Название" reference for the tool's `courts` parameter.
 # Codes without indexed data are marked so the model never filters on an empty
