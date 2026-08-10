@@ -18,9 +18,11 @@ export async function GET(req: NextRequest) {
 
   try {
     const supabase = await createClient();
+    // chat_sessions(count) — серверный счётчик чатов для карточек дел: до
+    // захода в дело клиент не знает его чатов и без этого рисовал бы нули.
     const { data, error } = await supabase
       .from('projects')
-      .select('*')
+      .select('*, chat_sessions(count)')
       .eq('user_id', user!.id)
       .order('updated_at', { ascending: false });
 

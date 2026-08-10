@@ -205,6 +205,12 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
   const [loadingMessagesSessionId, setLoadingMessagesSessionId] = useState<string | null>(null);
   // Проект, для которого список чатов уже загружен из БД (нужно, чтобы не сбрасывать deep-link раньше времени)
   const dbChatsLoadedProjectRef = useRef<string | null>(null);
+  // Дело, чей локальный список чатов сейчас авторитетен (последняя УСПЕШНАЯ
+  // загрузка из БД). Именно одно: merge при загрузке другого дела вычищает
+  // чужие сессии из state, так что «свежим» локальный счёт бывает только у
+  // последнего загруженного дела; остальные карточки показывают серверный
+  // chatCount (иначе после логина у непосещённых дел рисуются нули).
+  const chatsLoadedProjectRef = useRef<string | null>(null);
   // In-flight-гарды создания проекта: диалог закрывается сразу при сабмите, а
   // серверный pre-check slug'а превращает двойной POST в два проекта с суффиксом.
   const isCreatingProjectRef = useRef(false);
@@ -593,6 +599,9 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
           return prev;
         });
 
+        // Только успешная загрузка делает локальный счёт авторитетным: после
+        // фейла в state лежит лишь пустой плейсхолдер, а серверный chatCount точен.
+        chatsLoadedProjectRef.current = selectedProjectId;
       } catch (error) {
         console.error('Error loading chats from database:', error);
         
@@ -1746,6 +1755,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
       <CaseSelectionScreen
         projects={projects}
         sessions={sessions}
+        chatsLoadedProjectId={chatsLoadedProjectRef.current}
         isLoading={isProjectsLoading}
         entitlement={entitlement}
         accessExpired={accessExpired}

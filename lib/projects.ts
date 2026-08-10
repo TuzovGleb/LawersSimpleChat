@@ -3,7 +3,9 @@ import type { Database, Project, ProjectDocument, SessionDocument } from './type
 type ProjectRow = Database['public']['Tables']['projects']['Row'];
 type ProjectDocumentRow = Database['public']['Tables']['project_documents']['Row'];
 
-export function mapProject(row: ProjectRow): Project {
+export function mapProject(
+  row: ProjectRow & { chat_sessions?: { count: number }[] },
+): Project {
   return {
     id: row.id,
     user_id: row.user_id ?? undefined,
@@ -11,6 +13,9 @@ export function mapProject(row: ProjectRow): Project {
     slug: row.slug ?? undefined,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    // Присутствует только когда запрос включал chat_sessions(count); в
+    // ответах insert/update поле опущено, чтобы не затирать значение на клиенте.
+    ...(row.chat_sessions ? { chatCount: row.chat_sessions[0]?.count ?? 0 } : {}),
   };
 }
 
