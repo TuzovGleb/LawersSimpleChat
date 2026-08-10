@@ -13,12 +13,31 @@ import contextvars
 import datetime as dt
 import json
 import logging
+import re
+import sys
 import uuid
 
 # Surface tag stamped on every log line from this service. The Next.js BFF and
 # the browser emit "bff" / "client", so a single chat can be followed across all
 # three tiers in one log group.
 SURFACE = "backend"
+
+
+def dedup_finish_reason(raw: str | None) -> str | None:
+    """Collapse a whole-string repeated ``finish_reason`` back to one token.
+
+    With ``streaming=True`` OpenRouter sends ``finish_reason`` on two chunks and
+    ``langchain_core.merge_dicts`` concatenates same-key strings when
+    ``AIMessageChunk``s are added, so response metadata really carries
+    "stopstop" / "tool_callstool_calls". Lives here (not in the pipeline
+    modules) because both ``pipelines.nodes`` and ``pipelines.tools.drafting``
+    need it and importing nodes from drafting would be circular.
+    ``None``/empty pass through unchanged.
+    """
+    if not raw:
+        return raw
+    match = re.fullmatch(r"(.+?)\1*", raw)
+    return match.group(1) if match else raw
 
 _chat_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "chat_id", default=None
@@ -86,8 +105,20 @@ class JSONFormatter(logging.Formatter):
                 record.created, tz=dt.timezone.utc
             ).isoformat(),
         }
-        if record.exc_info is not None:
-            always_fields["exc_info"] = self.formatException(record.exc_info)
+        if record.exc_info:
+            # Libraries may pass exc_info as a bool (e.g. opensearch-py logs
+            # failed requests with exc_info=False/True); Logger._log normalizes
+            # only truthy values, so the record can carry a non-tuple that would
+            # crash stdlib formatException.
+            exc_info = record.exc_info
+            if not isinstance(exc_info, tuple):
+                exc_info = sys.exc_info()
+            try:
+                always_fields["exc_info"] = self.formatException(exc_info)
+            except Exception:
+                # A malformed record must never crash the formatter — that would
+                # lose the whole log line.
+                always_fields["exc_info"] = repr(record.exc_info)
         if record.stack_info is not None:
             always_fields["stack_info"] = self.formatStack(record.stack_info)
 

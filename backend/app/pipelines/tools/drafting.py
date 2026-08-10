@@ -25,6 +25,7 @@ from langgraph.prebuilt import InjectedState
 from app.pipelines.tools.base import ToolResultHandler, ToolSpec
 from app.rag_core.prompt import get_drafting_prompt
 from app.services.docx_drafting import assemble_blocks, classify_lines, tokenize_draft
+from app.utils import dedup_finish_reason
 
 logger = logging.getLogger(__name__)
 
@@ -173,12 +174,13 @@ def drafting_tool_specs(drafting_llm: ChatOpenAI, segmenter: ChatOpenAI) -> list
         except Exception:  # noqa: BLE001 - any drafting failure -> failed artifact
             logger.exception("draft_document drafting failed")
             return _failure()
-        finish_reason = (getattr(response, "response_metadata", None) or {}).get(
-            "finish_reason"
+        finish_reason = dedup_finish_reason(
+            (getattr(response, "response_metadata", None) or {}).get("finish_reason")
         )
         # Подстрочное сравнение, не точное: при streaming=True OpenRouter шлёт
         # finish_reason в двух чанках, а langchain склеивает строки конкатенацией
         # -> в метаданных реально лежит "lengthlength" (и "stopstop" при норме).
+        # dedup_finish_reason уже схлопывает повтор; подстрока — страховка.
         if finish_reason and "length" in finish_reason:
             # Обрыв по max_tokens: непустой, но неполный текст. Обрезанный
             # документ не должен уходить юристу со статусом ready.

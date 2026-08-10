@@ -1,4 +1,6 @@
 """OpenSearch client factory."""
+import os
+
 from opensearchpy import OpenSearch
 from pydantic import BaseModel, Field
 
@@ -10,6 +12,9 @@ class OpenSearchConfig(BaseModel):
     # Нормативка (statutes) lives in a sibling index on the same instance.
     normativka_index_alias: str = "legal_acts"
     normativka_top_k: int = Field(default=8, ge=1, le=50)
+    # Пул должен вмещать все потоки дефолтного executor'а asyncio.to_thread,
+    # иначе urllib3 открывает и выбрасывает соединение на каждый параллельный запрос.
+    pool_maxsize: int = Field(default_factory=lambda: min(32, (os.cpu_count() or 1) + 4))
 
 
 def build_opensearch_client(config: OpenSearchConfig) -> OpenSearch:
@@ -21,4 +26,5 @@ def build_opensearch_client(config: OpenSearchConfig) -> OpenSearch:
         timeout=30,
         max_retries=2,
         retry_on_timeout=True,
+        pool_maxsize=config.pool_maxsize,
     )
