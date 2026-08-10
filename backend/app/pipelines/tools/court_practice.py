@@ -9,6 +9,7 @@ turn is replayed into context.
 the OpenSearch client) so the app's composition root never sees the backend.
 """
 import logging
+import re
 from typing import Annotated, Literal
 
 from langchain_core.tools import tool
@@ -57,6 +58,22 @@ _COURTS_PARAM_DOC = (
 )
 
 
+# Real decision ids are sha256 hexdigest()[:32] (see app.search.index). Anything
+# else (e.g. a case number like "78-КГ21-33-К3") would 404 on a direct GET.
+_DECISION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+async def _fetch_decision(searcher: CourtPracticeSearcher, decision_id: str) -> dict | None:
+    """GET by id when the value looks like ours; otherwise (or on a miss) fall
+    back to an exact case-number lookup — the model regularly confuses the two."""
+    document = None
+    if _DECISION_ID_RE.fullmatch(decision_id):
+        document = await searcher.get_decision(decision_id)
+    if not document:
+        document = await searcher.get_decision_by_case_number(decision_id)
+    return document
+
+
 class CourtDecisionHandler(ToolResultHandler):
     """Persist only the decision id; rehydrate full text from OpenSearch."""
 
@@ -64,13 +81,24 @@ class CourtDecisionHandler(ToolResultHandler):
         self._searcher = searcher
 
     async def capture(self, *, args: dict, content: str) -> dict:
-        return {"decision_id": args.get("decision_id", "")}
+        decision_id = (args.get("decision_id") or "").strip()
+        # A case number instead of our hex id replays nondeterministically (the
+        # winning doc may change once a colliding number is indexed), so pin the
+        # id the fallback actually resolved to. One extra term query per capture.
+        if decision_id and not _DECISION_ID_RE.fullmatch(decision_id):
+            document = await _fetch_decision(self._searcher, decision_id)
+            resolved = (document or {}).get("decision_id")
+            if resolved:
+                decision_id = resolved
+        return {"decision_id": decision_id}
 
     async def run(self, *, args: dict, state: dict) -> str:
         decision_id = state.get("decision_id") or args.get("decision_id") or ""
         if not decision_id:
             return "[Решение недоступно: отсутствует идентификатор]"
-        document = await self._searcher.get_decision(decision_id)
+        # Same fallback as the tool itself: the stored value may be a case
+        # number the model passed instead of the id.
+        document = await _fetch_decision(self._searcher, decision_id)
         if not document:
             return f"[Решение {decision_id} временно недоступно]"
         return format_decision_document(document)
@@ -132,13 +160,21 @@ def court_practice_tool_specs(searcher: CourtPracticeSearcher) -> list[ToolSpec]
 
     @tool
     async def get_court_decision(decision_id: str) -> str:
-        """Fetch the full text of a court decision by id returned from search_court_practice."""
+        """Fetch the full text of a court decision by id returned from search_court_practice.
+
+        Pass the 32-character hex value from the "id:" line of the search
+        results, NOT the case number from the "Дело:" line.
+        """
         if not decision_id or not decision_id.strip():
             return "Не указан идентификатор решения (id)."
 
-        document = await searcher.get_decision(decision_id.strip())
+        document = await _fetch_decision(searcher, decision_id.strip())
         if not document:
-            return f"Решение с id={decision_id} не найдено."
+            return (
+                f"Решение с id={decision_id} не найдено. Передайте 32-символьный "
+                "шестнадцатеричный id из строки \"id:\" результатов "
+                "search_court_practice, а не номер дела из строки \"Дело:\"."
+            )
         return format_decision_document(document)
 
     return [
