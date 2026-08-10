@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/hooks/use-auth";
+import { isStaleClientAuthError, STALE_APP_MESSAGE } from "@/lib/auth-errors";
 import { useToast } from "@/hooks/use-toast";
 import { AuthShell } from "@/components/auth-shell";
 import { Loader2, MailCheck } from "lucide-react";
@@ -52,7 +53,9 @@ export default function ForgotPasswordPage() {
           title: "Ошибка",
           description: isRateLimited
             ? "Слишком много попыток. Попробуйте позже."
-            : "Не удалось связаться с сервером авторизации. Проверьте подключение к интернету и попробуйте снова.",
+            : isStaleClientAuthError(error)
+              ? STALE_APP_MESSAGE
+              : "Не удалось связаться с сервером авторизации. Проверьте подключение к интернету и попробуйте снова.",
         });
         return;
       }

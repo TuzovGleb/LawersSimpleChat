@@ -113,11 +113,23 @@ services:
                         reverse_proxy backend:8080
                 }
 
+                # Хэшированные чанки бессмертны (имя = хэш содержимого),
+                # их кеш безопасен и нужен — пропускаем без header_down.
+                handle /_next/static/* {
+                        reverse_proxy frontend:8080
+                }
+
                 # Всё остальное — Next.js BFF. flush_interval -1 = отдавать
                 # байты клиенту сразу (живой SSE — ради него и переезд).
+                # Cache-Control: no-store поверх ответа: Next ставит на
+                # prerender-HTML s-maxage=31536000, а в бандл вшиты URL и
+                # anon-ключ Supabase — закешированный HTML после деплоя
+                # оставляет клиента на мёртвых реквизитах (401 на вход и
+                # сброс пароля, инцидент 2026-08-10).
                 handle {
                         reverse_proxy frontend:8080 {
                                 flush_interval -1
+                                header_down Cache-Control "no-store"
                         }
                 }
         }
@@ -143,8 +155,12 @@ services:
     # ИЗМЕНЁННЫЕ сервисы. SITE_DOMAIN здесь — маркер: смена домена меняет
     # определение caddy и заставляет демон пересоздать контейнер (иначе он
     # молча остался бы на старом домене/сертификате).
+    # CADDY_CONFIG_REV — тот же маркер для правок heredoc'а caddy-config:
+    # при изменении Caddyfile выше инкрементируй ревизию, иначе работающий
+    # caddy молча останется на старом конфиге.
     environment:
       - SITE_DOMAIN=__SITE_DOMAIN__
+      - CADDY_CONFIG_REV=2
     ports:
       - "80:80"
       - "443:443"
