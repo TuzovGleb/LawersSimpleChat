@@ -205,6 +205,11 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
   const [loadingMessagesSessionId, setLoadingMessagesSessionId] = useState<string | null>(null);
   // Проект, для которого список чатов уже загружен из БД (нужно, чтобы не сбрасывать deep-link раньше времени)
   const dbChatsLoadedProjectRef = useRef<string | null>(null);
+  // In-flight-гарды создания проекта: диалог закрывается сразу при сабмите, а
+  // серверный pre-check slug'а превращает двойной POST в два проекта с суффиксом.
+  const isCreatingProjectRef = useRef(false);
+  // Бутстрап дефолтного проекта: конкурентные запуски эффекта делят один POST.
+  const bootstrapCreateProjectRef = useRef<{ userId: string; promise: Promise<Project | null> } | null>(null);
   const [selectedModel, setSelectedModel] = useState<SelectedModel>('fast'); // Выбранная модель (по умолчанию быстрая)
   const [isPageVisible, setIsPageVisible] = useState(true);
   const [pendingRequest, setPendingRequest] = useState<{
@@ -314,18 +319,37 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
           }
         }
 
-        if (!projectsPayload.length) {
-          const createResponse = await fetchWithRetry(`/api/projects`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name: DEFAULT_PROJECT_NAME, userId: user.id }),
-          });
-
-          if (createResponse.ok) {
-            const created = await createResponse.json();
-            if (created?.project) {
-              projectsPayload = [created.project as Project];
-            }
+        if (projectsPayload.length) {
+          // Проекты есть — сбрасываем кеш бутстрапа, чтобы после удаления всех
+          // проектов дефолтный создался заново, а не подтянулся из старого промиса.
+          bootstrapCreateProjectRef.current = null;
+        } else {
+          // Все конкурентные запуски эффекта (StrictMode/смена deps) ждут ОДИН и
+          // тот же POST и используют его результат: булев гард давал и дубликат
+          // проекта (второй запуск после сброса флага), и пустой список у
+          // «проигравшего» запуска. Ключ по user.id — чтобы при смене аккаунта
+          // не подхватить проект предыдущего пользователя.
+          if (bootstrapCreateProjectRef.current?.userId !== user.id) {
+            bootstrapCreateProjectRef.current = {
+              userId: user.id,
+              promise: (async (): Promise<Project | null> => {
+                const createResponse = await fetchWithRetry(`/api/projects`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ name: DEFAULT_PROJECT_NAME, userId: user.id }),
+                });
+                if (!createResponse.ok) return null;
+                const created = await createResponse.json();
+                return (created?.project as Project) ?? null;
+              })(),
+            };
+          }
+          const created = await bootstrapCreateProjectRef.current.promise.catch(() => null);
+          if (created) {
+            projectsPayload = [created];
+          } else if (bootstrapCreateProjectRef.current?.userId === user.id) {
+            // Неудачный POST не должен навсегда блокировать бутстрап.
+            bootstrapCreateProjectRef.current = null;
           }
         }
 
@@ -799,6 +823,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
   }, []);
 
   const handleCreateProject = useCallback(async (name: string) => {
+    if (isCreatingProjectRef.current) return;
     if (!user?.id) {
       toast({
         variant: "destructive",
@@ -813,6 +838,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
       return;
     }
 
+    isCreatingProjectRef.current = true;
     try {
       const response = await fetchWithRetry("/api/projects", {
         method: "POST",
@@ -856,6 +882,8 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         title: "Не удалось создать проект",
         description: error instanceof Error ? error.message : "Попробуйте снова чуть позже.",
       });
+    } finally {
+      isCreatingProjectRef.current = false;
     }
   }, [setProjects, toast, user?.id]);
 

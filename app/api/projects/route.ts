@@ -140,9 +140,12 @@ async function ensureProjectSlugIsUnique(
   let attempts = 0;
 
   while (attempts < 10) {
+    // Уникальность slug — в рамках пользователя (projects_user_slug_idx):
+    // RLS-клиент чужие строки всё равно не видит, фильтр делает это явным.
     const { data, error } = await supabase
       .from('projects')
       .select('id')
+      .eq('user_id', userId)
       .eq('slug', candidate)
       .maybeSingle();
 
