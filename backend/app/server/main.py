@@ -111,11 +111,10 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         # Flush queued LangSmith run events before the worker exits so traces
-        # aren't orphaned (left spinning) on a graceful shutdown / container
-        # recycle. Best-effort: a hard SIGKILL still can't be helped here.
-        # SERVERLESS NOTE: needed because Yandex Serverless recycles instances
-        # aggressively; on a normal long-lived server the LangSmith background
-        # thread flushes on its own and this hook would be redundant.
+        # aren't orphaned (left spinning) on a graceful shutdown. On the COI VM
+        # this is exactly the hook that saves traces when a deploy recreates the
+        # container: SIGTERM -> uvicorn graceful shutdown -> this finally.
+        # Best-effort: a hard SIGKILL still can't be helped here.
         with suppress(Exception):
             wait_for_all_tracers()
         # Close the shared rotating-proxy client (if egress proxying is on).

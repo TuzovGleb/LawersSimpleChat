@@ -1,53 +1,36 @@
-# GitHub Actions Workflows
+# Деплой-воркфлоу
 
-## Deploy to Yandex Cloud
+Все воркфлоу запускаются ТОЛЬКО вручную (workflow_dispatch). Ветки: изменения
+идут в `staging`, промоут в прод — merge `staging` → `main` (см. память/README
+инфры про однонаправленный поток).
 
-Workflow для автоматического деплоя в Yandex Cloud Object Storage при пуше в ветки `main` или `master`.
+## Актуальные
 
-### Настройка
+- **deploy-yandex-cloud-staging-coi.yml** — стейджинг на COI VM
+  `jhelper-app-staging` (staging.jhelper.ru). Ветка `staging`.
+- **deploy-yandex-cloud-prod-coi.yml** — прод на COI VM `jhelper-app-prod`
+  (jhelper.ru). Ветка `main`; флаг `skip_dns_check` — для прогонов до
+  переключения DNS.
+- **deploy-opensearch-staging.yml** — разовый провижн OpenSearch COI VM
+  (общая для стейджинга и прода; данные переживают деплои приложений).
+- **index-court-practice-staging.yml** — индексация судебной практики в
+  OpenSearch.
 
-Откройте **Settings** → **Security** → **Secrets and variables** → **Actions**.
+Разовые шаги, секреты/переменные окружений и порядок cutover/отката —
+[infra/staging-coi/README.md](../../infra/staging-coi/README.md).
 
-1. **Variables** (вкладка Variables — не секреты, используются при сборке):
-   - `NEXT_PUBLIC_SUPABASE_URL` — URL проекта Supabase
-   - `NEXT_PUBLIC_SUPABASE_ANON_KEY` — Anon Key Supabase
-   - `NEXT_PUBLIC_SITE_URL` — URL сайта (например `https://your-domain.com`)
-   - `OPENROUTER_API_KEY` — API ключ OpenRouter
-   - `OPENAI_API_KEY` — API ключ OpenAI (опционально)
-   - `NEXT_PUBLIC_PROXY_URL` — URL прокси (опционально)
-   - `NEXT_PUBLIC_ENABLE_SIGNUP` — `true` или `false` (опционально, по умолчанию `false`)
+## Легаси (удалить при выводе serverless-контура)
 
-2. **Secrets** (вкладка Secrets — конфиденциальные данные):
-   - `YC_SA_JSON` — JSON-ключ сервисного аккаунта Yandex Cloud (целиком)
-   - `YC_CLOUD_ID` — Cloud ID
-   - `YC_FOLDER_ID` — Folder ID
-   - `YC_REGISTRY_ID` — ID Container Registry
-   - `YC_SERVICE_ACCOUNT_ID` — ID сервисного аккаунта для Serverless Container
+- **deploy-yandex-cloud-staging-python.yml**, **deploy-yandex-cloud-prod-python.yml**
+  — деплой на старые Serverless Containers. После катовера прода на self-hosted
+  Supabase (2026-08-09) откат на этот контур невозможен (старые бандлы указывают
+  на мёртвый supabase.co), воркфлоу оставлены только до формального вывода
+  контейнеров из эксплуатации.
 
-2. **Для статического экспорта Next.js:**
-   
-   Если вы хотите деплоить статический сайт в S3, добавьте в `next.config.mjs`:
-   ```js
-   const nextConfig = {
-     output: 'export',
-     // ... остальная конфигурация
-   };
-   ```
-   
-   ⚠️ **Важно:** Статический экспорт отключает API routes и серверные функции. Если вам нужны API routes, рассмотрите альтернативные варианты деплоя (Yandex Cloud Functions, сервер и т.д.).
+## Секреты (общие для окружений Staging ENV / Deploy ENV)
 
-3. **Настройка бакета:**
-   - Создайте бакет в Yandex Cloud Object Storage
-   - Настройте публичный доступ для статических файлов
-   - Настройте CORS, если необходимо
-
-### Использование
-
-Workflow автоматически запускается при пуше в ветки `main` или `master`. 
-
-Процесс:
-1. Проверка кода
-2. Установка зависимостей
-3. Сборка проекта
-4. Деплой в Yandex Cloud Object Storage
-
+`YC_SA_JSON`, `YC_CLOUD_ID`, `YC_FOLDER_ID`, `YC_REGISTRY_ID`,
+`YC_SERVICE_ACCOUNT_ID`, `YC_SUBNET_ID` — доступ к Yandex Cloud;
+`SUPABASE_SERVICE_ROLE_KEY`, `BACKEND_SHARED_SECRET`, `S3_*`, `LANGSMITH_API_KEY`,
+`PROXY_LIST_B64` — рантайм приложения; `STAGING_SSH_PUBLIC_KEY` /
+`PROD_SSH_PUBLIC_KEY` — SSH на VM (применяются при создании).

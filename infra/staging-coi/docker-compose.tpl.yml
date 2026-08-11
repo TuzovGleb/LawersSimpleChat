@@ -133,6 +133,14 @@ services:
                         }
                 }
         }
+
+        # www -> апекс: постоянный редирект + собственный LE-сертификат для
+        # www-имени. История: www.jhelper.ru оставался на API Gateway после
+        # переезда апекса на VM и сломался там по TLS; теперь оба имени
+        # обслуживает Caddy. Для стейджинга есть A-запись www.staging....
+        www.__SITE_DOMAIN__ {
+                redir https://__SITE_DOMAIN__{uri} permanent
+        }
         EOF
     volumes:
       - /home/yc-user/caddy:/config
@@ -160,7 +168,7 @@ services:
     # caddy молча останется на старом конфиге.
     environment:
       - SITE_DOMAIN=__SITE_DOMAIN__
-      - CADDY_CONFIG_REV=2
+      - CADDY_CONFIG_REV=3
     ports:
       - "80:80"
       - "443:443"

@@ -5,7 +5,7 @@ type ServerSupabaseClient = Awaited<ReturnType<typeof createClient>>;
 /**
  * Per-user rate limit backed by the Postgres check_rate_limit() function
  * (see supabase/migrations/20260702000100_rate_limit.sql). Shared across
- * serverless instances because the counter lives in the DB.
+ * app instances/replicas because the counter lives in the DB.
  *
  * Returns true when the action is ALLOWED, false when the limit is exceeded.
  *

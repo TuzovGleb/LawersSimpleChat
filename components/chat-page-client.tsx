@@ -1169,7 +1169,9 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
             },
             1, // maxRetries
             1000, // retryDelay
-            1800000, // timeoutMs — 30 минут (предел контейнера execution-timeout 1800s)
+            1800000, // timeoutMs — 30 минут, в паре с серверным бюджетом извлечения
+            // (1500с + резерв): сервер успевает сохранить частичный результат в БД
+            // ДО того, как клиент сдастся. Поднимать только вместе с бюджетом.
           );
 
           if (!response.ok) {
@@ -1413,7 +1415,10 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
           projectId: selectedProjectId,
           selectedModel,
         }),
-        signal: AbortSignal.timeout(2100000), // 35 минут таймаут
+        // Санитарный предел хода: сервер завершает ход сам сильно раньше
+        // (upstream-таймауты + конечный граф); это только страховка от
+        // вечно висящего соединения.
+        signal: AbortSignal.timeout(2100000),
       });
 
       document.removeEventListener('visibilitychange', visibilityHandler);
@@ -1477,10 +1482,6 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
           }
 
           // Token delta — grow this session's live draft.
-          // SERVERLESS NOTE: the backend emits these per-token, but Yandex
-          // Serverless buffers the whole response, so in prod they all arrive in
-          // one burst at the end (draft jumps to full, then commits) instead of
-          // typing out. On a normal server / VM this animates live, no changes.
           if (event.type === 'token' && typeof event.delta === 'string') {
             const delta = event.delta;
             liveDraft += delta;

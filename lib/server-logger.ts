@@ -7,8 +7,9 @@
  * lines, with `\n`-laden stack strings) is shattered into ~30 unrelated log
  * records that can't be grouped or filtered. Emitting ONE line of JSON per event
  * (JSON.stringify escapes newlines to `\\n`) keeps each event a single record;
- * Serverless Containers then lift `level`/`message` and expose the rest
- * (surface, chat_id, request_id, ...) as queryable `json_payload.*` fields.
+ * unified-agent ships each line to Cloud Logging, which lifts `level`/`message`
+ * and exposes the rest (surface, chat_id, request_id, ...) as queryable
+ * `json_payload.*` fields.
  *
  * Mirrors the backend contract in backend/app/utils.py.
  */
