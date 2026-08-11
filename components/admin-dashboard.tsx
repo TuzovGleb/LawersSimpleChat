@@ -23,9 +23,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
-// resolveApiUrl: все запросы к /api/* должны уважать NEXT_PUBLIC_PROXY_URL
-// (RU-доступ через прокси), как и остальные клиентские fetch'и приложения.
-import { cn, resolveApiUrl } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 
 // ── Пермишены (каталог зашит в seed миграции; здесь — только слаги) ──
 
@@ -366,7 +364,7 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
         const params = new URLSearchParams();
         if (searchQuery.trim()) params.set("search", searchQuery.trim());
         const query = params.toString();
-        const res = await fetch(resolveApiUrl(`/api/admin/users${query ? `?${query}` : ""}`));
+        const res = await fetch(`/api/admin/users${query ? `?${query}` : ""}`);
         if (!res.ok) {
           showError(
             await readErrorText(res, "Не удалось загрузить список пользователей."),
@@ -392,7 +390,7 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
   const fetchPromos = useCallback(async () => {
     setPromosLoading(true);
     try {
-      const res = await fetch(resolveApiUrl("/api/admin/promos"));
+      const res = await fetch("/api/admin/promos");
       if (!res.ok) {
         showError(await readErrorText(res, "Не удалось загрузить список промокодов."));
         return;
@@ -409,7 +407,7 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
   const fetchRoles = useCallback(async () => {
     setRolesLoading(true);
     try {
-      const res = await fetch(resolveApiUrl("/api/admin/roles"));
+      const res = await fetch("/api/admin/roles");
       if (!res.ok) {
         showError(await readErrorText(res, "Не удалось загрузить список ролей."));
         return;
@@ -441,7 +439,7 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
     // ошибку с «Повторить» — старые/дефолтные значения сохранять нельзя.
     setLoadedSettings(null);
     try {
-      const res = await fetch(resolveApiUrl("/api/admin/settings"));
+      const res = await fetch("/api/admin/settings");
       if (!res.ok) {
         showError(await readErrorText(res, "Не удалось загрузить настройки."));
         return;
@@ -510,7 +508,7 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
 
     setGrantSubmitting(true);
     try {
-      const res = await fetch(resolveApiUrl("/api/admin/grants"), {
+      const res = await fetch("/api/admin/grants", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -546,7 +544,7 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
 
     setRevokeSubmitting(true);
     try {
-      const res = await fetch(resolveApiUrl("/api/admin/revoke"), {
+      const res = await fetch("/api/admin/revoke", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -598,7 +596,7 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
     let failed = false;
     try {
       for (const op of ops) {
-        const res = await fetch(resolveApiUrl("/api/admin/user-roles"), {
+        const res = await fetch("/api/admin/user-roles", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -659,7 +657,7 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
 
     setSettingsSaving(true);
     try {
-      const res = await fetch(resolveApiUrl("/api/admin/settings"), {
+      const res = await fetch("/api/admin/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -701,7 +699,7 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
 
     setPromoSubmitting(true);
     try {
-      const res = await fetch(resolveApiUrl("/api/admin/promos"), {
+      const res = await fetch("/api/admin/promos", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -753,7 +751,7 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
 
     setRoleCreateSubmitting(true);
     try {
-      const res = await fetch(resolveApiUrl("/api/admin/roles"), {
+      const res = await fetch("/api/admin/roles", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -801,7 +799,7 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
     setEditRoleSubmitting(true);
     try {
       const res = await fetch(
-        resolveApiUrl(`/api/admin/roles/${encodeURIComponent(editRole.slug)}`),
+        `/api/admin/roles/${encodeURIComponent(editRole.slug)}`,
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -837,7 +835,7 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
     setDeleteRoleSubmitting(true);
     try {
       const res = await fetch(
-        resolveApiUrl(`/api/admin/roles/${encodeURIComponent(deleteRole.slug)}`),
+        `/api/admin/roles/${encodeURIComponent(deleteRole.slug)}`,
         { method: "DELETE" },
       );
       if (!res.ok) {

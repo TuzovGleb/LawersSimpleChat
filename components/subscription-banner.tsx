@@ -15,7 +15,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { cn, resolveApiUrl } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { CALENDLY_URL, TELEGRAM_HANDLE, TELEGRAM_URL } from "@/lib/contact";
 import { AlertCircle, Clock, Loader2 } from "lucide-react";
 import type { Entitlement } from "@/lib/entitlement";
@@ -96,9 +96,7 @@ export function SubscriptionBanner({ entitlement, onRedeemed, className }: Subsc
     if (!code || isRedeeming) return;
     setIsRedeeming(true);
     try {
-      // resolveApiUrl: как и остальные клиентские запросы, редим должен идти
-      // через NEXT_PUBLIC_PROXY_URL, если он настроен (RU-доступ через прокси).
-      const response = await fetch(resolveApiUrl("/api/promo/redeem"), {
+      const response = await fetch("/api/promo/redeem", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code }),
@@ -126,7 +124,7 @@ export function SubscriptionBanner({ entitlement, onRedeemed, className }: Subsc
           // остался бы в read-only до перезагрузки. Fallback: перечитываем
           // статус из bootstrap-эндпоинта (refreshEntitlement из спеки).
           try {
-            const refreshResponse = await fetch(resolveApiUrl("/api/projects"));
+            const refreshResponse = await fetch("/api/projects");
             const refreshPayload: unknown = await refreshResponse.json().catch(() => null);
             const refreshed = parseEntitlement(
               (refreshPayload as { entitlement?: unknown } | null)?.entitlement,

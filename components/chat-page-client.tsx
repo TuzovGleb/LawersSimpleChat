@@ -11,7 +11,7 @@ import type { ChatMessage, ChatMessageDocument, Project, SessionDocument, Select
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import { ToasterClient } from "@/components/toaster-client";
-import { fetchWithRetry, safeJsonResponse, resolveApiUrl } from "@/lib/utils";
+import { fetchWithRetry, safeJsonResponse } from "@/lib/utils";
 import { setCurrentChatId } from "@/lib/client-error-logger";
 
 type LocalChatSession = {
@@ -1160,10 +1160,9 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
                 mimeType: file.type || "application/octet-stream",
                 size: file.size,
                 userId: user.id,
-                // Stable chat id in the BODY (not a custom header): a cross-origin
-                // proxy (NEXT_PUBLIC_PROXY_URL) would drop a custom header at the
-                // CORS preflight. The Next route forwards it to the backend as
-                // X-Chat-Id, exactly like the chat path does from the URL.
+                // Stable chat id in the BODY (not a custom header) — исторически
+                // так пережили cross-origin прокси, теперь просто контракт:
+                // Next-роут форвардит его бэкенду как X-Chat-Id, как чат из URL.
                 chatId,
               }),
             },
@@ -1392,7 +1391,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
       // Используем увеличенный таймаут (35 минут) для долгих thinking-запросов
       // Сервер настроен на 30 минут, добавляем запас
       // Теперь используем streaming для получения ответа с heartbeat
-      const resolvedUrl = resolveApiUrl(`/api/chat/${encodeURIComponent(chatId)}/messages${utmQuery}`);
+      const resolvedUrl = `/api/chat/${encodeURIComponent(chatId)}/messages${utmQuery}`;
 
       // Если страница станет невидимой, не отменяем запрос сразу,
       // но отслеживаем это состояние
@@ -1662,7 +1661,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         while (Date.now() < deadline) {
           try {
             const check = await fetch(
-              resolveApiUrl(`/api/chat/${encodeURIComponent(chatId)}/messages`),
+              `/api/chat/${encodeURIComponent(chatId)}/messages`,
             );
             if (check.ok) {
               const payload = await check.json();
