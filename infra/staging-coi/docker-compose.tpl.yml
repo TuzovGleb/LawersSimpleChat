@@ -73,7 +73,6 @@ services:
       - __KV:NEXT_PUBLIC_SUPABASE_ANON_KEY__
       - __KV:NEXT_PUBLIC_SITE_URL__
       - __KV:NEXT_PUBLIC_ENABLE_SIGNUP__
-      - __KV:NEXT_PUBLIC_PROXY_URL__
       - __KV:S3_BUCKET_NAME__
       - __KV:S3_ACCESS_KEY_ID__
       - __KV:S3_SECRET_ACCESS_KEY__

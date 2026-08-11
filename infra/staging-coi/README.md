@@ -23,9 +23,7 @@ Serverless Containers буферизуют весь ответ (SSE мёртв),
 ## Разовые шаги перед первым деплоем
 
 1. **Домен**: заведите переменную окружения `STAGING_COI_DOMAIN` в GitHub
-   (environment `Staging ENV`), напр. `staging.<ваш-домен>`. Опционально
-   `STAGING_COI_PROXY_URL` (аналог NEXT_PUBLIC_PROXY_URL; на VM обычно не нужен —
-   same-origin, оставить пустым).
+   (environment `Staging ENV`), напр. `staging.<ваш-домен>`.
 2. **SSH-ключ** (рекомендуется): секрет `STAGING_SSH_PUBLIC_KEY` — публичный
    ключ; пользователь на VM — `yc-user`. Применяется только при СОЗДАНИИ VM.
 3. **Первый прогон workflow**: зарезервирует статический IP и упадёт на
