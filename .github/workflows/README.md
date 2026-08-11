@@ -19,14 +19,6 @@
 Разовые шаги, секреты/переменные окружений и порядок cutover/отката —
 [infra/staging-coi/README.md](../../infra/staging-coi/README.md).
 
-## Легаси (удалить при выводе serverless-контура)
-
-- **deploy-yandex-cloud-staging-python.yml**, **deploy-yandex-cloud-prod-python.yml**
-  — деплой на старые Serverless Containers. После катовера прода на self-hosted
-  Supabase (2026-08-09) откат на этот контур невозможен (старые бандлы указывают
-  на мёртвый supabase.co), воркфлоу оставлены только до формального вывода
-  контейнеров из эксплуатации.
-
 ## Секреты (общие для окружений Staging ENV / Deploy ENV)
 
 `YC_SA_JSON`, `YC_CLOUD_ID`, `YC_FOLDER_ID`, `YC_REGISTRY_ID`,

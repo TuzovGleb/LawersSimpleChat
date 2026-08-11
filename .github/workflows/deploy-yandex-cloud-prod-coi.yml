@@ -1,26 +1,15 @@
 name: Deploy to Yandex Cloud (Prod, COI VM)
 
-# Деплоит ПРОД на COI VM (jhelper-app-prod) вместо Serverless Containers.
-# Артефакты общие со стейджингом: infra/staging-coi/docker-compose.tpl.yml +
-# render_compose.py; отличия — только значения (домен, ресурсы, LangSmith).
-# OpenSearch ПЕРЕИСПОЛЬЗУЕТСЯ (lawers-opensearch-staging) — как и в старом
-# прод-деплое, тут только читаем IP.
+# Деплоит ПРОД на COI VM (jhelper-app-prod). Артефакты общие со стейджингом:
+# infra/staging-coi/docker-compose.tpl.yml + render_compose.py; отличия — только
+# значения (домен, ресурсы, LangSmith). OpenSearch ПЕРЕИСПОЛЬЗУЕТСЯ
+# (lawers-opensearch-staging) — тут только читаем IP.
 #
-# CUTOVER БЕЗ ДАУНТАЙМА (jhelper.ru сейчас = ANAME на API Gateway перед
-# serverless-контейнером, тот продолжает работать и остаётся откатом):
-#   1) Прогон с skip_dns_check=true: соберёт образы (SITE_URL уже боевой),
-#      зарезервирует статический IP, создаст VM. DNS-проверка и смоуки
-#      пропускаются — домен ещё смотрит на API GW.
-#   2) Сразу после зелёного прогона: в зоне jhelper.ru удалить ANAME и создать
-#      A-запись jhelper.ru -> <статический IP из шага 1>, затем по SSH
-#      `docker restart jhelper-caddy` (сбросить ACME-backoff — сертификат
-#      выпустится за секунды). Клиенты переезжают по мере истечения TTL (600с);
-#      кто на старой записи — обслуживается старым serverless-прод.
-#   3) Повторный прогон БЕЗ skip_dns_check — полная проверка (DNS + смоуки).
-# Откат: вернуть ANAME на API Gateway (старый прод не выключаем до приёмки).
-#
-# Serverless-прод (deploy-yandex-cloud-prod-python.yml) этим воркфлоу НЕ
-# трогается.
+# История: катовер с Serverless Containers выполнен 2026-07-25 (флип ANAME
+# jhelper.ru -> A на статический IP VM), serverless-контур и API Gateway
+# снесены 2026-08-11. Флаг skip_dns_check остался для сценария «пересоздать VM
+# на новом IP до переключения DNS»: прогон без DNS-проверки и смоуков.
+# Откат деплоя = перезапуск воркфлоу с branch=<старый SHA>.
 on:
   workflow_dispatch:
     inputs:
@@ -442,14 +431,12 @@ jobs:
             echo "- **OpenSearch:** ${{ steps.opensearch.outputs.url }}"
             echo ""
             if [ "${{ github.event.inputs.skip_dns_check }}" = "true" ]; then
-              echo "### Дальше — cutover:"
-              echo '1. В зоне jhelper.ru: удалить ANAME, создать A -> `'"${{ steps.ip.outputs.address }}"'`'
+              echo "### Дальше (DNS ещё не указывает на VM):"
+              echo '1. A-запись jhelper.ru -> `'"${{ steps.ip.outputs.address }}"'` (+ www CNAME на апекс)'
               echo "2. ssh yc-user@${{ steps.ip.outputs.address }} 'sudo docker restart jhelper-caddy'"
               echo "3. Завести swap (команда в infra/staging-coi/README.md)"
               echo "4. Повторный прогон без skip_dns_check — полные смоуки"
-              echo ""
-              echo "Откат: вернуть ANAME на API Gateway (serverless-прод не выключен)."
             else
-              echo "Serverless-прод не тронут — откат = вернуть ANAME на API Gateway."
+              echo "Откат деплоя: перезапустить воркфлоу с branch=<старый SHA>."
             fi
           } >> "$GITHUB_STEP_SUMMARY"

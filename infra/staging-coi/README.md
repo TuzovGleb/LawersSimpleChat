@@ -3,8 +3,8 @@
 Одна Compute VM `jhelper-app-staging` (2 vCPU 20% / 4 GB + 4 GB swap, COI) с
 docker-compose: бэкенд + фронт + Caddy (TLS) + unified-agent (логи → Cloud
 Logging). Деплой — workflow **Deploy to Yandex Cloud (Staging, COI VM)**.
-Serverless-стейджинг живёт параллельно и не трогается: откат = вернуться на
-старый URL.
+(Serverless-контур, живший параллельно как откат, снесён 2026-08-11 вместе с
+API Gateway; откат деплоя = перезапуск воркфлоу со старым SHA.)
 
 Сайзинг минимальный по замеру 2026-07-25 (в простое ~0.7 GB на всё); страховка
 от пика OCR — swap. ВАЖНО: swap-файл живёт на boot-диске и при ПЕРЕСОЗДАНИИ VM
@@ -48,8 +48,9 @@ Serverless Containers буферизуют весь ответ (SSE мёртв),
       («Ищу судебную практику…») видны живьём, а не одним куском в конце.
 - [ ] LangSmith: run закрывается сразу после ответа (нет вечных спиннеров).
 - [ ] Большой PDF (>30 мин обработки) доходит до конца, а не убивается платформой.
-- [ ] Auth-флоу работает (Authorization доходит; костыль x-sb-authorization
-      совместим — НЕ удалять до выпила serverless).
+- [ ] Auth-флоу работает (Authorization доходит как есть; клиентское
+      переодевание в x-sb-authorization удалено, у прокси-роута осталась
+      restore-ветка для старых закешированных бандлов).
 - [ ] Логи VM видны в Cloud Logging: `resource_type=jhelper-app-staging`
       (мы явно ставим контейнерам json-file драйвер — дефолт COI `local`
       unified-agent не читает).
@@ -117,10 +118,7 @@ Serverless Containers буферизуют весь ответ (SSE мёртв),
 - **Прод**: workflow **Deploy to Yandex Cloud (Prod, COI VM)** — те же
   шаблон/рендер, VM `jhelper-app-prod` (2 vCPU 100% / 4 GB + swap руками),
   environment «Deploy ENV», переменная `PROD_COI_DOMAIN`, секрет
-  `PROD_SSH_PUBLIC_KEY`. Cutover без даунтайма: прогон со
-  `skip_dns_check=true` (домен ещё на API GW) → в зоне jhelper.ru заменить
-  ANAME на A-запись со статическим IP из прогона → `docker restart
-  jhelper-caddy` по SSH (сброс ACME-backoff) → повторный прогон без флага
-  (полные смоуки). Откат = вернуть ANAME на API Gateway; serverless-прод не
-  выключаем до приёмки. Секреты через Lockbox — отложенный follow-up (пока
-  паритет со стейджингом: env в метаданных VM).
+  `PROD_SSH_PUBLIC_KEY`. Катовер выполнен
+  2026-07-25, serverless-контур снесён 2026-08-11. `skip_dns_check` — для
+  пересоздания VM на новом IP до переключения DNS. Секреты через Lockbox —
+  отложенный follow-up (пока env в метаданных VM).
