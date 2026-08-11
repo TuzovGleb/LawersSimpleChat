@@ -1,5 +1,6 @@
 from app.search.courts import (
     COURT_CODE_TO_NAME,
+    COURT_NAME_ALIASES,
     COURT_REFERENCE,
     COURTS_WITH_DATA,
     court_code_from_name,
@@ -51,3 +52,12 @@ def test_reference_lists_every_court_unmarked():
     assert "данных пока нет" not in COURT_REFERENCE
     for code, name in COURT_CODE_TO_NAME.items():
         assert f"{code} ({name})" in COURT_REFERENCE
+
+
+def test_scraper_name_aliases_resolve_to_the_same_court():
+    # The two corpora spell ВС РФ differently; both must reach vs-rf, or half its
+    # practice would be invisible to the courts filter.
+    assert court_code_from_name("Верховный Суд Российской Федерации") == "vs-rf"
+    assert court_code_from_name("Верховный Суд РФ") == "vs-rf"
+    # Aliases are extra spellings only — never a court missing from the mapping.
+    assert set(COURT_NAME_ALIASES.values()) <= set(COURT_CODE_TO_NAME)
