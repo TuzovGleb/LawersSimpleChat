@@ -24,10 +24,11 @@ const UPSTREAM = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_U
   '',
 );
 
-// The browser carries the Supabase token under this header (not `Authorization`)
-// so the Yandex Serverless Container platform doesn't intercept it as an IAM
-// token and 403 the request. We restore it to `Authorization` below. Shared name
-// with lib/supabase/client.ts.
+// LEGACY-совместимость: бандлы эпохи Serverless Containers (платформа
+// перехватывала `Authorization: Bearer` как IAM-токен) переносили Supabase-токен
+// в этот заголовок. Новые клиенты шлют обычный Authorization, и он форвардится
+// как есть. Убрать вместе с restore-веткой ниже, когда закешированных старых
+// бандлов гарантированно не останется.
 const RELOCATED_AUTH_HEADER = 'x-sb-authorization';
 
 // Headers we must not forward verbatim (host-specific / hop-by-hop / cookies).
@@ -57,8 +58,8 @@ async function handle(
   req.headers.forEach((value, key) => {
     if (!STRIP_REQ.has(key.toLowerCase())) headers.set(key, value);
   });
-  // Restore the Supabase Authorization header the browser relocated to dodge the
-  // platform's IAM check (see RELOCATED_AUTH_HEADER).
+  // LEGACY: восстановить Authorization из переодетого заголовка старых бандлов
+  // (см. RELOCATED_AUTH_HEADER). Современные клиенты сюда не попадают.
   const relocatedAuth = req.headers.get(RELOCATED_AUTH_HEADER);
   if (relocatedAuth) headers.set('authorization', relocatedAuth);
 

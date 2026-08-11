@@ -49,7 +49,6 @@ from typing import AsyncIterator
 
 from fastapi import Request
 from langchain_core.messages import AIMessage, ToolMessage
-from langchain_core.tracers.langchain import wait_for_all_tracers
 
 from app.pipelines.messages import messages_to_rows, split_generated, text_of
 from app.pipelines.tools.drafting import DRAFT_TOOL_NAME
@@ -339,7 +338,6 @@ async def _run_turn(
     """
     result: dict | None = None
     announced_tool_calls: set[str] = set()
-    needs_flush = False
 
     def emit(kind: str, chunk: bytes) -> None:
         # Once the client is gone nobody drains the queue — keep finishing the
@@ -404,7 +402,8 @@ async def _run_turn(
         # A client disconnect cancels the relay, not this task, so in practice this
         # only happens when the process is shutting down mid-deploy — the turn is
         # lost, which is worth a log line since the user was waiting for it.
-        needs_flush = True
+        # (LangSmith events of the cancelled run are flushed by the lifespan
+        # shutdown hook in main.py right after this.)
         logger.info(
             "Chat turn cancelled",
             extra={"session_id": session_id, "elapsed_s": round(time.time() - started, 1)},
@@ -414,7 +413,6 @@ async def _run_turn(
         emit("error", _sse({"type": "error", "error": "Запрос отменён."}))
         raise
     except Exception:  # noqa: BLE001 - surface any generation failure to the client
-        needs_flush = True
         # Log the full exception server-side (str(error) can embed upstream model
         # ids / provider URLs from the fallback chain), but send the client only a
         # generic, vendor-neutral message — never the raw error text (prompt.py [12]).
@@ -431,11 +429,6 @@ async def _run_turn(
         queue.put_nowait(("done", b""))
         with contextlib.suppress(Exception):
             await agen.aclose()
-        if needs_flush:
-            # Push the (error / cancelled) run-end events to LangSmith now; on a
-            # normal completion its background queue flushes on its own.
-            with contextlib.suppress(Exception):
-                await asyncio.to_thread(wait_for_all_tracers)
 
 
 async def stream_chat(request: Request, chat_id: str, payload: ChatRequest) -> AsyncIterator[bytes]:
