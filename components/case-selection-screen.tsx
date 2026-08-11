@@ -49,6 +49,10 @@ type LocalChatSession = {
 interface CaseSelectionScreenProps {
   projects: ProjectState[];
   sessions: LocalChatSession[];
+  // Дело, чьи чаты последними успешно загружены из БД, — только для него
+  // локальный список свежее серверного chatCount (загрузка другого дела
+  // вычищает чужие сессии из локального state).
+  chatsLoadedProjectId?: string | null;
   isLoading: boolean;
   entitlement: Entitlement | null;
   accessExpired: boolean;
@@ -63,6 +67,7 @@ interface CaseSelectionScreenProps {
 export function CaseSelectionScreen({
   projects,
   sessions,
+  chatsLoadedProjectId,
   isLoading,
   entitlement,
   accessExpired,
@@ -106,9 +111,15 @@ export function CaseSelectionScreen({
     }
   };
 
-  const getProjectStats = (projectId: string) => {
-    const projectSessions = sessions.filter((s) => s.projectId === projectId);
-    return { chatCount: projectSessions.length };
+  const getProjectStats = (project: ProjectState) => {
+    const localCount = sessions.filter((s) => s.projectId === project.id).length;
+    // Чаты подгружаются лениво при входе в дело, поэтому локальный список
+    // полон только у последнего успешно загруженного дела; для остальных
+    // берём серверный chatCount из GET /api/projects.
+    const chatCount = project.id === chatsLoadedProjectId
+      ? localCount
+      : project.chatCount ?? localCount;
+    return { chatCount };
   };
 
   return (
@@ -237,7 +248,7 @@ export function CaseSelectionScreen({
               className="grid auto-rows-fr gap-4 grid-cols-[repeat(auto-fill,minmax(min(280px,100%),1fr))] sm:gap-5"
             >
                 {projects.map((project) => {
-                  const stats = getProjectStats(project.id);
+                  const stats = getProjectStats(project);
                   const lastUpdate = new Date(project.updated_at ?? project.created_at);
 
                   return (

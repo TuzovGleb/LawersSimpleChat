@@ -18,9 +18,11 @@ export async function GET(req: NextRequest) {
 
   try {
     const supabase = await createClient();
+    // chat_sessions(count) — серверный счётчик чатов для карточек дел: до
+    // захода в дело клиент не знает его чатов и без этого рисовал бы нули.
     const { data, error } = await supabase
       .from('projects')
-      .select('*')
+      .select('*, chat_sessions(count)')
       .eq('user_id', user!.id)
       .order('updated_at', { ascending: false });
 
@@ -140,9 +142,12 @@ async function ensureProjectSlugIsUnique(
   let attempts = 0;
 
   while (attempts < 10) {
+    // Уникальность slug — в рамках пользователя (projects_user_slug_idx):
+    // RLS-клиент чужие строки всё равно не видит, фильтр делает это явным.
     const { data, error } = await supabase
       .from('projects')
       .select('id')
+      .eq('user_id', userId)
       .eq('slug', candidate)
       .maybeSingle();
 

@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from opensearchpy import OpenSearch
+from opensearchpy.exceptions import NotFoundError
 
 from app.search.client import OpenSearchConfig
 from app.search.rrf import RankedDocument, reciprocal_rank_fusion
@@ -290,6 +291,11 @@ class CourtPracticeSearcher:
     def get_decision_sync(self, decision_id: str) -> dict | None:
         try:
             response = self._client.get(index=self._config.index_alias, id=decision_id)
+        except NotFoundError:
+            # Expected miss (e.g. the model passed a case number instead of the
+            # id) — a warning without traceback, not an alarming prod ERROR.
+            logger.warning("Decision not found", extra={"decision_id": decision_id})
+            return None
         except Exception:
             logger.exception("Failed to fetch decision", extra={"decision_id": decision_id})
             return None
@@ -297,6 +303,36 @@ class CourtPracticeSearcher:
 
     async def get_decision(self, decision_id: str) -> dict | None:
         return await asyncio.to_thread(self.get_decision_sync, decision_id)
+
+    def get_decision_by_case_number_sync(self, case_number: str) -> dict | None:
+        """Fallback lookup by the exact case number (keyword field).
+
+        Returns the single match in the same shape as get_decision (_source
+        dict) so callers can render either path identically. First-instance
+        case numbers are per-court sequences that collide across courts, so an
+        ambiguous number yields None instead of an arbitrary hit — serving the
+        wrong court's act as authoritative would be worse than a miss.
+        """
+        body = {"size": 2, "query": {"term": {"case_number": case_number}}}
+        try:
+            response = self._client.search(index=self._config.index_alias, body=body)
+        except Exception:
+            logger.exception(
+                "Failed to fetch decision by case number", extra={"case_number": case_number}
+            )
+            return None
+        hits = response.get("hits", {}).get("hits", [])
+        if not hits:
+            return None
+        if len(hits) > 1:
+            logger.warning(
+                "Ambiguous case number, refusing fallback", extra={"case_number": case_number}
+            )
+            return None
+        return hits[0].get("_source")
+
+    async def get_decision_by_case_number(self, case_number: str) -> dict | None:
+        return await asyncio.to_thread(self.get_decision_by_case_number_sync, case_number)
 
 
 def format_search_results(results: list[RankedDocument]) -> str:
