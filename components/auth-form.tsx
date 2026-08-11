@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/hooks/use-auth";
+import { isStaleClientAuthError, STALE_APP_MESSAGE } from "@/lib/auth-errors";
 import { useToast } from "@/hooks/use-toast";
 import { AuthShell } from "@/components/auth-shell";
 import { createClient } from "@/lib/supabase/client";
@@ -158,8 +159,9 @@ export function AuthForm() {
       toast({
         variant: "destructive",
         title: "Ошибка входа",
-        description:
-          error.message || "Проверьте введенные данные и попробуйте снова",
+        description: isStaleClientAuthError(error)
+          ? STALE_APP_MESSAGE
+          : error.message || "Проверьте введенные данные и попробуйте снова",
       });
     } finally {
       setLoading(false);
@@ -302,8 +304,9 @@ export function AuthForm() {
         toast({
           variant: "destructive",
           title: "Ошибка регистрации",
-          description:
-            error.message || "Проверьте введенные данные и попробуйте снова",
+          description: isStaleClientAuthError(error)
+            ? STALE_APP_MESSAGE
+            : error.message || "Проверьте введенные данные и попробуйте снова",
         });
       }
     } finally {

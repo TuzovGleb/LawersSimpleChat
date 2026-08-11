@@ -9,6 +9,7 @@ from openai import APIError
 from app.pipelines.messages import rows_to_messages, text_of
 from app.pipelines.tools.base import ToolResultHandler
 from app.rag_core.llm import ChatModelRegistry, ChatOpenAI
+from app.utils import dedup_finish_reason
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,12 @@ def _extract_metadata(
     tool_rounds: int = 0,
 ) -> dict:
     usage = getattr(response, "usage_metadata", None) or {}
-    finish_reason = (response.response_metadata or {}).get("finish_reason", "stop")
+    # Streaming responses arrive with the finish_reason doubled ("stopstop",
+    # "tool_callstool_calls") — see ``dedup_finish_reason``; normalize before it
+    # reaches the logs and the SSE ``final`` metadata.
+    finish_reason = dedup_finish_reason(
+        (response.response_metadata or {}).get("finish_reason", "stop")
+    )
     # NB: ``modelUsed`` here is the internal registry key. After the chat.yaml
     # rename these keys are deliberately vendor-neutral (fast/thinking/power/alt),
     # so nothing sent to the client discloses the underlying model or vendor. Do

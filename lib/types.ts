@@ -77,6 +77,8 @@ export interface Project {
   slug?: string | null;
   created_at: string;
   updated_at: string;
+  // Серверный счётчик чатов (GET /api/projects); в ответах создания/переименования отсутствует.
+  chatCount?: number;
 }
 
 export interface ProjectDocument {

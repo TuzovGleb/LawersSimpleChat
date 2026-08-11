@@ -31,7 +31,7 @@ type ProjectState = Project & {
 const LOCAL_STORAGE_KEY = "legal-assistant-chat-sessions-v2";
 const LEGACY_LOCAL_STORAGE_KEY = "legal-assistant-chat-sessions";
 const ACTIVE_PROJECT_STORAGE_KEY = "legal-assistant-active-project-id";
-const DEFAULT_PROJECT_NAME = "Мои дела";
+const DEFAULT_PROJECT_NAME = "Новое дело";
 
 // macOS junk: AppleDouble sidecars ("._<имя>") and Finder metadata. They ride
 // along when mail/zip archives are unpacked, carry no document text (only
@@ -205,6 +205,17 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
   const [loadingMessagesSessionId, setLoadingMessagesSessionId] = useState<string | null>(null);
   // Проект, для которого список чатов уже загружен из БД (нужно, чтобы не сбрасывать deep-link раньше времени)
   const dbChatsLoadedProjectRef = useRef<string | null>(null);
+  // Дело, чей локальный список чатов сейчас авторитетен (последняя УСПЕШНАЯ
+  // загрузка из БД). Именно одно: merge при загрузке другого дела вычищает
+  // чужие сессии из state, так что «свежим» локальный счёт бывает только у
+  // последнего загруженного дела; остальные карточки показывают серверный
+  // chatCount (иначе после логина у непосещённых дел рисуются нули).
+  const chatsLoadedProjectRef = useRef<string | null>(null);
+  // In-flight-гарды создания проекта: диалог закрывается сразу при сабмите, а
+  // серверный pre-check slug'а превращает двойной POST в два проекта с суффиксом.
+  const isCreatingProjectRef = useRef(false);
+  // Бутстрап дефолтного проекта: конкурентные запуски эффекта делят один POST.
+  const bootstrapCreateProjectRef = useRef<{ userId: string; promise: Promise<Project | null> } | null>(null);
   const [selectedModel, setSelectedModel] = useState<SelectedModel>('fast'); // Выбранная модель (по умолчанию быстрая)
   const [isPageVisible, setIsPageVisible] = useState(true);
   const [pendingRequest, setPendingRequest] = useState<{
@@ -296,12 +307,18 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         const response = await fetchWithRetry(`/api/projects?userId=${encodeURIComponent(user.id)}`);
         let projectsPayload: Project[] = [];
         let entitlementPayload: Entitlement | null = null;
+        // «Список пуст» и «загрузка не удалась» — разные вещи: бутстрап ниже
+        // имеет право сработать только при УСПЕШНО загруженном пустом списке,
+        // иначе упавший GET (например, 401 на переходных куках recovery-флоу)
+        // создаёт юзеру дубль дефолтного дела.
+        let projectsLoaded = false;
 
         if (response.ok) {
           try {
             const data = await safeJsonResponse<{ projects?: Project[]; entitlement?: unknown }>(response);
             projectsPayload = Array.isArray(data?.projects) ? data.projects : [];
             entitlementPayload = parseEntitlement(data?.entitlement);
+            projectsLoaded = true;
           } catch (error) {
             console.warn("Ошибка при чтении ответа проектов, пробуем повторить:", error);
             // Повторяем запрос один раз при ошибке чтения
@@ -310,22 +327,48 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
               const data = await safeJsonResponse<{ projects?: Project[]; entitlement?: unknown }>(retryResponse);
               projectsPayload = Array.isArray(data?.projects) ? data.projects : [];
               entitlementPayload = parseEntitlement(data?.entitlement);
+              projectsLoaded = true;
             }
           }
         }
 
-        if (!projectsPayload.length) {
-          const createResponse = await fetchWithRetry(`/api/projects`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name: DEFAULT_PROJECT_NAME, userId: user.id }),
-          });
+        if (!projectsLoaded) {
+          throw new Error("Не удалось загрузить список дел");
+        }
 
-          if (createResponse.ok) {
-            const created = await createResponse.json();
-            if (created?.project) {
-              projectsPayload = [created.project as Project];
-            }
+        if (projectsPayload.length) {
+          // Проекты есть — сбрасываем кеш бутстрапа, чтобы после удаления всех
+          // проектов дефолтный создался заново, а не подтянулся из старого промиса.
+          bootstrapCreateProjectRef.current = null;
+        } else {
+          // Все конкурентные запуски эффекта (StrictMode/смена deps) ждут ОДИН и
+          // тот же POST и используют его результат: булев гард давал и дубликат
+          // проекта (второй запуск после сброса флага), и пустой список у
+          // «проигравшего» запуска. Ключ по user.id — чтобы при смене аккаунта
+          // не подхватить проект предыдущего пользователя.
+          if (bootstrapCreateProjectRef.current?.userId !== user.id) {
+            bootstrapCreateProjectRef.current = {
+              userId: user.id,
+              promise: (async (): Promise<Project | null> => {
+                const createResponse = await fetchWithRetry(`/api/projects`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  // bootstrap: true — сервер вернёт уже существующее дефолтное
+                  // дело вместо создания дубля (вторая вкладка, ретрай).
+                  body: JSON.stringify({ name: DEFAULT_PROJECT_NAME, userId: user.id, bootstrap: true }),
+                });
+                if (!createResponse.ok) return null;
+                const created = await createResponse.json();
+                return (created?.project as Project) ?? null;
+              })(),
+            };
+          }
+          const created = await bootstrapCreateProjectRef.current.promise.catch(() => null);
+          if (created) {
+            projectsPayload = [created];
+          } else if (bootstrapCreateProjectRef.current?.userId === user.id) {
+            // Неудачный POST не должен навсегда блокировать бутстрап.
+            bootstrapCreateProjectRef.current = null;
           }
         }
 
@@ -569,6 +612,9 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
           return prev;
         });
 
+        // Только успешная загрузка делает локальный счёт авторитетным: после
+        // фейла в state лежит лишь пустой плейсхолдер, а серверный chatCount точен.
+        chatsLoadedProjectRef.current = selectedProjectId;
       } catch (error) {
         console.error('Error loading chats from database:', error);
         
@@ -799,6 +845,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
   }, []);
 
   const handleCreateProject = useCallback(async (name: string) => {
+    if (isCreatingProjectRef.current) return;
     if (!user?.id) {
       toast({
         variant: "destructive",
@@ -813,6 +860,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
       return;
     }
 
+    isCreatingProjectRef.current = true;
     try {
       const response = await fetchWithRetry("/api/projects", {
         method: "POST",
@@ -856,6 +904,8 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         title: "Не удалось создать проект",
         description: error instanceof Error ? error.message : "Попробуйте снова чуть позже.",
       });
+    } finally {
+      isCreatingProjectRef.current = false;
     }
   }, [setProjects, toast, user?.id]);
 
@@ -1718,6 +1768,7 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
       <CaseSelectionScreen
         projects={projects}
         sessions={sessions}
+        chatsLoadedProjectId={chatsLoadedProjectRef.current}
         isLoading={isProjectsLoading}
         entitlement={entitlement}
         accessExpired={accessExpired}

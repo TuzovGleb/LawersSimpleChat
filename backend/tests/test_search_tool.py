@@ -288,6 +288,10 @@ async def test_search_court_practice_tool(mock_searcher, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_get_court_decision_tool(mock_searcher, monkeypatch):
+    # Real ids are 32-hex (sha256[:32]); anything else routes to the
+    # case-number fallback — see test_decision_fetch.py.
+    hex_id = "cd" * 16
+
     async def fake_get(decision_id: str):
         return {
             "decision_id": decision_id,
@@ -304,6 +308,6 @@ async def test_get_court_decision_tool(mock_searcher, monkeypatch):
 
     monkeypatch.setattr(mock_searcher, "get_decision", fake_get)
     get_court_decision = court_practice_tool_specs(mock_searcher)[1].tool
-    result = await get_court_decision.ainvoke({"decision_id": "dec-4"})
-    assert "dec-4" in result
+    result = await get_court_decision.ainvoke({"decision_id": hex_id})
+    assert hex_id in result
     assert "Текст акта" in result

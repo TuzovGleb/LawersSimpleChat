@@ -83,10 +83,13 @@ async def test_get_court_decision_result_is_not_stored_only_id():
     searcher = CourtPracticeSearcher(MagicMock(), OpenSearchConfig())
     handlers = _handlers(searcher)
 
+    # A real-shaped 32-hex id: capture() pins non-hex values through a live
+    # OpenSearch lookup, which a bare MagicMock client cannot serve.
+    hex_id = "9d" * 16
     generated = [
         AIMessage(
             content="",
-            tool_calls=[{"name": "get_court_decision", "args": {"decision_id": "dec-9"}, "id": "c1"}],
+            tool_calls=[{"name": "get_court_decision", "args": {"decision_id": hex_id}, "id": "c1"}],
         ),
         ToolMessage(content="ОГРОМНЫЙ текст акта" * 1000, tool_call_id="c1"),
         AIMessage(content="итоговый ответ"),
@@ -96,7 +99,7 @@ async def test_get_court_decision_result_is_not_stored_only_id():
     assert [r["role"] for r in rows] == ["assistant", "tool", "assistant"]
     tool_row = rows[1]
     # Only the id is persisted, never the heavy act text.
-    assert tool_row["tool_state"] == {"decision_id": "dec-9"}
+    assert tool_row["tool_state"] == {"decision_id": hex_id}
     assert "текст акта" not in str(tool_row["tool_state"])
     assert rows[0]["tool_calls"][0]["name"] == "get_court_decision"
 
@@ -104,6 +107,9 @@ async def test_get_court_decision_result_is_not_stored_only_id():
 @pytest.mark.asyncio
 async def test_rows_to_messages_rehydrates_decision_from_opensearch(monkeypatch):
     searcher = CourtPracticeSearcher(MagicMock(), OpenSearchConfig())
+    # Real ids are 32-hex; other shapes route to the case-number fallback
+    # (see test_decision_fetch.py).
+    hex_id = "ef" * 16
 
     async def fake_get(decision_id):
         return {"decision_id": decision_id, "act_text": "ПОЛНЫЙ ТЕКСТ", "case_number": "2-1/2026"}
@@ -116,9 +122,9 @@ async def test_rows_to_messages_rehydrates_decision_from_opensearch(monkeypatch)
         {
             "role": "assistant",
             "content": "",
-            "tool_calls": [{"id": "c1", "name": "get_court_decision", "args": {"decision_id": "dec-9"}}],
+            "tool_calls": [{"id": "c1", "name": "get_court_decision", "args": {"decision_id": hex_id}}],
         },
-        {"role": "tool", "tool_call_id": "c1", "tool_name": "get_court_decision", "tool_state": {"decision_id": "dec-9"}},
+        {"role": "tool", "tool_call_id": "c1", "tool_name": "get_court_decision", "tool_state": {"decision_id": hex_id}},
         {"role": "assistant", "content": "итог", "tool_calls": None},
     ]
     messages = await rows_to_messages(rows, {}, handlers)
