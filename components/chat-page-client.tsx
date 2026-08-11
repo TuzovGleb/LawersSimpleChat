@@ -31,7 +31,7 @@ type ProjectState = Project & {
 const LOCAL_STORAGE_KEY = "legal-assistant-chat-sessions-v2";
 const LEGACY_LOCAL_STORAGE_KEY = "legal-assistant-chat-sessions";
 const ACTIVE_PROJECT_STORAGE_KEY = "legal-assistant-active-project-id";
-const DEFAULT_PROJECT_NAME = "Мои дела";
+const DEFAULT_PROJECT_NAME = "Новое дело";
 
 // macOS junk: AppleDouble sidecars ("._<имя>") and Finder metadata. They ride
 // along when mail/zip archives are unpacked, carry no document text (only
@@ -307,12 +307,18 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
         const response = await fetchWithRetry(`/api/projects?userId=${encodeURIComponent(user.id)}`);
         let projectsPayload: Project[] = [];
         let entitlementPayload: Entitlement | null = null;
+        // «Список пуст» и «загрузка не удалась» — разные вещи: бутстрап ниже
+        // имеет право сработать только при УСПЕШНО загруженном пустом списке,
+        // иначе упавший GET (например, 401 на переходных куках recovery-флоу)
+        // создаёт юзеру дубль дефолтного дела.
+        let projectsLoaded = false;
 
         if (response.ok) {
           try {
             const data = await safeJsonResponse<{ projects?: Project[]; entitlement?: unknown }>(response);
             projectsPayload = Array.isArray(data?.projects) ? data.projects : [];
             entitlementPayload = parseEntitlement(data?.entitlement);
+            projectsLoaded = true;
           } catch (error) {
             console.warn("Ошибка при чтении ответа проектов, пробуем повторить:", error);
             // Повторяем запрос один раз при ошибке чтения
@@ -321,8 +327,13 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
               const data = await safeJsonResponse<{ projects?: Project[]; entitlement?: unknown }>(retryResponse);
               projectsPayload = Array.isArray(data?.projects) ? data.projects : [];
               entitlementPayload = parseEntitlement(data?.entitlement);
+              projectsLoaded = true;
             }
           }
+        }
+
+        if (!projectsLoaded) {
+          throw new Error("Не удалось загрузить список дел");
         }
 
         if (projectsPayload.length) {
@@ -342,7 +353,9 @@ export function ChatPageClient({ initialChatId }: { initialChatId?: string } = {
                 const createResponse = await fetchWithRetry(`/api/projects`, {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ name: DEFAULT_PROJECT_NAME, userId: user.id }),
+                  // bootstrap: true — сервер вернёт уже существующее дефолтное
+                  // дело вместо создания дубля (вторая вкладка, ретрай).
+                  body: JSON.stringify({ name: DEFAULT_PROJECT_NAME, userId: user.id, bootstrap: true }),
                 });
                 if (!createResponse.ok) return null;
                 const created = await createResponse.json();

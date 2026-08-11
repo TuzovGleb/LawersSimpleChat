@@ -71,6 +71,10 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const name = typeof body?.name === 'string' ? body.name.trim() : '';
     const providedSlug = typeof body?.slug === 'string' ? body.slug.trim() : '';
+    // Бутстрап дефолтного дела должен быть ИДЕМПОТЕНТНЫМ: если слаг уже занят
+    // у этого пользователя (вторая вкладка, ретрай, повторный заход), отдаём
+    // существующее дело вместо создания дубля с суффиксом.
+    const isBootstrap = body?.bootstrap === true;
 
     if (!name) {
       return NextResponse.json({ error: 'Название проекта обязательно.' }, { status: 400 });
@@ -80,7 +84,19 @@ export async function POST(req: NextRequest) {
     const baseSlug = providedSlug || slugify(name);
     let slugCandidate = baseSlug || uuidv4();
 
-    slugCandidate = await ensureProjectSlugIsUnique(supabase, slugCandidate, user!.id);
+    if (isBootstrap) {
+      const existing = await findProjectBySlug(supabase, slugCandidate, user!.id);
+      if (existing) {
+        logger.info('Project bootstrap reused', {
+          request_id: requestId,
+          event: 'project_bootstrap_reused',
+          project_id: existing.id,
+        });
+        return NextResponse.json({ project: mapProject(existing) });
+      }
+    } else {
+      slugCandidate = await ensureProjectSlugIsUnique(supabase, slugCandidate, user!.id);
+    }
 
     const now = new Date().toISOString();
     const newProject = {
@@ -107,8 +123,16 @@ export async function POST(req: NextRequest) {
 
       // Обработка ошибки дубликата slug
       if (error?.code === '23505') {
-        return NextResponse.json({ 
-          error: 'Проект с таким названием уже существует. Попробуйте другое название.' 
+        // Гонка двух бутстрап-запросов между pre-check'ом и insert'ом:
+        // дефолтное дело уже создано параллельным запросом — возвращаем его.
+        if (isBootstrap) {
+          const existing = await findProjectBySlug(supabase, slugCandidate, user!.id);
+          if (existing) {
+            return NextResponse.json({ project: mapProject(existing) });
+          }
+        }
+        return NextResponse.json({
+          error: 'Проект с таким названием уже существует. Попробуйте другое название.'
         }, { status: 409 });
       }
       
@@ -131,6 +155,27 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
+}
+
+async function findProjectBySlug(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  slug: string,
+  userId: string,
+) {
+  const { data, error } = await supabase
+    .from('projects')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('slug', slug)
+    .maybeSingle();
+  if (error) {
+    logger.warn('Supabase lookup error', {
+      event: 'projects_slug_lookup_error',
+      err: error,
+    });
+    return null;
+  }
+  return data;
 }
 
 async function ensureProjectSlugIsUnique(
