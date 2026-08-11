@@ -20,7 +20,7 @@ A chat-first Next.js application that lets users talk directly with an AI legal 
 - **UI Components**: Radix UI
 - **Database**: Supabase
 - **AI**: OpenAI GPT-4 / OpenRouter
-- **Deployment**: Cloudflare Pages
+- **Deployment**: Yandex Cloud COI VM (Docker Compose за Caddy)
 
 ## Getting Started
 
@@ -163,22 +163,14 @@ After migration, run through manual regression:
 
 ## Deployment
 
-### Cloudflare Pages
+Прод и стейджинг живут на Yandex Cloud COI VM (бэкенд + фронт + Caddy + логи
+одним docker-compose). Деплой — ручные GitHub Actions воркфлоу:
 
-1. Connect your GitHub repository to Cloudflare Pages
-2. Set build command: `npm run build && npx @cloudflare/next-on-pages@latest`
-3. Set build output directory: `.vercel/output/static`
-4. Set environment variables in Cloudflare Pages dashboard
-5. Deploy automatically on push to main branch
+- **Deploy to Yandex Cloud (Staging, COI VM)** — ветка `staging`;
+- **Deploy to Yandex Cloud (Prod, COI VM)** — ветка `main` (промоут: merge
+  `staging` → `main`).
 
-For detailed deployment instructions, see [docs/CLOUDFLARE_MIGRATION.md](docs/CLOUDFLARE_MIGRATION.md)
-
-### Manual Deployment
-
-```bash
-npm run build:cf
-npm run pages:deploy
-```
+Подробности, разовые шаги и порядок отката: [infra/staging-coi/README.md](infra/staging-coi/README.md).
 
 ## Contributing
 
