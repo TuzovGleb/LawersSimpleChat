@@ -147,16 +147,20 @@ def derive_court_level(
     (first instance), the safe default.
     """
     # Authoritative when the source provides it (arbitration); may be int or str.
+    # The arbitration scale runs past ours: ВС acts come through as 5 (надзор) and
+    # 4 (вторая кассация). Both are the top of our 1..4 scale, so clamp instead of
+    # rejecting — an unrecognised value would silently fall through to level 1.
     try:
         level = int(str(instance_level).strip())
-        if 1 <= level <= 4:
-            return level
+        if level >= 1:
+            return min(level, 4)
     except (TypeError, ValueError):
         pass
 
     name = court_name or ""
     lname = name.lower()
-    if "Верховный Суд Российской Федерации" in name:
+    # "Верховный Суд Российской Федерации" (СУДРФ) / "Верховный Суд РФ" (арбитраж).
+    if "верховный суд р" in lname:
         return 4
     # "АС <name> округа" is how the scraper writes an arbitration okrug court
     # (cassation); it never spells out "Арбитражный суд ... округа".

@@ -101,8 +101,19 @@ COURT_REFERENCE: str = ", ".join(
 )
 
 
+# Alternative spellings the scrapers produce for a court already in the mapping.
+# The СОЮ corpus writes "Верховный Суд Российской Федерации", the arbitration one
+# "Верховный Суд РФ" — same court, and both must resolve to vs-rf, otherwise half
+# its practice is invisible to the courts filter.
+COURT_NAME_ALIASES: dict[str, str] = {
+    "Верховный Суд РФ": "vs-rf",
+}
+
 # Reverse map, for deriving a doc's court_code from its court_name at index time.
-COURT_NAME_TO_CODE: dict[str, str] = {name: code for code, name in COURT_CODE_TO_NAME.items()}
+COURT_NAME_TO_CODE: dict[str, str] = {
+    **{name: code for code, name in COURT_CODE_TO_NAME.items()},
+    **COURT_NAME_ALIASES,
+}
 
 
 def court_code_from_name(court_name: str | None) -> str | None:
