@@ -242,6 +242,56 @@ class NormativkaSearcher:
     async def resolve(self, act_nd: str, article_number: str) -> dict | None:
         return await asyncio.to_thread(self.resolve_sync, act_nd, article_number)
 
+    def act_card_sync(self, act_nd: str) -> dict | None:
+        """Акт целиком: реквизиты, официальная ссылка и структура по главам.
+
+        Отвечает на «покажи мне кодекс» — вопрос, на который нет ответа ни у
+        поиска (сниппеты отдельных статей), ни у resolve (одна статья).
+        Собирается из индекса одним запросом, портал не трогаем.
+        """
+        response = self._client.search(
+            index=self._index,
+            body={
+                # Размер акта конечен и известен: самый большой — КоАП, 1148
+                # статей. Берём с запасом, чтобы структура была ПОЛНОЙ: обрезка
+                # оглавления молча спрятала бы часть кодекса.
+                "size": 2000,
+                "query": {"bool": {"filter": [{"term": {"act_nd": act_nd}}]}},
+                "_source": [
+                    "act_nd", "act_kind", "act_name", "act_number", "act_date",
+                    "source_url", "article_number", "article_title", "chapter_path",
+                ],
+            },
+        )
+        hits = [hit.get("_source") or {} for hit in response.get("hits", {}).get("hits", [])]
+        if not hits:
+            return None
+        # Порядок документа = естественный порядок номеров: «2» перед «10», а
+        # «333.19» перед «333.32.1». Лексическая сортировка ключа их бы
+        # перемешала.
+        articles = sorted(hits, key=lambda a: _article_sort_key(a.get("article_number", "")))
+        first = articles[0]
+        return {
+            "act_nd": first.get("act_nd", act_nd),
+            "act_kind": first.get("act_kind", ""),
+            "act_name": first.get("act_name", ""),
+            "act_number": first.get("act_number", ""),
+            "act_date": first.get("act_date", ""),
+            "source_url": first.get("source_url", ""),
+            "articles": articles,
+        }
+
+    async def act_card(self, act_nd: str) -> dict | None:
+        return await asyncio.to_thread(self.act_card_sync, act_nd)
+
+
+def _article_sort_key(number: str) -> tuple:
+    """«333.32.1» -> (333, 32, 1) — порядок как в тексте акта."""
+    parts = []
+    for chunk in (number or "").split("."):
+        parts.append((0, int(chunk)) if chunk.isdigit() else (1, 0, chunk))
+    return tuple(parts)
+
 
 def _article_ref(source: dict) -> str:
     """«ст. 81 — Трудовой кодекс Российской Федерации (197-ФЗ)»."""
@@ -298,3 +348,63 @@ def format_statute_article(source: dict) -> str:
     lines.append("Текст приведён в действующей редакции (официальный портал pravo.gov.ru).")
     suffix = "\n\n[Текст обрезан — статья длиннее лимита контекста]" if truncated else ""
     return "\n".join(lines) + f"\n\n---\n\n{text}{suffix}"
+
+
+_ACT_KIND_LABELS = {
+    "kodeks": "Кодекс",
+    "fz": "Федеральный закон",
+    "fkz": "Федеральный конституционный закон",
+    "zakon_rf": "Закон РФ",
+}
+
+
+def format_act_card(card: dict) -> str:
+    """Карточка акта: реквизиты, ссылка и оглавление.
+
+    Структура показывается ПО ГЛАВАМ с диапазонами статей — так кодекс и
+    листают, и это на порядок компактнее перечня из 540 статей. У актов без
+    глав (короткие законы, старая вёрстка) глав нет по определению, поэтому
+    там перечисляются сами статьи — их немного.
+    """
+    kind = _ACT_KIND_LABELS.get(card.get("act_kind", ""), "Акт")
+    number = card.get("act_number") or "—"
+    date = card.get("act_date") or ""
+    articles = card.get("articles") or []
+
+    header = [
+        f"{kind}: {card.get('act_name', '—')}",
+        f"Реквизиты: № {number}" + (f" от {date}" if date else ""),
+        f"Статей в корпусе: {len(articles)}",
+    ]
+    if card.get("source_url"):
+        header.append(f"Официальный текст: {card['source_url']}")
+
+    # Главы в порядке появления, с диапазоном номеров статей внутри каждой.
+    chapters: list[tuple[str, list[str]]] = []
+    for article in articles:
+        path = (article.get("chapter_path") or "").strip()
+        number_ = article.get("article_number", "")
+        if chapters and chapters[-1][0] == path:
+            chapters[-1][1].append(number_)
+        else:
+            chapters.append((path, [number_]))
+
+    named = [c for c in chapters if c[0]]
+    body: list[str] = []
+    if named:
+        body.append("\nСтруктура:")
+        for path, numbers in chapters:
+            title = path or "Без раздела"
+            span = numbers[0] if len(numbers) == 1 else f"{numbers[0]}–{numbers[-1]}"
+            body.append(f"— {title}: ст. {span} ({len(numbers)})")
+    else:
+        body.append("\nСтатьи:")
+        for article in articles:
+            title = article.get("article_title") or ""
+            body.append(f"— ст. {article.get('article_number', '')}" + (f". {title}" if title else ""))
+
+    body.append(
+        "\nПолный текст акта целиком инструменты не отдают — открой нужную статью "
+        "через get_statute_article (акт + номер) либо найди нормы по теме через search_normativka."
+    )
+    return "\n".join(header + body)

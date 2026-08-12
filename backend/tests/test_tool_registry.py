@@ -21,5 +21,6 @@ def test_load_tool_specs_aggregates_builders():
         "search_court_practice",
         "get_court_decision",
         "search_normativka",
+        "get_act_info",
         "get_statute_article",
     }

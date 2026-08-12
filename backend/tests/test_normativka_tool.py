@@ -36,6 +36,7 @@ def searcher():
     mock.resolve = AsyncMock(return_value=None)
     # Index-based act resolution: ФЗ не помещаются в таблицу, их находит индекс.
     mock.resolve_act = AsyncMock(return_value=[])
+    mock.act_card = AsyncMock(return_value=None)
     return mock
 
 
@@ -46,7 +47,7 @@ def tools(searcher):
 
 
 def test_tool_names_and_handlers(tools):
-    assert set(tools) == {"search_normativka", "get_statute_article"}
+    assert set(tools) == {"search_normativka", "get_act_info", "get_statute_article"}
     assert isinstance(tools["get_statute_article"].handler, StatuteArticleHandler)
     assert not tools["search_normativka"].terminal
     assert not tools["get_statute_article"].terminal
@@ -219,3 +220,44 @@ async def test_named_act_filter_takes_only_best_match(tools, searcher):
         {"queries": ["возврат товара"], "acts": ["О защите прав потребителей"]}
     )
     assert searcher.search.call_args.kwargs["act_nds"] == ["1"]
+
+
+@pytest.mark.asyncio
+async def test_act_card_answers_request_for_the_whole_act(tools, searcher):
+    # «Приведи НК часть первую» — ни поиск (сниппеты), ни статья по номеру не
+    # отвечают на вопрос про акт целиком. Раньше модель тут импровизировала и
+    # выдала ссылку из памяти на посторонний документ.
+    searcher.act_card = AsyncMock(return_value={
+        "act_nd": "102054722", "act_kind": "kodeks",
+        "act_name": "Налоговый кодекс Российской Федерации. Часть первая",
+        "act_number": "146-ФЗ", "act_date": "1998-07-31",
+        "source_url": "http://pravo.gov.ru/proxy/ips/?docbody=&nd=102054722",
+        "articles": [
+            {"article_number": "1", "article_title": "Законодательство", "chapter_path": "Глава 1. ОБЩИЕ"},
+            {"article_number": "2", "article_title": "Отношения", "chapter_path": "Глава 1. ОБЩИЕ"},
+            {"article_number": "89", "article_title": "Выездная проверка", "chapter_path": "Глава 14. КОНТРОЛЬ"},
+        ],
+    })
+    result = await tools["get_act_info"].tool.ainvoke({"act": "НК РФ часть 1"})
+    searcher.act_card.assert_awaited_once_with("102054722")
+    assert "146-ФЗ" in result and "Статей в корпусе: 3" in result
+    assert "nd=102054722" in result                     # ссылка ИЗ индекса, не из памяти
+    assert "Глава 14. КОНТРОЛЬ: ст. 89" in result       # структура по главам
+    assert "get_statute_article" in result              # куда идти за текстом нормы
+
+
+@pytest.mark.asyncio
+async def test_act_card_unknown_act(tools):
+    result = await tools["get_act_info"].tool.ainvoke({"act": "закон о тишине"})
+    assert "в корпусе не найден" in result
+
+
+@pytest.mark.asyncio
+async def test_act_card_disambiguates_bare_number(tools, searcher):
+    searcher.resolve_act = AsyncMock(return_value=[
+        {"act_nd": "1", "act_name": "Об упразднении судов", "act_number": "77-ФЗ", "act_date": "2013-02-04"},
+        {"act_nd": "2", "act_name": "О внутренних морских водах", "act_number": "77-ФЗ", "act_date": "1998-07-31"},
+    ])
+    result = await tools["get_act_info"].tool.ainvoke({"act": "77-ФЗ"})
+    searcher.act_card.assert_not_awaited()
+    assert "несколько актов" in result
