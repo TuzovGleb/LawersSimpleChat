@@ -268,6 +268,14 @@ def format_statute_results(results: list[RankedDocument]) -> str:
         if source.get("chapter_path"):
             lines.append(f"   Расположение: {source['chapter_path']}")
         lines.append(f"   Фрагмент: {snippet}")
+        # Официальная ссылка выдаётся В КАЖДОМ результате, а не только в полном
+        # тексте статьи: иначе модели, которая ссылку показать хочет, а статью
+        # не открывала, взять её неоткуда — и она конструирует URL по памяти.
+        # Живой случай: на «приведи НК часть первую» ответ содержал
+        # pravo.gov.ru/…&nd=102049505, а это «О повторном рассмотрении ФЗ
+        # "О прожиточном минимуме"», к НК отношения не имеющий.
+        if source.get("source_url"):
+            lines.append(f"   Официальный текст акта: {source['source_url']}")
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
 

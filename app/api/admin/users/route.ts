@@ -4,6 +4,20 @@ import { logger, requestIdFrom } from '@/lib/server-logger';
 
 export const runtime = 'edge';
 
+// Белые списки зеркалят проверки внутри admin_list_users_v2: роут отвечает
+// понятным 400, до RPC доходят только валидные значения.
+const USER_FILTERS = new Set(['all', 'active', 'inactive', 'trial', 'promo', 'paid']);
+const USER_SORTS = new Set([
+  'access_asc',
+  'access_desc',
+  'email_asc',
+  'email_desc',
+  'name_asc',
+  'name_desc',
+  'registered_asc',
+  'registered_desc',
+]);
+
 export async function GET(req: NextRequest) {
   const requestId = requestIdFrom(req);
   const startedAt = Date.now();
@@ -16,6 +30,8 @@ export async function GET(req: NextRequest) {
     const searchRaw = searchParams.get('search');
     const limitRaw = searchParams.get('limit');
     const offsetRaw = searchParams.get('offset');
+    const filter = searchParams.get('filter') ?? 'all';
+    const sort = searchParams.get('sort') ?? 'access_asc';
 
     const search = searchRaw && searchRaw.trim() ? searchRaw.trim() : null;
     const limit = limitRaw !== null ? Number.parseInt(limitRaw, 10) : 200;
@@ -27,9 +43,17 @@ export async function GET(req: NextRequest) {
     if (!Number.isInteger(offset) || offset < 0) {
       return NextResponse.json({ error: 'Некорректный параметр offset.' }, { status: 400 });
     }
+    if (!USER_FILTERS.has(filter)) {
+      return NextResponse.json({ error: 'Некорректный параметр filter.' }, { status: 400 });
+    }
+    if (!USER_SORTS.has(sort)) {
+      return NextResponse.json({ error: 'Некорректный параметр sort.' }, { status: 400 });
+    }
 
-    const { data, error } = await supabase!.rpc('admin_list_users', {
+    const { data, error } = await supabase!.rpc('admin_list_users_v2', {
       p_search: search,
+      p_filter: filter,
+      p_sort: sort,
       p_limit: limit,
       p_offset: offset,
     });
@@ -49,14 +73,25 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const users = Array.isArray(data) ? data : [];
+    // RPC возвращает объект {users, total, counts} — прокидываем как есть,
+    // с защитой формы на случай расхождения версий функции и роута.
+    const users = Array.isArray(data?.users) ? data.users : [];
+    const total = typeof data?.total === 'number' ? data.total : users.length;
+    const counts =
+      data?.counts && typeof data.counts === 'object' && !Array.isArray(data.counts)
+        ? data.counts
+        : null;
+
     logger.info('Admin users listed', {
       request_id: requestId,
       event: 'admin_users_listed',
       duration_ms: Date.now() - startedAt,
       count: users.length,
+      total,
+      filter,
+      sort,
     });
-    return NextResponse.json({ users });
+    return NextResponse.json({ users, total, counts });
   } catch (error) {
     logger.error('Unexpected error', {
       request_id: requestId,

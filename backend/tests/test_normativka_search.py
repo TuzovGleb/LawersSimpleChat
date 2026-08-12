@@ -201,3 +201,26 @@ def test_aliases_do_not_leak_to_a_namesake_number():
            "number": "14-ФЗ", "date": "2013-02-04", "rdk": "0"}
     doc = normalize_article({"number": "1", "title": "", "text": "…"}, act=act, indexed_at="")
     assert doc["act_aliases"] == ""
+
+
+def test_search_results_carry_the_official_link():
+    # Без ссылки в выдаче модель, захотевшая её показать, берёт адрес из
+    # памяти: живой случай — на «приведи НК часть первую» ответ содержал
+    # nd=102049505, то есть «О повторном рассмотрении ФЗ "О прожиточном
+    # минимуме"». Ссылка обязана приходить из ответа инструмента.
+    text = format_statute_results([
+        _ranked({
+            "article_id": "abc",
+            "act_name": "Налоговый кодекс Российской Федерации. Часть первая",
+            "act_number": "146-ФЗ",
+            "article_number": "89",
+            "article_title": "Выездная налоговая проверка",
+            "source_url": "http://pravo.gov.ru/proxy/ips/?docbody=&nd=102054722",
+        })
+    ])
+    assert "Официальный текст акта: http://pravo.gov.ru/proxy/ips/?docbody=&nd=102054722" in text
+
+
+def test_search_results_without_link_do_not_print_empty_line():
+    text = format_statute_results([_ranked({"article_number": "1", "act_name": "Некий акт"})])
+    assert "Официальный текст" not in text
