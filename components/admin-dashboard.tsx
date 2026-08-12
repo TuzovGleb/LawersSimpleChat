@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import { ToasterClient } from "@/components/toaster-client";
@@ -62,6 +62,76 @@ interface AdminUser {
   days_left: number | null;
   roles: AdminUserRole[];
 }
+
+// Счётчики /api/admin/users: total — всё поисковое множество, остальные —
+// его разрезы (см. admin_list_users_v2; trial/promo/paid пересекаются с
+// active/inactive — это оси «статус» и «тип гранта», не партиция).
+interface AdminUserCounts {
+  total: number;
+  active: number;
+  inactive: number;
+  trial: number;
+  promo: number;
+  paid: number;
+}
+
+type UserStatusFilter = "all" | "active" | "inactive" | "trial" | "promo" | "paid";
+type UserSortKey = "access" | "email" | "name" | "registered";
+type UserSortDir = "asc" | "desc";
+interface UserSort {
+  key: UserSortKey;
+  dir: UserSortDir;
+}
+
+const DEFAULT_USER_FILTER: UserStatusFilter = "active";
+const DEFAULT_USER_SORT: UserSort = { key: "access", dir: "asc" };
+
+// Кнопки-пресеты фильтра по активности. countKey — какой счётчик показывать
+// на кнопке; title поясняет семантику разреза (trial/paid включают истёкших —
+// «текущий или последний грант», статус виден бейджем в строке).
+const USER_FILTER_PRESETS: {
+  value: UserStatusFilter;
+  label: string;
+  countKey: keyof AdminUserCounts;
+  title: string;
+}[] = [
+  {
+    value: "active",
+    label: "Только активные",
+    countKey: "active",
+    title: "Доступ активен сейчас (включая админов)",
+  },
+  {
+    value: "inactive",
+    label: "Только неактивные",
+    countKey: "inactive",
+    title: "Доступ истёк, отозван или не выдавался",
+  },
+  {
+    value: "trial",
+    label: "Только триал",
+    countKey: "trial",
+    title: "Текущий или последний доступ — триал (включая истёкшие)",
+  },
+  {
+    value: "promo",
+    label: "Только промо",
+    countKey: "promo",
+    title: "Текущий или последний доступ — промокод (включая истёкшие)",
+  },
+  {
+    value: "paid",
+    label: "Только оплатившие",
+    countKey: "paid",
+    title: "Текущий или последний доступ — оплата (включая истёкшие)",
+  },
+  {
+    value: "all",
+    label: "Все",
+    countKey: "total",
+    title: "Все пользователи",
+  },
+];
 
 interface AdminSettings {
   signupEnabled: boolean;
@@ -151,6 +221,26 @@ function formatDate(iso: string | null): string {
   return date.toLocaleDateString("ru-RU");
 }
 
+// Счётчики из ответа /api/admin/users; null (форма разошлась со старой
+// версией RPC) — UI просто не показывает числа, без падения.
+function normalizeUserCounts(data: unknown): AdminUserCounts | null {
+  const d = data as
+    | { total?: unknown; counts?: Record<string, unknown> | null }
+    | null
+    | undefined;
+  const c = d?.counts;
+  if (typeof d?.total !== "number" || !c || typeof c !== "object") return null;
+  const num = (v: unknown) => (typeof v === "number" ? v : 0);
+  return {
+    total: d.total,
+    active: num(c.active),
+    inactive: num(c.inactive),
+    trial: num(c.trial),
+    promo: num(c.promo),
+    paid: num(c.paid),
+  };
+}
+
 async function readErrorText(res: Response, fallback: string): Promise<string> {
   try {
     const data = await res.json();
@@ -207,6 +297,38 @@ const selectClass =
   "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-base md:text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50";
 const roleBadgeClass =
   "ml-2 rounded-full border border-violet-200 bg-violet-100 px-2 py-0.5 text-xs font-medium text-violet-800";
+
+// Кликабельный заголовок колонки таблицы пользователей: повторный клик по
+// активному ключу переворачивает направление. «Доступ до» и «Осталось дней»
+// сортируются одним ключом 'access' — это одна и та же величина.
+function SortableTh({
+  label,
+  sortKey,
+  sort,
+  onSort,
+}: {
+  label: string;
+  sortKey: UserSortKey;
+  sort: UserSort;
+  onSort: (key: UserSortKey) => void;
+}) {
+  const active = sort.key === sortKey;
+  return (
+    <th className={thClass}>
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        className="inline-flex items-center gap-1 rounded uppercase tracking-wide hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        title="Сортировать"
+      >
+        {label}
+        <span aria-hidden className={cn("text-[10px]", !active && "opacity-30")}>
+          {active ? (sort.dir === "asc" ? "▲" : "▼") : "↕"}
+        </span>
+      </button>
+    </th>
+  );
+}
 
 // Список чекбоксов пермишенов (русские description из каталога seed'а).
 // В components/ui нет checkbox-примитива — нативный input на токенах
@@ -283,6 +405,13 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
   // при submit поиска): рефетчи после мутаций не должны подхватывать
   // недопечатанный текст из инпута.
   const [appliedSearch, setAppliedSearch] = useState("");
+  // Пресет-фильтр по активности и сортировка — источник истины для текущего
+  // списка; рефетчи после мутаций передают их явно (fetchUsers не замыкается
+  // на стейт, чтобы не пересоздаваться на каждый клик).
+  const [statusFilter, setStatusFilter] = useState<UserStatusFilter>(DEFAULT_USER_FILTER);
+  const [userSort, setUserSort] = useState<UserSort>(DEFAULT_USER_SORT);
+  // Счётчики последнего ответа (по поисковому множеству, до пресет-фильтра).
+  const [userCounts, setUserCounts] = useState<AdminUserCounts | null>(null);
 
   // Промокоды
   const [promos, setPromos] = useState<AdminPromo[]>([]);
@@ -357,31 +486,53 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
     [toast],
   );
 
+  // Монотонный номер запроса списка: сортировочные заголовки кликабельны и
+  // во время загрузки, поэтому запросы могут перегоняться. Побеждает
+  // последний ОТПРАВЛЕННЫЙ, а не последний пришедший: устаревший ответ
+  // (и его ошибка, и его finally) игнорируется целиком.
+  const usersFetchSeq = useRef(0);
+
+  // 'stale' — ответ перегнал более новый запрос: никаких изменений UI и
+  // никакого отката оптимистичного стейта (актуальным стейтом уже владеет
+  // новый запрос). Откатывать фильтр/сортировку можно только на 'error'.
   const fetchUsers = useCallback(
-    async (searchQuery: string) => {
+    async (
+      searchQuery: string,
+      filter: UserStatusFilter,
+      sort: UserSort,
+    ): Promise<"ok" | "error" | "stale"> => {
+      const seq = ++usersFetchSeq.current;
+      const isStale = () => seq !== usersFetchSeq.current;
       setUsersLoading(true);
       try {
         const params = new URLSearchParams();
         if (searchQuery.trim()) params.set("search", searchQuery.trim());
-        const query = params.toString();
-        const res = await fetch(`/api/admin/users${query ? `?${query}` : ""}`);
+        params.set("filter", filter);
+        params.set("sort", `${sort.key}_${sort.dir}`);
+        const res = await fetch(`/api/admin/users?${params.toString()}`);
+        if (isStale()) return "stale";
         if (!res.ok) {
           showError(
             await readErrorText(res, "Не удалось загрузить список пользователей."),
           );
-          return;
+          return "error";
         }
         const data = await res.json();
+        if (isStale()) return "stale";
         const list: AdminUser[] = Array.isArray(data?.users) ? data.users : [];
         // roles приходит jsonb-агрегатом — нормализуем в [] один раз здесь,
         // чтобы рендер и диалог «Роли…» не падали на null.
         setUsers(
           list.map((u) => ({ ...u, roles: Array.isArray(u.roles) ? u.roles : [] })),
         );
+        setUserCounts(normalizeUserCounts(data));
+        return "ok";
       } catch {
+        if (isStale()) return "stale";
         showError("Не удалось загрузить список пользователей.");
+        return "error";
       } finally {
-        setUsersLoading(false);
+        if (!isStale()) setUsersLoading(false);
       }
     },
     [showError],
@@ -456,7 +607,7 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
   useEffect(() => {
     // Грузим только данные доступных вкладок — на закрытые разделы сервер
     // всё равно ответит 403, а тосты об этом только шумели бы.
-    if (canUsersView) void fetchUsers("");
+    if (canUsersView) void fetchUsers("", DEFAULT_USER_FILTER, DEFAULT_USER_SORT);
     if (canPromosView) void fetchPromos();
     if (canRolesManage) void fetchRoles();
     // «Настройки» могут оказаться первой доступной вкладкой (например, роль
@@ -473,10 +624,38 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
     fetchSettings,
   ]);
 
+  // Поиск/фильтр/сортировка выставляются оптимистично (кнопка нажимается
+  // сразу), но при ошибке загрузки откатываются: иначе шапка, стрелки и
+  // пометка «показаны N из M» описывали бы новый фильтр над старыми данными.
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const prev = appliedSearch;
     setAppliedSearch(search);
-    void fetchUsers(search);
+    void fetchUsers(search, statusFilter, userSort).then((r) => {
+      if (r === "error") setAppliedSearch(prev);
+    });
+  };
+
+  // Клик по уже нажатой кнопке — осознанный рефетч (и путь ретрая после
+  // ошибки), поэтому раннего return при filter === statusFilter нет.
+  const handleFilterChange = (filter: UserStatusFilter) => {
+    const prev = statusFilter;
+    setStatusFilter(filter);
+    void fetchUsers(appliedSearch, filter, userSort).then((r) => {
+      if (r === "error") setStatusFilter(prev);
+    });
+  };
+
+  const handleUserSort = (key: UserSortKey) => {
+    // Повторный клик по активному ключу — переворот направления.
+    const dir: UserSortDir =
+      userSort.key === key && userSort.dir === "asc" ? "desc" : "asc";
+    const next: UserSort = { key, dir };
+    const prev = userSort;
+    setUserSort(next);
+    void fetchUsers(appliedSearch, statusFilter, next).then((r) => {
+      if (r === "error") setUserSort(prev);
+    });
   };
 
   const openGrantDialog = (user: AdminUser) => {
@@ -530,7 +709,7 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
           : `${grantTarget.email}: доступ продлён на ${days} дн.`,
       });
       setGrantTarget(null);
-      void fetchUsers(appliedSearch);
+      void fetchUsers(appliedSearch, statusFilter, userSort);
     } catch {
       showError("Не удалось выдать доступ.");
     } finally {
@@ -562,7 +741,7 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
         description: `${revokeTarget.email}: отозвано грантов — ${data?.revokedCount ?? 0}`,
       });
       setRevokeTarget(null);
-      void fetchUsers(appliedSearch);
+      void fetchUsers(appliedSearch, statusFilter, userSort);
     } catch {
       showError("Не удалось отозвать доступ.");
     } finally {
@@ -621,7 +800,7 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
       // Закрываем и рефетчим в любом исходе: часть операций могла успеть
       // примениться — источник истины после сохранения только сервер.
       setUserRolesTarget(null);
-      void fetchUsers(appliedSearch);
+      void fetchUsers(appliedSearch, statusFilter, userSort);
       void fetchRoles(); // usersCount ролей изменился
     }
   };
@@ -821,7 +1000,7 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
       setEditRole(null);
       void fetchRoles();
       // Имя роли показывается в бейджах на вкладке «Пользователи».
-      if (canUsersView) void fetchUsers(appliedSearch);
+      if (canUsersView) void fetchUsers(appliedSearch, statusFilter, userSort);
     } catch {
       showError("Не удалось сохранить роль.");
     } finally {
@@ -845,7 +1024,7 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
       toast({ title: "Роль удалена", description: deleteRole.name });
       setDeleteRole(null);
       void fetchRoles();
-      if (canUsersView) void fetchUsers(appliedSearch);
+      if (canUsersView) void fetchUsers(appliedSearch, statusFilter, userSort);
     } catch {
       showError("Не удалось удалить роль.");
     } finally {
@@ -856,7 +1035,14 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
   // Колонка «Действия» в таблице пользователей нужна только при наличии
   // хотя бы одного manage-пермишена — рид-онли админ видит таблицу без неё.
   const showUserActions = canAccessManage || canRolesManage;
-  const userTableCols = showUserActions ? 7 : 6;
+  const userTableCols = showUserActions ? 8 : 7;
+
+  // Активный пресет: его счётчик — для пометки «показаны первые N из M»
+  // (список срезан серверным limit, пагинации в UI нет), его label — для
+  // пустого состояния «под фильтр никто не попал».
+  const activePreset =
+    USER_FILTER_PRESETS.find((p) => p.value === statusFilter) ?? USER_FILTER_PRESETS[0];
+  const activeFilterCount = userCounts === null ? null : userCounts[activePreset.countKey];
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-8">
@@ -904,11 +1090,20 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
                 <CardHeader>
                   <CardTitle className="text-lg">Пользователи</CardTitle>
                   <CardDescription>
-                    Сортировка: сначала те, у кого доступ заканчивается раньше
+                    {/* userCounts === null — это и «ещё не грузили», и
+                        «загрузка упала», и «RPC не вернул счётчики»:
+                        «Загрузка…» честна только пока usersLoading. */}
+                    {userCounts !== null
+                      ? appliedSearch.trim()
+                        ? `Найдено по запросу: ${userCounts.total}`
+                        : `Всего пользователей: ${userCounts.total}`
+                      : usersLoading
+                        ? "Загрузка…"
+                        : "Список пользователей"}
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <form onSubmit={handleSearchSubmit} className="mb-4 flex gap-2">
+                  <form onSubmit={handleSearchSubmit} className="mb-3 flex gap-2">
                     <Input
                       value={search}
                       onChange={(e) => setSearch(e.target.value)}
@@ -920,16 +1115,73 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
                     </Button>
                   </form>
 
+                  {/* Пресеты фильтра по активности; счётчики — по текущему
+                      поисковому множеству, поэтому видны и на неактивных
+                      кнопках. */}
+                  <div className="mb-4 flex flex-wrap gap-2">
+                    {USER_FILTER_PRESETS.map((preset) => (
+                      <Button
+                        key={preset.value}
+                        type="button"
+                        size="sm"
+                        variant={statusFilter === preset.value ? "default" : "outline"}
+                        onClick={() => handleFilterChange(preset.value)}
+                        disabled={usersLoading}
+                        title={preset.title}
+                      >
+                        {preset.label}
+                        {userCounts !== null && (
+                          <span
+                            className={cn(
+                              "ml-1.5 rounded-full px-1.5 text-xs tabular-nums",
+                              statusFilter === preset.value
+                                ? "bg-primary-foreground/20"
+                                : "bg-muted",
+                            )}
+                          >
+                            {userCounts[preset.countKey]}
+                          </span>
+                        )}
+                      </Button>
+                    ))}
+                  </div>
+
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b">
-                          <th className={thClass}>Email</th>
-                          <th className={thClass}>ФИО</th>
+                          <SortableTh
+                            label="Email"
+                            sortKey="email"
+                            sort={userSort}
+                            onSort={handleUserSort}
+                          />
+                          <SortableTh
+                            label="ФИО"
+                            sortKey="name"
+                            sort={userSort}
+                            onSort={handleUserSort}
+                          />
                           <th className={thClass}>Телефон</th>
                           <th className={thClass}>Статус</th>
-                          <th className={thClass}>Доступ до</th>
-                          <th className={thClass}>Осталось дней</th>
+                          <SortableTh
+                            label="Регистрация"
+                            sortKey="registered"
+                            sort={userSort}
+                            onSort={handleUserSort}
+                          />
+                          <SortableTh
+                            label="Доступ до"
+                            sortKey="access"
+                            sort={userSort}
+                            onSort={handleUserSort}
+                          />
+                          <SortableTh
+                            label="Осталось дней"
+                            sortKey="access"
+                            sort={userSort}
+                            onSort={handleUserSort}
+                          />
                           {showUserActions && <th className={thClass}>Действия</th>}
                         </tr>
                       </thead>
@@ -949,7 +1201,20 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
                               colSpan={userTableCols}
                               className="px-3 py-8 text-center text-muted-foreground"
                             >
-                              Пользователи не найдены
+                              {/* Совпадения есть, но все скрыты пресетом
+                                  (типовой случай: ищут истёкшего клиента под
+                                  дефолтным «Только активные») — говорим, где
+                                  искать, а не «не найдены». */}
+                              {userCounts !== null &&
+                              userCounts.total > 0 &&
+                              statusFilter !== "all"
+                                ? `Под фильтр «${activePreset.label}» никто не попал, ` +
+                                  `хотя ${
+                                    appliedSearch.trim()
+                                      ? "по запросу найдено"
+                                      : "всего пользователей"
+                                  }: ${userCounts.total}. Счётчики на кнопках выше показывают, в каких фильтрах они.`
+                                : "Пользователи не найдены"}
                             </td>
                           </tr>
                         ) : (
@@ -982,6 +1247,7 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
                                     {badge.label}
                                   </span>
                                 </td>
+                                <td className={tdClass}>{formatDate(user.registered_at)}</td>
                                 <td className={tdClass}>{formatDate(user.access_until)}</td>
                                 <td
                                   className={cn(
@@ -1066,6 +1332,17 @@ export function AdminDashboard({ permissions }: { permissions: string[] }) {
                       </tbody>
                     </table>
                   </div>
+
+                  {/* Список срезан серверным limit (пагинации в UI нет) —
+                      честно говорим, сколько строк не показано. */}
+                  {!usersLoading &&
+                    activeFilterCount !== null &&
+                    users.length < activeFilterCount && (
+                      <p className="mt-3 text-sm text-muted-foreground">
+                        Показаны первые {users.length} из {activeFilterCount} —
+                        уточните поиск, чтобы увидеть остальных.
+                      </p>
+                    )}
                 </CardContent>
               </Card>
             </TabsContent>
