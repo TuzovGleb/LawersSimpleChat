@@ -19,6 +19,7 @@ from app.pipelines.tools.base import InlineResultHandler, ToolResultHandler, Too
 from app.search import OpenSearchConfig, build_opensearch_client
 from app.search.normativka import (
     NormativkaSearcher,
+    format_act_card,
     format_statute_article,
     format_statute_results,
 )
@@ -210,9 +211,42 @@ def normativka_tool_specs(searcher: NormativkaSearcher) -> list[ToolSpec]:
             )
         return format_statute_article(source)
 
+    @tool
+    async def get_act_info(act: str) -> str:
+        """Act card: what the act is and how it is organised — official name,
+        number and date, how many articles it has, the official pravo.gov.ru
+        link, and its chapter structure with article ranges. Use when the
+        lawyer asks for an act AS A WHOLE («приведи НК часть первую», «дай
+        текст закона об ООО», «что вообще в этом законе»): the full text of an
+        act is never returned by any tool, and this card plus the link is the
+        honest answer. Name the act by short title («ТК РФ», «закон об ООО»)
+        or by number («44-ФЗ»)."""
+        if not act or not act.strip():
+            return "Не указан акт (например, «НК РФ часть 1» или «44-ФЗ»)."
+
+        candidates = await _resolve_act_candidates(searcher, act)
+        if not candidates:
+            return (
+                f"Акт «{act}» в корпусе не найден. Попробуй указать его номер («44-ФЗ») "
+                f"или точное название. {_KNOWN_ACTS_DOC}"
+            )
+        if _needs_disambiguation(act, candidates):
+            return (
+                f"Номер «{act}» носят несколько актов (номера ФЗ повторяются по годам). "
+                f"Уточни, какой нужен — вызови инструмент с названием акта:\n"
+                + _format_candidates(candidates[:5])
+            )
+        card = await searcher.act_card(candidates[0].get("act_nd", ""))
+        if not card:
+            return f"Акт «{candidates[0].get('act_name', act)}» найден, но его статьи в корпусе недоступны."
+        return format_act_card(card)
+
     return [
         # Search snippets are small — stored inline and replayed verbatim.
         ToolSpec(search_normativka, InlineResultHandler()),
+        # Карточка акта компактна (структура по главам, не перечень статей) —
+        # хранится и переигрывается как есть.
+        ToolSpec(get_act_info, InlineResultHandler()),
         # Full article text is heavy — store only the reference, rehydrate.
         ToolSpec(get_statute_article, StatuteArticleHandler(searcher)),
     ]
