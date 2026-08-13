@@ -40,7 +40,11 @@ function withTimeout<T>(promise: PromiseLike<T>, ms: number): Promise<T> {
   });
 }
 
-export function AuthForm() {
+export function AuthForm({
+  defaultTab = "authorization",
+}: {
+  defaultTab?: "authorization" | "registration";
+}) {
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [signupEmail, setSignupEmail] = useState("");
@@ -55,7 +59,6 @@ export function AuthForm() {
   const { toast } = useToast();
 
   const isSignupEnabled = process.env.NEXT_PUBLIC_ENABLE_SIGNUP === "true";
-  const defaultTab = "authorization";
 
   // Runtime-выключатель регистрации (billing_settings.signup_enabled, тумблер
   // в /admin). Env-флаг лишь прячет форму per-deploy; настоящий запрет — в
