@@ -8,8 +8,6 @@ import { features, useCases } from "@/lib/landing-content";
 
 export const dynamic = 'force-dynamic';
 
-const CALENDLY_URL = 'https://calendly.com/glebtuzov/30-minute-call-with-tuzov-gleb-opencv';
-
 export default function HomePage() {
   const router = useRouter();
   const { user, loading } = useAuth();
@@ -41,7 +39,7 @@ export default function HomePage() {
     );
   }
 
-  const handleStart = () => window.open(CALENDLY_URL, '_blank');
+  const handleStart = () => router.push('/auth?tab=registration');
   const handleLogin = () => router.push('/auth');
 
   return (
@@ -59,7 +57,7 @@ export default function HomePage() {
             {/* The header CTA doesn't fit a phone-width bar next to the logo
                 and «Войти»; the hero right below carries the same CTA. */}
             <Button onClick={handleStart} variant="brand" size="ctaSm" className="hidden sm:inline-flex">
-              Записаться на звонок
+              Попробовать 7 дней бесплатно
             </Button>
           </nav>
         </div>
@@ -78,10 +76,10 @@ export default function HomePage() {
           </p>
           <div className="flex flex-wrap gap-3 items-center">
             <Button onClick={handleStart} variant="brand" size="ctaLg">
-              Записаться на звонок
+              Попробовать 7 дней бесплатно
             </Button>
             <span style={{ fontSize: 13.5, color: 'var(--text-secondary)' }}>
-              Консультация бесплатная, ~30 минут
+              Без карты · Регистрация за минуту
             </span>
           </div>
         </div>
@@ -153,13 +151,13 @@ export default function HomePage() {
             Готовы начать?
           </h2>
           <p style={{ fontSize: 17, color: 'var(--on-dark-muted)', margin: '0 0 32px' }}>
-            Запишитесь на короткую консультацию — обсудим ваши задачи и покажем возможности системы.
+            Зарегистрируйтесь и проверьте систему на материалах своего дела.
           </p>
           <Button onClick={handleStart} variant="brand" size="ctaLg">
-            Записаться на звонок
+            Попробовать 7 дней бесплатно
           </Button>
           <p style={{ marginTop: 16, fontSize: 13.5, color: 'var(--on-dark-muted)' }}>
-            Бесплатно, ~30 минут
+            Без карты · Регистрация за минуту
           </p>
         </div>
       </section>

@@ -5,7 +5,12 @@ export const metadata = {
   description: "Войдите в свой аккаунт или создайте новый",
 };
 
-export default function AuthPage() {
-  return <AuthForm />;
+export default async function AuthPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ tab?: string }>;
+}) {
+  const { tab } = await searchParams;
+  return <AuthForm defaultTab={tab === "registration" ? "registration" : "authorization"} />;
 }
 
