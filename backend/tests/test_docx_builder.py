@@ -1,7 +1,7 @@
 """Layout tests for the deterministic .docx renderer.
 
 These pin the court-document conventions the renderer must produce: header
-block in the RIGHT half of the sheet, 14pt Times New Roman, page numbers,
+block in the RIGHT half of the sheet, 12pt Times New Roman, page numbers,
 date-left/signature-right on one line, clean core properties.
 """
 import io
@@ -38,11 +38,11 @@ def test_header_block_sits_in_right_half():
         assert p.paragraph_format.first_line_indent is None
 
 
-def test_normal_style_is_times_new_roman_14():
+def test_normal_style_is_times_new_roman_12():
     doc = _load([{"type": "body", "text": "Абзац."}])
     st = doc.styles["Normal"]
     assert st.font.name == "Times New Roman"
-    assert st.font.size == Pt(14)
+    assert st.font.size == Pt(12)
 
 
 def test_signature_pair_renders_on_one_line_with_right_tab():
@@ -109,6 +109,17 @@ def test_render_survives_garbage_blocks():
     doc = Document(io.BytesIO(data))
     cells = [c.text for row in doc.tables[0].rows for c in row.cells]
     assert "2025" in cells and "0" in cells and "None" not in cells
+
+
+def test_em_dashes_become_en_dashes():
+    # Длинное тире заменяется на короткое везде, включая написание без пробелов.
+    out = normalize_text("иск — о взыскании, маршрут Москва—Тверь")
+    assert "—" not in out
+    assert out.count("–") == 2
+    # Перед тире-между-словами ставится неразрывный пробел.
+    assert "иск –" in out
+    # Дефис между пробелами тоже становится коротким тире.
+    assert "–" in normalize_text("иск - о взыскании")
 
 
 def test_digit_groups_are_non_breaking():

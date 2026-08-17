@@ -3,7 +3,7 @@
 Stage 2 of the drafting tool: takes a list of typed blocks
 ``[{"type": "...", "text": "..."}]`` and renders a fully formatted .docx with
 the court-document layout baked in (A4, margins 3/1.5/2/2 cm, Times New Roman
-14pt, 1.5 line spacing, justified body, 1.25 cm first-line indent, page numbers
+12pt, 1.15 line spacing, justified body, 1.25 cm first-line indent, page numbers
 top-center from page 2).
 
 Ported from the standalone ``build_docx.py`` skill engine; the only changes are
@@ -45,9 +45,9 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Pt
 
 FONT_NAME = "Times New Roman"
-FONT_SIZE = Pt(14)
+FONT_SIZE = Pt(12)
 FIRST_LINE = Cm(1.25)
-LINE_SPACING = 1.5
+LINE_SPACING = 1.15
 # Ширина текстовой колонки: 21 см − поля 3 + 1,5 см. Правый таб-стоп подписи.
 TEXT_WIDTH = Cm(16.5)
 # Отступ блока шапки: правая половина листа, строки по левому краю.
@@ -80,8 +80,10 @@ def normalize_text(t: str) -> str:
     t = re.sub(r'"([^"]*)"', lambda m: "«" + m.group(1) + "»", t)
     t = t.replace('"', "")
 
-    # 3. Дефис между пробелами -> длинное тире.
-    t = re.sub(r"\s[-–]\s", f"{NBSP}{MDASH} ", t)
+    # 3. Длинное тире -> короткое (везде), дефис между пробелами -> короткое
+    #    тире с неразрывным пробелом перед ним.
+    t = t.replace(MDASH, NDASH)
+    t = re.sub(r"\s[-–]\s", f"{NBSP}{NDASH} ", t)
 
     # 4. Пробел перед знаком препинания убрать.
     t = re.sub(r"\s+([,.;:!?])", r"\1", t)
