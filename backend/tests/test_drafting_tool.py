@@ -152,6 +152,23 @@ def test_blocks_text_flattens_paragraphs_and_tables():
     assert text.splitlines() == ["В суд", "", "Период | Сумма", "2025 | 100", "Абзац."]
 
 
+def test_blocks_text_replays_borderless_columns_with_double_pipe():
+    # Реплей двухколонки обязан сохранить маркер «||»: с « | » следующая
+    # итерация правок превратила бы реквизиты в обычную рамочную таблицу.
+    text = _blocks_text(
+        [
+            {"type": "table", "borderless": True, "rows": [
+                {"cells": ["Поставщик: ООО «Ромашка»", "Покупатель: ООО «Василёк»"]},
+                {"cells": ["М.П.", "М.П."]},
+            ]},
+        ]
+    )
+    assert text.splitlines() == [
+        "Поставщик: ООО «Ромашка» || Покупатель: ООО «Василёк»",
+        "М.П. || М.П.",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_handler_replays_full_text_for_iterative_edits():
     handler = DraftHandler()

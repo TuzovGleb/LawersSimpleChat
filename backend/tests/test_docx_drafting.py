@@ -64,6 +64,90 @@ def test_tokenize_pipe_guard_needs_two_cells():
     assert _kinds(units) == ["content"]
 
 
+def test_tokenize_columns_run_is_borderless_table():
+    text = (
+        "Реквизиты и подписи сторон\n"
+        "Поставщик: ООО «Ромашка» || Покупатель: ООО «Василёк»\n"
+        "ИНН 7701234567 || ИНН 7707654321\n"
+        "____________ /Иванов И. И./ || ____________ /Петров П. П./\n"
+        "М.П. || М.П.\n"
+    )
+    units = tokenize_draft(text)
+    assert _kinds(units) == ["content", "table"]
+    table = units[1]
+    assert table["borderless"] is True
+    assert table["rows"][0] == ["Поставщик: ООО «Ромашка»", "Покупатель: ООО «Василёк»"]
+    assert table["rows"][3] == ["М.П.", "М.П."]
+
+
+def test_tokenize_single_columns_row_is_enough():
+    # Одиночная «||»-строка — осознанный маркер драфтера (место — дата),
+    # в отличие от случайной «|» в прозе: одного ряда достаточно.
+    units = tokenize_draft("г. Москва || «10» августа 2026 г.")
+    assert _kinds(units) == ["table"]
+    assert units[0]["borderless"] is True
+    assert units[0]["rows"] == [["г. Москва", "«10» августа 2026 г."]]
+
+
+def test_tokenize_columns_keeps_empty_edge_cell():
+    # «Директор ____ ||» = заполнена только левая колонка; пустая правая
+    # сохраняет двухколоночную форму (не схлопывается в одну ячейку).
+    units = tokenize_draft("Директор ____________ ||")
+    assert units[0]["rows"] == [["Директор ____________", ""]]
+
+
+def test_tokenize_double_pipe_wins_over_single():
+    # В смешанной строке приоритет у «||»: ячейки могут содержать «|».
+    units = tokenize_draft("А | Б || В | Г")
+    assert _kinds(units) == ["table"]
+    assert units[0]["borderless"] is True
+    assert units[0]["rows"] == [["А | Б", "В | Г"]]
+
+
+def test_tokenize_columns_block_next_to_table_stays_separate():
+    text = (
+        "Период | Сумма\n"
+        "2025 | 100\n"
+        "Слева || Справа\n"
+    )
+    units = tokenize_draft(text)
+    assert _kinds(units) == ["table", "table"]
+    assert "borderless" not in units[0]
+    assert units[1]["borderless"] is True
+
+
+def test_tokenize_columns_strips_markdown_edges_and_separator():
+    # Markdown-слип драфтера («| а || б |» с сепаратор-строкой) не должен
+    # протаскивать в .docx литеральные пайпы и строки из дефисов.
+    units = tokenize_draft("| Период || Сумма |\n|---||---|\n| 2025 || 100 |")
+    assert _kinds(units) == ["table"]
+    assert units[0]["borderless"] is True
+    assert units[0]["rows"] == [["Период", "Сумма"], ["2025", "100"]]
+
+
+def test_assemble_carries_borderless_flag():
+    units = [
+        {"kind": "table", "borderless": True, "rows": [["а", "б"]]},
+        {"kind": "table", "rows": [["Период", "Сумма"], ["2025", "100"]]},
+    ]
+    blocks = assemble_blocks(units, {})
+    assert blocks[0]["borderless"] is True
+    assert "borderless" not in blocks[1]
+
+
+def test_assemble_downgrades_numbered_sentence_h1_to_body():
+    units = [
+        {"kind": "content", "id": 1, "text": "1. ПРЕДМЕТ ДОГОВОРА"},
+        {"kind": "content", "id": 2, "text": "1.1. Поставщик обязуется поставить товар."},
+        {"kind": "content", "id": 3, "text": "1.2. ОБЩИЕ ПОЛОЖЕНИЯ"},
+    ]
+    blocks = assemble_blocks(units, {1: "h1", 2: "h1", 3: "h1"})
+    # Одноуровневый «1.» и многоуровневый номер без конца предложения остаются
+    # h1; «N.N. + предложение» принудительно уходит в body (страховка от
+    # вероятностного классификатора).
+    assert [b["type"] for b in blocks] == ["h1", "body", "h1"]
+
+
 def test_assemble_drops_spacer_between_flowing_paragraphs():
     units = [
         {"kind": "content", "id": 1, "text": "Абзац один."},
@@ -191,6 +275,6 @@ def test_classify_schema_binds():
     runnable = llm.with_structured_output(ClassifiedDoc)
     assert runnable is not None
     schema = ClassifiedDoc.model_json_schema()
-    assert set(schema["properties"]) == {"file_name", "lines"}
+    assert set(schema["properties"]) == {"family", "file_name", "lines"}
     # 12 content types (no spacer/table)
     assert len(schema["$defs"]["LineType"]["properties"]["type"]["enum"]) == 12
