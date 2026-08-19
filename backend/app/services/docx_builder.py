@@ -1,4 +1,4 @@
-"""Deterministic .docx assembly for Russian procedural documents.
+"""Deterministic .docx assembly for Russian legal documents.
 
 Stage 2 of the drafting tool: takes a list of typed blocks
 ``[{"type": "...", "text": "..."}]`` and renders a fully formatted .docx with
@@ -29,6 +29,10 @@ Block types (``type``):
                   справа через правый таб-стоп.
     sign_right  — строка подписи справа.
     spacer      — пустой абзац (пустая строка-отступ).
+    table       — таблица с рамками (Table Grid), первая строка жирная. С флагом
+                  borderless=true — безрамочный колоночный блок на всю ширину
+                  текста (реквизиты и подписи сторон договора, подписи
+                  председателя/секретаря), без рамок и без жирной первой строки.
 """
 from __future__ import annotations
 
@@ -42,7 +46,7 @@ from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING, WD_TAB_ALIGNMENT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Cm, Pt
+from docx.shared import Cm, Emu, Pt
 
 FONT_NAME = "Times New Roman"
 FONT_SIZE = Pt(12)
@@ -56,6 +60,13 @@ HEADER_INDENT = Cm(8.25)
 NBSP = " "  # неразрывный пробел
 NDASH = "–"
 MDASH = "—"
+
+# Резолютивное слово-команда, выделяемое жирным в proshu-блоке. Раньше был
+# hardcoded «ПРОШУ»; непроцессуальные документы приносят свои команды.
+_RESOLUTIVE = re.compile(
+    r"\b(ПРОШУ|ПРОСИМ|ТРЕБУЮ|ТРЕБУЕМ|ПРЕДЛАГАЮ|ПРЕДЛАГАЕМ|ПРИКАЗЫВАЮ|ПРИКАЗЫВАЕМ"
+    r"|ПОСТАНОВИЛИ?|РЕШИЛИ?|ХОДАТАЙСТВУЮ|ХОДАТАЙСТВУЕМ)\b"
+)
 
 # Сокращения, после которых пробел перед числом должен быть неразрывным.
 ABBR_BEFORE_NUM = [
@@ -219,12 +230,18 @@ _L = WD_ALIGN_PARAGRAPH.LEFT
 _R = WD_ALIGN_PARAGRAPH.RIGHT
 
 
-def _add_table(doc, rows: list[dict]) -> None:
-    """Render a bordered Word table from ``[{"cells": [...]}, ...]``.
+def _add_table(doc, rows: list[dict], borderless: bool = False) -> None:
+    """Render a Word table from ``[{"cells": [...]}, ...]``.
 
-    First row is treated as a bold header. Ragged rows are padded to the widest
-    row so python-docx never indexes out of range. Cells use the document font
-    and single spacing for compactness; text goes through ``normalize_text``.
+    Bordered (default): Table Grid style, first row is a bold header, autofit.
+    Borderless (``||``-columns block): no borders, no bold header — the rows
+    are layout columns (реквизиты/подписи сторон), not a data table — and the
+    table spans the full text width with equal columns so the right column
+    starts at the middle of the sheet.
+
+    Ragged rows are padded to the widest row so python-docx never indexes out
+    of range. Cells use the document font and single spacing for compactness;
+    text goes through ``normalize_text``.
     """
     matrix = [
         list(r.get("cells", []) or [])
@@ -238,12 +255,20 @@ def _add_table(doc, rows: list[dict]) -> None:
         return
 
     table = doc.add_table(rows=len(matrix), cols=cols)
-    table.style = "Table Grid"  # single-line borders on every cell
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    table.autofit = True
+    if borderless:
+        # Без явного стиля python-docx оставляет «Normal Table» — рамок нет.
+        table.autofit = False
+        col_width = Emu(int(TEXT_WIDTH / cols))
+    else:
+        table.style = "Table Grid"  # single-line borders on every cell
+        table.autofit = True
+        col_width = None
     for r_idx, row in enumerate(matrix):
         for c_idx in range(cols):
             cell = table.cell(r_idx, c_idx)
+            if col_width is not None:
+                cell.width = col_width
             # str(): в сохранённых blocks ячейки могут быть числами/None (JSON).
             raw = row[c_idx] if c_idx < len(row) else ""
             txt = normalize_text("" if raw is None else str(raw))
@@ -253,7 +278,7 @@ def _add_table(doc, rows: list[dict]) -> None:
             pf.space_before = Pt(0)
             pf.space_after = Pt(0)
             pf.first_line_indent = None
-            _set_run_font(para.add_run(txt), bold=(r_idx == 0))
+            _set_run_font(para.add_run(txt), bold=(not borderless and r_idx == 0))
 
 
 def _add_signature_line(doc, left: str, right: str) -> None:
@@ -302,11 +327,15 @@ def render_docx(blocks: list[dict]) -> bytes:
                 q = "«" + q + "»"
             _add_paragraph(doc, q, _J, bold=False, first_line=True)
         elif t == "proshu":
-            _add_paragraph(doc, txt, _J, bold=False, first_line=True, bold_word="ПРОШУ")
+            # Ищем по нормализованному тексту: _add_paragraph сравнивает
+            # bold_word с уже нормализованной строкой.
+            m = _RESOLUTIVE.search(normalize_text(txt))
+            _add_paragraph(doc, txt, _J, bold=False, first_line=True,
+                           bold_word=m.group(1) if m else None)
         elif t == "item":
             _add_paragraph(doc, txt, _J, bold=False, first_line=True)
         elif t == "table":
-            _add_table(doc, b.get("rows") or [])
+            _add_table(doc, b.get("rows") or [], borderless=bool(b.get("borderless")))
         elif t == "annex_h":
             _add_paragraph(doc, txt, _L, bold=True, first_line=False, space_before=12)
         elif t == "annex_item":

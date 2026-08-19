@@ -1,5 +1,6 @@
-"""Document drafting tool — drafts a full procedural document from the chat
-context and attaches it as a downloadable .docx artifact.
+"""Document drafting tool — drafts a full legal document (procedural or any
+other kind: contract, claim, opinion, letter, power of attorney, minutes)
+from the chat context and attaches it as a downloadable .docx artifact.
 
 The model calls ``draft_document()`` (no args) when the lawyer wants a document
 as a file. The tool receives the WHOLE conversation (via ``InjectedState``),
@@ -93,10 +94,14 @@ def _blocks_text(blocks: list) -> str:
         if not isinstance(b, dict):
             continue
         if b.get("type") == "table":
+            # Двухколоночные блоки («||») реплеим их же маркером: иначе при
+            # следующей итерации правок драфтер увидит « | » и превратит
+            # безрамочные реквизиты/подписи в обычную рамочную таблицу.
+            sep = " || " if b.get("borderless") else " | "
             for row in b.get("rows") or []:
                 cells = row.get("cells") if isinstance(row, dict) else None
                 if cells:
-                    lines.append(" | ".join(str(c) for c in cells))
+                    lines.append(sep.join(str(c) for c in cells))
         else:
             lines.append(str(b.get("text") or ""))
     return "\n".join(lines).strip()
@@ -144,15 +149,18 @@ def drafting_tool_specs(drafting_llm: ChatOpenAI, segmenter: ChatOpenAI) -> list
 
     @tool
     async def draft_document(state: Annotated[dict, InjectedState]) -> str:
-        """Составить полный процессуальный документ и приложить его файлом .docx.
+        """Составить полный юридический документ и приложить его файлом .docx.
 
         Вызывай этот инструмент БЕЗ ПАРАМЕТРОВ, когда юрист хочет получить
-        процессуальный документ (иск, возражения, ходатайство, пояснения, жалобу)
-        ФАЙЛОМ для подачи в суд — а также когда просит ПОПРАВИТЬ уже выданный
-        документ: инструмент видит текст предыдущей версии и внесёт правки.
-        Инструмент сам прочитает всю переписку и напишет полный текст документа,
-        опираясь на весь контекст (запрос юриста, приложенные материалы,
-        найденную практику, твой анализ), и приложит .docx.
+        документ ФАЙЛОМ: процессуальный (иск, возражения, ходатайство,
+        пояснения, жалобу) или любой другой юридический документ (договор,
+        претензию, заключение, письмо, доверенность, приказ, протокол).
+        Вызывай его же, когда юрист просит ПОПРАВИТЬ уже выданный документ
+        или оформить файлом текст, уже написанный в чате: инструмент видит
+        всю переписку и предыдущие версии. Инструмент сам определит вид
+        документа и напишет полный текст, опираясь на весь контекст (запрос
+        юриста, приложенные материалы, найденную практику, твой анализ),
+        и приложит .docx.
         Полный текст документа в свой ответ НЕ пиши — его готовит инструмент.
         """
         history_json = _serialize_history(state.get("messages") or [])
@@ -166,7 +174,7 @@ def drafting_tool_specs(drafting_llm: ChatOpenAI, segmenter: ChatOpenAI) -> list
         )
         draft_input = [
             SystemMessage(content=system),
-            HumanMessage(content="Составь полный текст процессуального документа по контексту выше."),
+            HumanMessage(content="Составь полный текст документа по контексту выше."),
         ]
         try:
             response = await drafting_llm.ainvoke(draft_input)

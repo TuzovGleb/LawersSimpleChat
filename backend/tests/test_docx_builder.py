@@ -111,6 +111,77 @@ def test_render_survives_garbage_blocks():
     assert "2025" in cells and "0" in cells and "None" not in cells
 
 
+def test_borderless_table_has_no_grid_and_no_bold():
+    data = render_docx([
+        {"type": "table", "borderless": True, "rows": [
+            {"cells": ["Поставщик: ООО «Ромашка»", "Покупатель: ООО «Василёк»"]},
+            {"cells": ["М.П.", "М.П."]},
+        ]},
+    ])
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        xml = z.read("word/document.xml").decode("utf-8")
+    assert "TableGrid" not in xml  # рамок нет
+    doc = Document(io.BytesIO(data))
+    runs = [
+        r
+        for row in doc.tables[0].rows
+        for c in row.cells
+        for p in c.paragraphs
+        for r in p.runs
+    ]
+    # Колоночный блок — не таблица данных: первая строка НЕ жирная.
+    assert runs and all(r.bold is False for r in runs)
+
+
+def test_bordered_table_keeps_grid_and_bold_header():
+    data = render_docx([
+        {"type": "table", "rows": [
+            {"cells": ["Период", "Сумма"]},
+            {"cells": ["2025", "100"]},
+        ]},
+    ])
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        xml = z.read("word/document.xml").decode("utf-8")
+    assert "TableGrid" in xml
+    doc = Document(io.BytesIO(data))
+    header_runs = [r for c in doc.tables[0].rows[0].cells for p in c.paragraphs for r in p.runs]
+    assert header_runs and all(r.bold for r in header_runs)
+
+
+def test_resolutive_word_bolded_beyond_proshu():
+    doc = _load([{"type": "proshu", "text": "На основании изложенного ТРЕБУЮ:"}])
+    bold_words = [r.text for r in doc.paragraphs[0].runs if r.bold]
+    assert bold_words == ["ТРЕБУЮ"]
+
+
+def test_resolutive_covers_plural_and_singular_forms():
+    # ТРЕБУЕМ (претензия от организации), РЕШИЛ (единственный участник ООО).
+    for text, word in [
+        ("На основании изложенного ТРЕБУЕМ:", "ТРЕБУЕМ"),
+        ("РЕШИЛ:", "РЕШИЛ"),
+        ("ПОСТАНОВИЛ:", "ПОСТАНОВИЛ"),
+    ]:
+        doc = _load([{"type": "proshu", "text": text}])
+        assert [r.text for r in doc.paragraphs[0].runs if r.bold] == [word]
+    # Внутри слова длиннее команда не матчится.
+    doc = _load([{"type": "proshu", "text": "Стороны РЕШИЛИСЬ на компромисс."}])
+    assert all(r.bold is False for r in doc.paragraphs[0].runs)
+
+
+def test_proshu_word_still_bolded():
+    doc = _load([
+        {"type": "proshu",
+         "text": "На основании изложенного, руководствуясь ст. 149 ГПК РФ, ПРОШУ:"},
+    ])
+    bold_words = [r.text for r in doc.paragraphs[0].runs if r.bold]
+    assert bold_words == ["ПРОШУ"]
+
+
+def test_proshu_without_command_word_renders_unbolded():
+    doc = _load([{"type": "proshu", "text": "Просительная часть без команды."}])
+    assert all(r.bold is False for r in doc.paragraphs[0].runs)
+
+
 def test_em_dashes_become_en_dashes():
     # Длинное тире заменяется на короткое везде, включая написание без пробелов.
     out = normalize_text("иск — о взыскании, маршрут Москва—Тверь")
